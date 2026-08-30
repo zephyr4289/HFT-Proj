@@ -26,6 +26,7 @@ Rule:        Once frozen, requirement numbers are never renumbered or
 | C5 | Implied TotalView ground truth | Downloaded day is **Nasdaq BX** (2019-12-30), same ITCH 5.0 grammar, smaller venue. Protocol table implements full TotalView 5.0 catalog; doc 03 must run a type histogram over the actual BX day and record observed types. | EN-4; doc 03 exit gate |
 | C6 | C3 implied bare messages | Observed ground truth (20191230.BX): the archive is a **MoldUDP64 MESSAGE-BLOCK stream** — `[u16 BE len][message]` repeated, no 20-byte headers. Evidence: `00 0c` (len 12 = System Event), msg ends `4f` 'O', next prefix `00 27` (len 39 = Stock Directory). | Doc 04 reads blocks via length prefix; doc 03 table becomes cross-VALIDATOR |
 | C7 | Prior doc claimed 'H' = Stock Directory | ITCH 5.0 Stock Directory is **'R'** (0x52, 39B); **'H'** (0x48, 25B) is Stock Trading Action. Evidence: `0x52` at file offset `0x10`, declared len `0x27=39`, locate 1, stock `"A       "`. | Doc 03 table |
+| C8 | Doc 04 §8 folded seq into golden hash, making E2E-1 with session split unsatisfiable (split restarts seq; walker doesn't) | Golden hash folds `(len_u16_le, msg_bytes)` ONLY. Count tracked separately. Order enforced by ConformanceSink. Hash becomes session-split-invariant by construction. | Doc 04 §8, doc 05 E2E-1 amended; pinned hashes regenerated |
 
 ---
 
@@ -273,3 +274,4 @@ sha256sum data/sample-dev.itch data/tests/sample-mini.itch
 | 2026-08-30 | 1.0 | Initial baseline. Corrections C1–C5 applied to original NEXUS-FEED-01 text. Frozen on review sign-off. Sample hashes: `sample-dev.itch: e34c17b4ed6c3c5ab47a64159af00cade44328b92cfc2b35c674d7ee92971953`, `sample-mini.itch: 5e347abbaa69f12226a6506e875f51633af690b3fc890d9d20a7213fe73275c9`. |
 | 2026-08-30 | 1.1 | C6 added; Appendix A expected bytes corrected to `00 0c 53 .. 4f 00 27`. Freeze reaffirmed at v1.1. |
 | 2026-08-30 | 1.2 | C7 added: ITCH 5.0 Stock Directory is 'R' (0x52, 39B); 'H' (0x48, 25B) is Stock Trading Action. Freeze reaffirmed at v1.2. |
+| 2026-08-30 | 1.3 | C8 added: Golden hash folds (len_u16_le, msg_bytes) only, dropping seq. Freeze reaffirmed at v1.3. |

@@ -126,24 +126,23 @@ Builder appends rolling heartbeats, terminal heartbeat ($N+1$), and EOS ($N+1$) 
 
 ---
 
-## 8. Golden Hash Contract
+## 8. Golden Hash Contract (C8 Updated)
 
-Canonical FNV-1a-64 over $(seq\_le \parallel len\_le \parallel msg\_bytes)$:
+Canonical FNV-1a-64 over $(len\_le \parallel msg\_bytes)$ (split-invariant by construction):
 ```rust
 h0 = 0xcbf29ce484222325
-for seq in 1..=N:
-    h = fnv8(h, seq.to_le_bytes())
+for msg in messages:
     h = fnv2(h, len.to_le_bytes())
     h = fnvN(h, msg_bytes)
 ```
 
 ---
 
-## 9. Appendix A — Golden Reference Hashes
+## 9. Appendix A — Golden Reference Hashes (C8 Pinned)
 
-| Artifact | Messages | Canonical Golden Hash (FNV-1a-64) |
-|---|---|---|
-| `data/tests/sample-mini.itch` | 505,849 | `0xDE4C_837A_B4A6_78BB` |
+| Artifact | Messages | Canonical Golden Hash (FNV-1a-64) | Status |
+|---|---|---|---|
+| `data/tests/sample-mini.itch` | 505,849 | `0xF6EF_154E_FDE9_05D8` | Pinned (v1.1 / C8) |
 
 ---
 
@@ -151,4 +150,5 @@ for seq in 1..=N:
 
 | Date | Version | Entry |
 |---|---|---|
-| 2026-08-30 | 1.0 | Initial replay fabricator, Irwin-Hall determinism model, ReplayTransport arena, canonical golden hash `0xDE4C_837A_B4A6_78BB`. |
+| 2026-08-30 | 1.0 | Initial replay fabricator, Irwin-Hall determinism model, ReplayTransport arena. |
+| 2026-08-30 | 1.1 | C8 applied: golden hash folds (len_le \|\| msg_bytes) only, dropping seq. Pinned mini hash updated to `0xF6EF_154E_FDE9_05D8`. |

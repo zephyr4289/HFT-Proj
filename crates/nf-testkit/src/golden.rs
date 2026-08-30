@@ -1,5 +1,5 @@
 //! Golden reference walker: computes the canonical FNV-1a-64 hash
-//! over an ITCH 5.0 message block stream (doc 04 §8).
+//! over an ITCH 5.0 message block stream (doc 04 §8, C8 update).
 
 const FNV_OFFSET: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
@@ -20,10 +20,11 @@ pub fn fnv_bytes(mut h: u64, bytes: &[u8]) -> u64 {
 
 /// Computes the canonical golden hash and message count over a ground-truth
 /// message block stream (`[u16 BE len][msg]`).
+/// Per C8: folds `(len_u16_le, msg_bytes)` only (split-invariant by construction).
 pub fn golden(gt: &[u8]) -> (u64 /* hash */, u64 /* count */) {
     let mut h = FNV_OFFSET;
     let mut pos = 0;
-    let mut seq = 1u64;
+    let mut count = 0u64;
 
     while pos + 2 <= gt.len() {
         let msg_len = u16::from_be_bytes([gt[pos], gt[pos + 1]]) as usize;
@@ -34,21 +35,19 @@ pub fn golden(gt: &[u8]) -> (u64 /* hash */, u64 /* count */) {
         let msg = &gt[pos..pos + msg_len];
         pos += msg_len;
 
-        h = fnv_bytes(h, &seq.to_le_bytes());
         h = fnv_bytes(h, &(msg_len as u16).to_le_bytes());
         h = fnv_bytes(h, msg);
 
-        seq += 1;
+        count += 1;
     }
 
-    (h, seq - 1)
+    (h, count)
 }
 
 /// Independent second implementation for T1 cross-check.
 pub fn golden_cross_check(gt: &[u8], limit: usize) -> (u64, u64) {
     let mut h = FNV_OFFSET;
     let mut pos = 0;
-    let mut seq = 1u64;
     let mut count = 0;
 
     while pos + 2 <= gt.len() && count < limit {
@@ -63,9 +62,6 @@ pub fn golden_cross_check(gt: &[u8], limit: usize) -> (u64, u64) {
         pos += msg_len;
 
         // Byte-by-byte update
-        for b in seq.to_le_bytes() {
-            h = (h ^ (b as u64)).wrapping_mul(FNV_PRIME);
-        }
         for b in (msg_len as u16).to_le_bytes() {
             h = (h ^ (b as u64)).wrapping_mul(FNV_PRIME);
         }
@@ -73,7 +69,6 @@ pub fn golden_cross_check(gt: &[u8], limit: usize) -> (u64, u64) {
             h = (h ^ (b as u64)).wrapping_mul(FNV_PRIME);
         }
 
-        seq += 1;
         count += 1;
     }
 

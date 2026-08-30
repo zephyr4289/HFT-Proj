@@ -4,7 +4,7 @@ pub type FeedId = u8;
 
 /// Zero-cost proof that a message was emitted from the contiguous sequence path.
 /// Minted exclusively during in-order frame emission or in-order drain (doc 05 §9).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct LiveFeedProof {
     pub(crate) gen: u64,
 }

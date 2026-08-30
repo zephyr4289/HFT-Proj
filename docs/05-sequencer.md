@@ -370,7 +370,7 @@ first, the sequencer last.
 | U12 | recovery_intent: all three triggers (synthetic `now_ns` — time is a parameter, no clock mocking), widen rule, pending clear on W advance | exact intents as sequences |
 | U13 | Transition table totality | every (state,event) cell exercised ≥ once |
 | U14 | Emitted-vs-staged byte identity | staged copies byte-equal to source frames |
-| **E2E-1** | **Mode-1 chaos (guarantee_coverage) over mini: both feeds, jitter, reorder, single-feed loss, session split** | **HashSink hash == golden(mini); count == N; final W == N+1; zero violations; ConformanceSink invariants hold (gen law, gap pairing, no-orphan events)** |
+| **E2E-1** | **Mode-1 chaos (guarantee_coverage) over mini: both feeds, jitter, reorder, single-feed loss, session split** | **HashSink hash == golden(mini) (C8 byte-stream); count == N; final W == N-m+1 (under split at m, else N+1); zero violations; ConformanceSink invariants hold (gen law, gap pairing, no-orphan events)** |
 | E2E-1b | Same schedule, run twice | byte-identical sink state both runs |
 | E2E-1c (rec.) | Dev sample (200 MB) mode-1 | same contract; Termux timing recorded, not gated |
 
@@ -389,3 +389,4 @@ first, the sequencer last.
 | Date | Version | Entry |
 |---|---|---|
 | 2026-08-30 | 1.0 | Initial: normative ingest, W1 + zombie hazard + clear-on-advance law, event grammar, gen law, session lifecycle, intent mechanism, U1..U14, E2E-1. |
+| 2026-08-30 | 1.1 | C8 applied: E2E-1 pass condition updated to byte-stream golden hash (0xF6EF154EFDE905D8), watermark under split at m asserted as N-m+1 (or N+1 un-split). |

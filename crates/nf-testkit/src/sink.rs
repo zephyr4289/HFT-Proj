@@ -21,8 +21,7 @@ impl HashSink {
     }
 
     #[inline]
-    pub fn fold_msg(&mut self, seq: u64, msg: &[u8]) {
-        self.hash = fnv_bytes(self.hash, &seq.to_le_bytes());
+    pub fn fold_msg(&mut self, _seq: u64, msg: &[u8]) {
         self.hash = fnv_bytes(self.hash, &(msg.len() as u16).to_le_bytes());
         self.hash = fnv_bytes(self.hash, msg);
         self.count += 1;

@@ -17,7 +17,7 @@ mod tests {
     use nf_transport::{FrameBatch, Transport};
 
     const MINI_PATH: &str = "../../data/tests/sample-mini.itch";
-    pub const MINI_GOLDEN_HASH: u64 = 0xDE4C_837A_B4A6_78BB;
+    pub const MINI_GOLDEN_HASH: u64 = 0xF6EF_154E_FDE9_05D8;
     pub const MINI_MESSAGE_COUNT: u64 = 505_849;
 
     fn load_mini_bytes() -> Vec<u8> {
