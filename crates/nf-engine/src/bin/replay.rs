@@ -53,9 +53,13 @@ fn load_config_file(path: &str) -> (ReplayConfig, String, [u8; 10]) {
                 "delay_mean_ns" => delay_mean = v.parse().unwrap_or(0),
                 "delay_sigma_ns" => delay_sigma = v.parse().unwrap_or(0),
                 "guarantee_coverage" => cfg.guarantee_coverage = v.parse().unwrap_or(true),
-                "msgs_per_packet" => {
-                    let k: u16 = v.parse().unwrap_or(10);
-                    cfg.msgs_per_packet = Packetize::Fixed(k);
+                "msgs_per_packet" | "mtu_bound" => {
+                    let k: u16 = v.parse().unwrap_or(1400);
+                    if k >= 100 {
+                        cfg.msgs_per_packet = Packetize::MtuBound(k);
+                    } else {
+                        cfg.msgs_per_packet = Packetize::Fixed(k);
+                    }
                 }
                 "session" => {
                     let mut s = [b' '; 10];
@@ -136,12 +140,8 @@ fn main() {
         (0, 0)
     };
 
-    loop {
+    while transport.poll(&mut batch) > 0 {
         let now = transport.now_ns();
-        let n = transport.poll(&mut batch);
-        if n == 0 {
-            break;
-        }
         for frame in batch.frames() {
             seq.ingest(frame.bytes(), frame.feed, now, &mut sink);
         }
