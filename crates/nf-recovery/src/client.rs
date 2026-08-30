@@ -63,6 +63,16 @@ impl RecoveryClient {
     }
 
     #[inline]
+    pub fn ip(&self) -> [u8; 4] {
+        self.ip
+    }
+
+    #[inline]
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    #[inline]
     pub fn state(&self) -> ClientState {
         self.state
     }

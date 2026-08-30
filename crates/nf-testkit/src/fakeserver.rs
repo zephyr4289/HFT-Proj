@@ -1,7 +1,7 @@
 //! UDP Fake Retransmission Server (doc 08 §7, C9).
 //! Serves ground truth slices over loopback UDP with deterministic fault injection.
 
-use nf_protocol::moldudp64::{HEADER_LEN, REQUEST_LEN};
+use nf_protocol::moldudp64::REQUEST_LEN;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;

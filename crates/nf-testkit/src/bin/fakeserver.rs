@@ -53,13 +53,21 @@ fn main() {
             let ms: u64 = s["delay:".len()..].parse().unwrap_or(50);
             FaultMode::DelayMs(ms)
         }
-        s if s.starts_with("close:") => {
-            let n: usize = s["close:".len()..].parse().unwrap_or(1);
-            FaultMode::CloseOnRequest(n)
+        s if s.starts_with("drop_req:") => {
+            let n: usize = s["drop_req:".len()..].parse().unwrap_or(1);
+            FaultMode::DropRequest(n)
         }
-        s if s.starts_with("ignore:") => {
-            let n: usize = s["ignore:".len()..].parse().unwrap_or(1);
-            FaultMode::IgnoreRequest(n)
+        s if s.starts_with("drop_resp:") => {
+            let n: usize = s["drop_resp:".len()..].parse().unwrap_or(1);
+            FaultMode::DropResponse(n)
+        }
+        s if s.starts_with("close:") || s.starts_with("ignore:") => {
+            let n: usize = if s.starts_with("close:") {
+                s["close:".len()..].parse().unwrap_or(1)
+            } else {
+                s["ignore:".len()..].parse().unwrap_or(1)
+            };
+            FaultMode::DropRequest(n)
         }
         s if s.starts_with("truncate:") => {
             let k: u16 = s["truncate:".len()..].parse().unwrap_or(10);
