@@ -1,5 +1,7 @@
 //! Engine loop, thread pinning, and end-to-end wiring.
 
+#![allow(clippy::disallowed_types, clippy::disallowed_methods, clippy::field_reassign_with_default)]
+
 pub mod alloc;
 
 use nf_protocol::itch5;
@@ -126,7 +128,7 @@ mod tests {
         let report = audit_stream(&mut cursor).expect("audit stream");
         assert_eq!(report.blocks, 2);
         assert_eq!(report.violations, 0);
-        assert_eq!(report.truncated_tail, false);
+        assert!(!report.truncated_tail);
         assert_eq!(report.hist[b'S' as usize], 1);
         assert_eq!(report.hist[b'D' as usize], 1);
     }
@@ -147,7 +149,7 @@ mod tests {
         let report = audit_stream(&mut cursor).expect("audit stream");
         assert_eq!(report.blocks, 1);
         assert_eq!(report.violations, 0);
-        assert_eq!(report.truncated_tail, true);
+        assert!(report.truncated_tail);
         assert_eq!(report.hist[b'S' as usize], 1);
     }
 }

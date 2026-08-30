@@ -381,8 +381,3 @@ impl Default for Sequencer {
     }
 }
 
-impl Default for Box<Sequencer> {
-    fn default() -> Self {
-        Sequencer::new()
-    }
-}

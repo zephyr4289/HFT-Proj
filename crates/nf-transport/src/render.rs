@@ -3,7 +3,7 @@
 #![cfg_attr(not(test), deny(clippy::disallowed_types))]
 
 use crate::sched_types::{ReplaySchedule, SchedEvent, SchedKind};
-use crate::{FeedId, FrameBatch, FrameView, Transport};
+use crate::{FrameBatch, FrameView, Transport};
 use nf_protocol::moldudp64::{EOS_COUNT, HEADER_LEN, HEARTBEAT_COUNT};
 
 #[derive(Debug, Clone, Copy, Default)]

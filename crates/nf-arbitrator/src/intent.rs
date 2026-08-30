@@ -11,6 +11,7 @@ pub const MAX_WIRE_REQUEST: u64 = 65535;
 
 /// Generates a recovery intent if gap triggers (T-HWM, T-TIME, T-HB) or resuggest window trip.
 #[inline]
+#[allow(clippy::too_many_arguments)]
 pub fn check_recovery_intent(
     w: u64,
     max_staged: u64,
@@ -25,14 +26,13 @@ pub fn check_recovery_intent(
 ) -> Option<RecoveryIntent> {
     let mut target = None;
 
-    // T-HWM: max_staged - W >= 512
-    if max_staged > w && (max_staged - w) >= HWM_STAGED_THRESHOLD {
+    // T-HWM: max_staged - W >= 512, or T-TIME: staged_count > 0 and now - progress_vt >= 250µs
+    if (max_staged > w && (max_staged - w) >= HWM_STAGED_THRESHOLD)
+        || (staged_count > 0 && now_ns.saturating_sub(progress_vt) >= TIME_TRIGGER_NS)
+    {
         target = Some(max_staged);
     }
-    // T-TIME: staged_count > 0 and now - progress_vt >= 250µs
-    else if staged_count > 0 && now_ns.saturating_sub(progress_vt) >= TIME_TRIGGER_NS {
-        target = Some(max_staged);
-    }
+
     // T-HB: hb_seq > W and now - hb_vt >= 250µs
     else if hb_seq > w && now_ns.saturating_sub(hb_vt) >= HB_TRIGGER_NS {
         target = Some(hb_seq);

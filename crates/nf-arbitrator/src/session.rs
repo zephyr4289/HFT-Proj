@@ -9,6 +9,7 @@ use nf_protocol::moldudp64::Header;
 
 /// Handles session discovery or session boundary transition.
 #[inline]
+#[allow(clippy::too_many_arguments)]
 pub fn session_dispatch<S: Sink>(
     session: &mut [u8; 10],
     new_session: [u8; 10],
@@ -59,6 +60,7 @@ pub fn session_dispatch<S: Sink>(
 
 /// Handles heartbeat packet classification (count == 0).
 #[inline]
+#[allow(clippy::too_many_arguments)]
 pub fn handle_heartbeat<S: Sink>(
     seq: u64,
     _feed: FeedId,

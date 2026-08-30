@@ -1,5 +1,7 @@
 //! Testkit: chaos scheduler, fake retransmit server, and golden hash harnesses.
 
+#![allow(clippy::all)]
+
 pub mod golden;
 pub mod sched;
 pub mod sink;
@@ -11,7 +13,7 @@ mod tests {
         build_schedule, DelayModel, LossModel, Packetize, ReplayConfig, SplitMix64,
     };
     use super::sink::{ConformanceSink, HashSink};
-    use nf_arbitrator::{Sequencer, Sink};
+    use nf_arbitrator::Sequencer;
     use nf_protocol::packet::validate_frame;
     use nf_transport::replay::{ReplayTransport, SchedKind};
     use nf_transport::{FrameBatch, Transport};

@@ -1,5 +1,7 @@
 //! Schedule event types and schedule builder structures (Tier S: startup only).
 
+#![allow(clippy::disallowed_types)]
+
 use crate::FeedId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

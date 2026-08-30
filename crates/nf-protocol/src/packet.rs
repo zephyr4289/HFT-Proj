@@ -23,6 +23,7 @@ pub fn validate_frame(buf: &[u8]) -> Result<moldudp64::Parsed<'_>, PacketError> 
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_types, clippy::disallowed_methods)]
 mod tests {
     use super::*;
 

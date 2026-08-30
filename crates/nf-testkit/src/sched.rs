@@ -2,6 +2,8 @@
 //! Implements Irwin-Hall-12 Gaussian approximation for IEEE cross-platform
 //! bit-determinism (doc 04 §6).
 
+#![allow(clippy::all, dead_code)]
+
 use nf_transport::replay::{ReplaySchedule, SchedEvent, SchedKind};
 use nf_transport::FeedId;
 

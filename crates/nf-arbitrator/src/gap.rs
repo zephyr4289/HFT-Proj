@@ -6,6 +6,7 @@ use crate::types::{Event, Sink};
 
 /// Records gap evidence. A gap opens if not already open and x > W.
 #[inline]
+#[allow(clippy::too_many_arguments)]
 pub fn gap_evidence<S: Sink>(
     gap_active: &mut bool,
     gen: &mut u64,

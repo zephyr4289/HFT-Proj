@@ -70,7 +70,7 @@ pub struct MessageBlock<'a> {
 
 /// Infallible iterator (P-1): only constructible from a validated packet.
 /// Walks (pos += 2 + len, seq += 1) over bounds proven by `parse`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageBlocks<'a> {
     buf: &'a [u8],
     pos: usize,
@@ -125,7 +125,7 @@ impl<'a> ExactSizeIterator for MessageBlocks<'a> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Parsed<'a> {
     Data {
         header: Header,
@@ -171,10 +171,11 @@ pub fn parse(buf: &[u8]) -> Result<Parsed<'_>, FrameError> {
 
     let hdr = parse_header(buf)?;
 
-    if hdr.count != HEARTBEAT_COUNT && hdr.count != EOS_COUNT {
-        if hdr.seq.checked_add((hdr.count as u64) - 1).is_none() {
-            return Err(FrameError::SeqOverflow);
-        }
+    if hdr.count != HEARTBEAT_COUNT
+        && hdr.count != EOS_COUNT
+        && hdr.seq.checked_add((hdr.count as u64) - 1).is_none()
+    {
+        return Err(FrameError::SeqOverflow);
     }
 
     match hdr.count {
@@ -234,6 +235,7 @@ pub fn encode_request(session: &SessionId, from: u64, count: u16, out: &mut [u8;
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_types, clippy::disallowed_methods)]
 mod tests {
     use super::*;
 
