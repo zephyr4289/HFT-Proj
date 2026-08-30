@@ -55,7 +55,7 @@ impl CmdChannel {
     /// Odd epoch indicates write in progress; even epoch indicates stable payload.
     pub fn publish(&self, intent: RecoveryIntent, session: [u8; 10]) {
         let e = self.epoch.fetch_add(1, Ordering::AcqRel); // Becomes odd
-        debug_assert_eq!(e % 2, 0, "Concurrent publish violation on CmdChannel");
+        debug_assert_eq!(e & 1, 0, "Concurrent publish violation on CmdChannel");
 
         let p = self.payload.get();
         unsafe {
@@ -72,7 +72,7 @@ impl CmdChannel {
     /// Clears any pending intent (e.g. on session boundary).
     pub fn clear(&self, new_session: [u8; 10]) {
         let e = self.epoch.fetch_add(1, Ordering::AcqRel);
-        debug_assert_eq!(e % 2, 0);
+        debug_assert_eq!(e & 1, 0);
 
         let p = self.payload.get();
         unsafe {
@@ -95,7 +95,7 @@ impl CmdChannel {
         let mut spins = 0;
         loop {
             let e1 = self.epoch.load(Ordering::Acquire);
-            if e1 % 2 != 0 {
+            if (e1 & 1) != 0 {
                 // Writer active, spin
                 std::hint::spin_loop();
                 spins += 1;
@@ -124,7 +124,7 @@ impl CmdChannel {
     pub fn read_current(&self) -> CmdPayload {
         loop {
             let e1 = self.epoch.load(Ordering::Acquire);
-            if e1 % 2 != 0 {
+            if (e1 & 1) != 0 {
                 std::hint::spin_loop();
                 continue;
             }
