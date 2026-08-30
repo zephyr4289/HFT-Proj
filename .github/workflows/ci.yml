@@ -29,6 +29,6 @@ jobs:
           echo "Run triggered by commit: ${{ github.sha }}" > ci-logs/run-metadata.txt
           echo "Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> ci-logs/run-metadata.txt
           echo "Timestamp: $(date -u)" >> ci-logs/run-metadata.txt
-          git add ci-logs/
+          git add -f ci-logs/
           git commit -m "ci: auto-update build logs for ${{ github.sha }} [skip ci]" || true
           git push origin build-log --force

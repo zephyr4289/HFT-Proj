@@ -12,3 +12,4 @@ bin/
 .env
 .env.local
 *.log
+!ci-logs/*
