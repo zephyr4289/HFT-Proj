@@ -8,3 +8,4 @@ nf-protocol = { path = "../nf-protocol" }
 nf-transport = { path = "../nf-transport" }
 nf-arbitrator = { path = "../nf-arbitrator" }
 nf-recovery = { path = "../nf-recovery" }
+nf-testkit = { path = "../nf-testkit" }

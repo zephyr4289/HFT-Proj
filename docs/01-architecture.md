@@ -269,3 +269,4 @@ impl Sequencer {
 |---|---|---|
 | 2026-08-30 | 1.0 | Initial architecture. L1/L2 proven; C-1..C-4; scope limits S-1..S-3; layer laws LI-1..7. |
 | 2026-08-30 | 1.1 | AM-1 added: Transport trait gains `fn now_ns(&self) -> u64`. Render arena 384 KiB added to memory inventory. |
+| 2026-08-30 | 1.2 | AM-2: Gap pairing closure includes SessionBoundary; EndOfSession gains announced_next: u64; Sequencer::new() takes no args. AM-3: No-ABA claim affirmed with Clear-on-Advance Law (§4.2) mechanism. |

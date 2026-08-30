@@ -134,8 +134,9 @@ impl<'a> ReplayTransport<'a> {
     fn render_event(
         &mut self,
         ev: &SchedEvent,
-        slot: &mut [u8; ARENA_SLOT_SIZE],
+        slot_idx: usize,
     ) -> Option<u16> {
+        let slot = &mut self.arena[slot_idx];
         slot[0..10].copy_from_slice(&self.session);
         match ev.kind {
             SchedKind::Heartbeat { next_seq } => {
@@ -207,7 +208,7 @@ impl<'a> Transport for ReplayTransport<'a> {
 
             let slot_idx = batch.len();
             let slot_ptr = self.arena[slot_idx].as_ptr();
-            if let Some(frame_len) = self.render_event(&ev, &mut self.arena[slot_idx]) {
+            if let Some(frame_len) = self.render_event(&ev, slot_idx) {
                 batch.push(FrameView {
                     ptr: slot_ptr,
                     len: frame_len,

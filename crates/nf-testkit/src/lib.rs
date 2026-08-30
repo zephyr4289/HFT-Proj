@@ -2,13 +2,16 @@
 
 pub mod golden;
 pub mod sched;
+pub mod sink;
 
 #[cfg(test)]
 mod tests {
     use super::golden::{golden, golden_cross_check};
     use super::sched::{
-        build_schedule, DelayModel, DropRange, LossModel, Packetize, ReplayConfig,
+        build_schedule, DelayModel, LossModel, Packetize, ReplayConfig, SplitMix64,
     };
+    use super::sink::{ConformanceSink, HashSink};
+    use nf_arbitrator::{Sequencer, Sink};
     use nf_protocol::packet::validate_frame;
     use nf_transport::replay::{ReplayTransport, SchedKind};
     use nf_transport::{FrameBatch, Transport};
@@ -47,6 +50,8 @@ mod tests {
         assert_eq!(c_cross, 10_000);
         assert_eq!(c_sub, 10_000);
         assert_eq!(h_cross, h_sub);
+        assert_eq!(c_std, MINI_MESSAGE_COUNT);
+        assert_eq!(h_std, MINI_GOLDEN_HASH);
     }
 
     #[test]
@@ -126,7 +131,7 @@ mod tests {
         let gt = load_mini_bytes();
         let mut cfg = ReplayConfig::default();
         cfg.msgs_per_packet = Packetize::Fixed(15);
-        cfg.feeds_enabled = 1; // Feed A only for quick render test
+        cfg.feeds_enabled = 1;
         let sched = build_schedule(&gt, &cfg);
 
         let mut transport = ReplayTransport::new(&gt, sched, *b"TESTREPLAY");
@@ -162,7 +167,6 @@ mod tests {
 
         let sched = build_schedule(&gt, &cfg);
 
-        // Every message index 0..N-1 must be covered by at least one delivered packet
         let mut covered = vec![false; MINI_MESSAGE_COUNT as usize];
         for ev in &sched.events {
             if let SchedKind::Packet { first_msg, count, .. } = ev.kind {
@@ -228,13 +232,6 @@ mod tests {
         cfg.feeds_enabled = 1;
         let sched = build_schedule(&gt, &cfg);
 
-        for ev in &sched.events {
-            if let SchedKind::Packet { .. } = ev.kind {
-                // Check delay variance bounds
-                // Delay must be bounded in [mean - 6*sigma, mean + 6*sigma]
-                // 50,000 +- 60,000
-            }
-        }
         assert!(!sched.events.is_empty());
     }
 
@@ -294,5 +291,181 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_u5_w1_property_1m_ops() {
+        let mut prng = SplitMix64::new(0x1234_5678_9ABC_DEF0);
+        let mut seq = Sequencer::new();
+        let mut sink = HashSink::new();
+        let session = b"PROPSESS01";
+
+        // Anchor at seq 1
+        let mut anchor_frame = Vec::new();
+        anchor_frame.extend_from_slice(session);
+        anchor_frame.extend_from_slice(&1u64.to_be_bytes());
+        anchor_frame.extend_from_slice(&1u16.to_be_bytes());
+        let msg = [b'S', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b'O'];
+        anchor_frame.extend_from_slice(&(msg.len() as u16).to_be_bytes());
+        anchor_frame.extend_from_slice(&msg);
+        seq.ingest(&anchor_frame, 0, 1000, &mut sink);
+
+        for step in 0..1_000_000 {
+            let op_type = prng.next_u64() % 3;
+            let current_w = seq.watermark();
+
+            let (target_seq, count) = match op_type {
+                // In-order / near-W advance
+                0 => {
+                    let count = ((prng.next_u64() % 10) + 1) as u16;
+                    (current_w, count)
+                }
+                // Partial overlap
+                1 => {
+                    let offset = prng.next_u64() % 5;
+                    let first = current_w.saturating_sub(offset).max(1);
+                    let count = ((prng.next_u64() % 15) + 1) as u16;
+                    (first, count)
+                }
+                // Ahead of W (gap) within window
+                _ => {
+                    let ahead = (prng.next_u64() % 500) + 1;
+                    let first = current_w + ahead;
+                    let count = ((prng.next_u64() % 20) + 1) as u16;
+                    (first, count)
+                }
+            };
+
+            let mut frame = Vec::new();
+            frame.extend_from_slice(session);
+            frame.extend_from_slice(&target_seq.to_be_bytes());
+            frame.extend_from_slice(&count.to_be_bytes());
+            for _ in 0..count {
+                frame.extend_from_slice(&(msg.len() as u16).to_be_bytes());
+                frame.extend_from_slice(&msg);
+            }
+
+            let feed = (prng.next_u64() % 2) as u8;
+            seq.ingest(&frame, feed, 1000 + step, &mut sink);
+
+            // Invariant verification at quiescent point
+            let nonzero_lens = seq.lens().iter().filter(|&&l| l != 0).count() as u32;
+            assert_eq!(
+                seq.staged_count(),
+                nonzero_lens,
+                "W1 violation at step {}: staged_count {} != nonzero lens {}",
+                step,
+                seq.staged_count(),
+                nonzero_lens
+            );
+        }
+    }
+
+    #[test]
+    fn test_e2e_1_mini_chaos_conformance() {
+        let gt = load_mini_bytes();
+        let mut cfg = ReplayConfig::default();
+        cfg.msgs_per_packet = Packetize::MtuBound(1400);
+        cfg.loss = [
+            LossModel::Bernoulli { p_pm: 80 },
+            LossModel::Bernoulli { p_pm: 80 },
+        ];
+        cfg.delay = [
+            DelayModel::GaussianApprox {
+                mean_ns: 25_000,
+                sigma_ns: 5_000,
+            },
+            DelayModel::GaussianApprox {
+                mean_ns: 25_000,
+                sigma_ns: 5_000,
+            },
+        ];
+        cfg.guarantee_coverage = true;
+
+        let sched = build_schedule(&gt, &cfg);
+        let mut transport = ReplayTransport::new(&gt, sched, *b"CONFORMSES");
+        let mut seq = Sequencer::new();
+        let mut sink = ConformanceSink::new();
+        let mut batch = FrameBatch::new();
+
+        while transport.poll(&mut batch) > 0 {
+            let now_ns = transport.now_ns();
+            for frame in batch.frames() {
+                seq.ingest(frame.bytes(), frame.feed, now_ns, &mut sink);
+            }
+            let _ = seq.recovery_intent(now_ns);
+        }
+
+        // Conformance assertions
+        assert_eq!(sink.hash(), MINI_GOLDEN_HASH, "Golden hash must match ground truth");
+        assert_eq!(sink.count(), MINI_MESSAGE_COUNT, "Total message count must match");
+        assert_eq!(seq.watermark(), MINI_MESSAGE_COUNT + 1, "Final watermark must be N+1");
+        assert_eq!(seq.counters().total_violations, 0, "Total violations must be 0");
+        assert!(sink.gap_open_gen.is_none(), "No orphan open gaps allowed");
+    }
+
+    #[test]
+    fn test_e2e_1b_mini_chaos_determinism_double_run() {
+        let gt = load_mini_bytes();
+        let mut cfg = ReplayConfig::default();
+        cfg.seed_a = 0xCAFE_BABE_0001_0002;
+        cfg.seed_b = 0xDEAD_BEEF_0003_0004;
+        cfg.msgs_per_packet = Packetize::MtuBound(1200);
+        cfg.loss = [
+            LossModel::Bernoulli { p_pm: 100 },
+            LossModel::Bernoulli { p_pm: 100 },
+        ];
+        cfg.delay = [
+            DelayModel::GaussianApprox {
+                mean_ns: 30_000,
+                sigma_ns: 8_000,
+            },
+            DelayModel::GaussianApprox {
+                mean_ns: 30_000,
+                sigma_ns: 8_000,
+            },
+        ];
+        cfg.guarantee_coverage = true;
+
+        // Run 1
+        let (hash1, count1, gaps1) = {
+            let sched1 = build_schedule(&gt, &cfg);
+            let mut transport1 = ReplayTransport::new(&gt, sched1, *b"DETERRUN01");
+            let mut seq1 = Sequencer::new();
+            let mut sink1 = ConformanceSink::new();
+            let mut batch = FrameBatch::new();
+
+            while transport1.poll(&mut batch) > 0 {
+                let now_ns = transport1.now_ns();
+                for frame in batch.frames() {
+                    seq1.ingest(frame.bytes(), frame.feed, now_ns, &mut sink1);
+                }
+                let _ = seq1.recovery_intent(now_ns);
+            }
+            (sink1.hash(), sink1.count(), sink1.gap_opens)
+        };
+
+        // Run 2
+        let (hash2, count2, gaps2) = {
+            let sched2 = build_schedule(&gt, &cfg);
+            let mut transport2 = ReplayTransport::new(&gt, sched2, *b"DETERRUN01");
+            let mut seq2 = Sequencer::new();
+            let mut sink2 = ConformanceSink::new();
+            let mut batch = FrameBatch::new();
+
+            while transport2.poll(&mut batch) > 0 {
+                let now_ns = transport2.now_ns();
+                for frame in batch.frames() {
+                    seq2.ingest(frame.bytes(), frame.feed, now_ns, &mut sink2);
+                }
+                let _ = seq2.recovery_intent(now_ns);
+            }
+            (sink2.hash(), sink2.count(), sink2.gap_opens)
+        };
+
+        assert_eq!(hash1, hash2, "Double run hashes must be bit-identical");
+        assert_eq!(count1, count2, "Double run counts must be identical");
+        assert_eq!(gaps1, gaps2, "Double run gap counts must be identical");
+        assert_eq!(hash1, MINI_GOLDEN_HASH);
     }
 }

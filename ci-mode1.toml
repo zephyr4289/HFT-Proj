@@ -1,0 +1,11 @@
+# CI Mode-1 Chaos Replay Configuration (ED-05 §6)
+sample_path = "data/tests/sample-mini.itch"
+seed_a = 12297829382473034410
+seed_b = 12297829382473034411
+loss_a_pm = 50
+loss_b_pm = 50
+delay_mean_ns = 20000
+delay_sigma_ns = 5000
+guarantee_coverage = true
+msgs_per_packet = 1400
+session = "CHAOSSESS1"
