@@ -1,0 +1,6 @@
+[package]
+name = "nf-protocol"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

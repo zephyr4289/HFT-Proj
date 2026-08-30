@@ -1,0 +1,7 @@
+[package]
+name = "nf-arbitrator"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nf-protocol = { path = "../nf-protocol" }

@@ -1,0 +1,10 @@
+[package]
+name = "nf-engine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nf-protocol = { path = "../nf-protocol" }
+nf-transport = { path = "../nf-transport" }
+nf-arbitrator = { path = "../nf-arbitrator" }
+nf-recovery = { path = "../nf-recovery" }

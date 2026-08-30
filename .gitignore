@@ -1,0 +1,13 @@
+data/raw/
+data/sample-dev.itch
+data/tests/*
+!data/tests/sample-mini.itch
+target/
+build/
+bin/
+*.o
+*.a
+*.so
+.env
+.env.local
+*.log
