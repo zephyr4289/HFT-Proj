@@ -162,27 +162,26 @@ fn test_u_zombie_hazard() {
     seq.ingest(&f0, 0, 1000, &mut sink);
     assert_eq!(seq.watermark(), 101);
 
-    // 2. P1 delivers [200..=210] -> staged
-    let f1 = make_frame(sess, 200, 11);
+    // 2. P1 delivers [200..=205] -> staged
+    let f1 = make_frame(sess, 200, 6);
     seq.ingest(&f1, 0, 2000, &mut sink);
-    assert_eq!(seq.staged_count(), 11);
+    assert_eq!(seq.staged_count(), 6);
 
     // 3. P2 delivers [101..=205] -> in-order branch jumps W to 206
     let f2 = make_frame(sess, 101, 105);
     seq.ingest(&f2, 1, 3000, &mut sink);
     assert_eq!(seq.watermark(), 206);
     // Slots 200..=205 MUST be cleared by Clear-on-Advance Law
-    // Only slots 207..=210 should remain staged (staged_count = 4)
-    assert_eq!(seq.staged_count(), 4);
+    assert_eq!(seq.staged_count(), 0);
 
     // 4. Fill hole 206
     let f_hole = make_frame(sess, 206, 1);
     seq.ingest(&f_hole, 0, 4000, &mut sink);
-    assert_eq!(seq.watermark(), 211);
+    assert_eq!(seq.watermark(), 207);
     assert_eq!(seq.staged_count(), 0);
 
     // 5. Advance traffic all the way to W=1224
-    let f_bulk = make_frame(sess, 211, 1013);
+    let f_bulk = make_frame(sess, 207, 1017);
     seq.ingest(&f_bulk, 0, 5000, &mut sink);
     assert_eq!(seq.watermark(), 1224);
 

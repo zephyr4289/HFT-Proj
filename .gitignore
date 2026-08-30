@@ -4,8 +4,8 @@ data/tests/*
 !data/tests/sample-mini.itch
 !data/tests/mini-histogram.txt
 target/
-build/
-bin/
+/build/
+/bin/
 *.o
 *.a
 *.so

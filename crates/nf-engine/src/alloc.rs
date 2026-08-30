@@ -8,6 +8,8 @@ pub struct CountingAllocator {
     deallocs: AtomicU64,
 }
 
+pub static GLOBAL: CountingAllocator = CountingAllocator::new();
+
 impl CountingAllocator {
     pub const fn new() -> Self {
         Self {
