@@ -11,3 +11,5 @@ jobs:
       - run: cargo build --workspace --release
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - run: cargo run --release -p nf-engine --bin audit -- data/tests/sample-mini.itch | tee /tmp/h.txt
+      - run: diff /tmp/h.txt data/tests/mini-histogram.txt
