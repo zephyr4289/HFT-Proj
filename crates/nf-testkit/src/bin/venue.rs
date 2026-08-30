@@ -2,12 +2,10 @@
 //! Renders MoldUDP64 packets from schedule and sends via UDP sockets to Feed A (10000) & Feed B (10001).
 
 use nf_testkit::sched::{build_schedule, ReplayConfig};
-use nf_transport::render::render_event;
+use nf_transport::render::{render_event_standalone, Cursor};
 use std::env;
 use std::fs;
 use std::net::UdpSocket;
-use std::thread;
-use std::time::Duration;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -49,16 +47,26 @@ fn main() {
 
     let session = *b"CHAOSSESS1";
     let mut arena = [0u8; 1500];
+    let mut cursors = [Cursor::default(), Cursor::default()];
 
     println!("VENUE_SENDER starting: sending {} events", sched.events.len());
 
     let mut sent = 0usize;
     for ev in &sched.events {
-        let len = render_event(&gt, ev, &sched, session, &mut arena);
-        if len > 0 {
-            let dest = if ev.feed == 0 { dest_a } else { dest_b };
-            let _ = sock.send_to(&arena[..len], dest);
-            sent += 1;
+        let feed_idx = (ev.feed as usize) & 1;
+        if let Some(len) = render_event_standalone(
+            &gt,
+            ev,
+            &sched,
+            session,
+            &mut arena,
+            &mut cursors[feed_idx],
+        ) {
+            if len > 0 {
+                let dest = if ev.feed == 0 { dest_a } else { dest_b };
+                let _ = sock.send_to(&arena[..len], dest);
+                sent += 1;
+            }
         }
     }
 

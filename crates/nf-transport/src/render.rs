@@ -113,64 +113,86 @@ impl<'a> ReplayTransport<'a> {
         batch.len()
     }
 
-    #[inline]
-    fn render_event(&mut self, ev: &SchedEvent, slot_idx: usize) -> Option<u16> {
-        let slot = &mut self.arena[slot_idx];
+pub fn render_event_standalone(
+    gt: &[u8],
+    ev: &SchedEvent,
+    sched: &ReplaySchedule,
+    session: [u8; 10],
+    slot: &mut [u8],
+    cursor: &mut Cursor,
+) -> Option<usize> {
+    let effective_session = match sched.session_split {
+        Some((split_m, next_sess)) => match ev.kind {
+            SchedKind::Packet { first_msg, .. } if first_msg >= split_m => next_sess,
+            SchedKind::Heartbeat { .. } | SchedKind::EndOfSession { .. } => next_sess,
+            _ => session,
+        },
+        None => session,
+    };
 
-        let effective_session = match self.schedule.session_split {
-            Some((split_m, next_sess)) => match ev.kind {
-                SchedKind::Packet { first_msg, .. } if first_msg >= split_m => next_sess,
-                SchedKind::Heartbeat { .. } | SchedKind::EndOfSession { .. } => next_sess,
-                _ => self.session,
-            },
-            None => self.session,
-        };
+    if slot.len() < HEADER_LEN {
+        return None;
+    }
+    slot[0..10].copy_from_slice(&effective_session);
+    match ev.kind {
+        SchedKind::Heartbeat { next_seq } => {
+            slot[10..18].copy_from_slice(&next_seq.to_be_bytes());
+            slot[18..20].copy_from_slice(&HEARTBEAT_COUNT.to_be_bytes());
+            Some(HEADER_LEN)
+        }
+        SchedKind::EndOfSession { next_seq } => {
+            slot[10..18].copy_from_slice(&next_seq.to_be_bytes());
+            slot[18..20].copy_from_slice(&EOS_COUNT.to_be_bytes());
+            Some(HEADER_LEN)
+        }
+        SchedKind::Packet {
+            first_seq,
+            first_msg,
+            count,
+        } => {
+            slot[10..18].copy_from_slice(&first_seq.to_be_bytes());
+            slot[18..20].copy_from_slice(&count.to_be_bytes());
 
-        slot[0..10].copy_from_slice(&effective_session);
-        match ev.kind {
-            SchedKind::Heartbeat { next_seq } => {
-                slot[10..18].copy_from_slice(&next_seq.to_be_bytes());
-                slot[18..20].copy_from_slice(&HEARTBEAT_COUNT.to_be_bytes());
-                Some(HEADER_LEN as u16)
-            }
-            SchedKind::EndOfSession { next_seq } => {
-                slot[10..18].copy_from_slice(&next_seq.to_be_bytes());
-                slot[18..20].copy_from_slice(&EOS_COUNT.to_be_bytes());
-                Some(HEADER_LEN as u16)
-            }
-            SchedKind::Packet {
-                first_seq,
-                first_msg,
-                count,
-            } => {
-                slot[10..18].copy_from_slice(&first_seq.to_be_bytes());
-                slot[18..20].copy_from_slice(&count.to_be_bytes());
+            let start_pos = cursor.seek_msg(gt, first_msg)?;
 
-                let feed_idx = (ev.feed as usize) & 1;
-                let start_pos = self.cursors[feed_idx].seek_msg(self.gt, first_msg)?;
-
-                let mut cur_pos = start_pos;
-                for _ in 0..count {
-                    if cur_pos + 2 > self.gt.len() {
-                        return None;
-                    }
-                    let len = u16::from_be_bytes([self.gt[cur_pos], self.gt[cur_pos + 1]]) as usize;
-                    cur_pos += 2 + len;
-                }
-
-                let payload_len = cur_pos - start_pos;
-                let total_len = HEADER_LEN + payload_len;
-                if total_len > ARENA_SLOT_SIZE || cur_pos > self.gt.len() {
+            let mut cur_pos = start_pos;
+            for _ in 0..count {
+                if cur_pos + 2 > gt.len() {
                     return None;
                 }
-
-                slot[HEADER_LEN..total_len].copy_from_slice(&self.gt[start_pos..cur_pos]);
-                self.cursors[feed_idx].byte_offset = cur_pos;
-                self.cursors[feed_idx].msg_index = first_msg + count as u64;
-
-                Some(total_len as u16)
+                let len = u16::from_be_bytes([gt[cur_pos], gt[cur_pos + 1]]) as usize;
+                cur_pos += 2 + len;
             }
+
+            let payload_len = cur_pos - start_pos;
+            let total_len = HEADER_LEN + payload_len;
+            if total_len > slot.len() || cur_pos > gt.len() {
+                return None;
+            }
+
+            slot[HEADER_LEN..total_len].copy_from_slice(&gt[start_pos..cur_pos]);
+            cursor.byte_offset = cur_pos;
+            cursor.msg_index = first_msg + count as u64;
+
+            Some(total_len)
         }
+    }
+}
+
+impl<'a> ReplayTransport<'a> {
+    #[inline]
+    fn render_event(&mut self, ev: &SchedEvent, slot_idx: usize) -> Option<u16> {
+        let feed_idx = (ev.feed as usize) & 1;
+        let slot = &mut self.arena[slot_idx];
+        render_event_standalone(
+            self.gt,
+            ev,
+            &self.schedule,
+            self.session,
+            slot,
+            &mut self.cursors[feed_idx],
+        )
+        .map(|l| l as u16)
     }
 }
 
