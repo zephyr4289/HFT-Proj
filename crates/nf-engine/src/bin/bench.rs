@@ -173,6 +173,7 @@ fn run_sampled_256(gt: &[u8], runs: usize, sample_path: &str, cal: &nf_engine::c
             let now = transport.now_ns();
             let batch_len = batch.len();
             for (pos, frame) in batch.frames().iter().enumerate() {
+                let cur_seq = base_sink.count() + 1;
                 let mut sink_wrapper = InstrumentedSink {
                     inner: &mut base_sink,
                     hist_raw: &mut hist_raw,
@@ -180,7 +181,7 @@ fn run_sampled_256(gt: &[u8], runs: usize, sample_path: &str, cal: &nf_engine::c
                     study_ctx: &mut study_ctx,
                     cal_overhead: cal.overhead_cycles,
                     is_empty: false,
-                    msg_seq: base_sink.count() + 1,
+                    msg_seq: cur_seq,
                     batch_pos: pos,
                     batch_size: batch_len,
                     is_first_touch: false,
