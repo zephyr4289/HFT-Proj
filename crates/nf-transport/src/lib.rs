@@ -47,7 +47,7 @@ impl FrameBatch {
     }
 
     #[inline]
-    pub const fn capacity() -> usize {
+    pub const fn capacity(&self) -> usize {
         256
     }
 
