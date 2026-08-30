@@ -9,3 +9,4 @@ delay_sigma_ns = 5000
 guarantee_coverage = true
 msgs_per_packet = 1400
 session = "CHAOSSESS1"
+session_change_at_msg = 250000

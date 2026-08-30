@@ -73,6 +73,9 @@ fn load_config_file(path: &str) -> (ReplayConfig, String, [u8; 10]) {
                     s[..copy_len].copy_from_slice(&b[..copy_len]);
                     session = s;
                 }
+                "session_change_at_msg" | "split_m" => {
+                    cfg.session_change_at_msg = v.parse().ok();
+                }
                 _ => {}
             }
         }

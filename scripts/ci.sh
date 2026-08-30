@@ -25,7 +25,7 @@ diff /tmp/h.txt data/tests/mini-histogram.txt
 
 echo "=== 7. Replay Conformance & Golden Hash Check ==="
 cargo run --release -p nf-engine --bin replay -- --config ci-mode1.toml | tee /tmp/verdict.txt
-grep -q "VERDICT hash=0xF6EF154EFDE905D8 count=505849 watermark=505850 violations=0" /tmp/verdict.txt
+grep -q "VERDICT hash=0xF6EF154EFDE905D8 count=505849 watermark=255850 violations=0" /tmp/verdict.txt
 
 echo "=== 8. Zero-Allocation Window (ALLOC_DELTA=0) ==="
 ./target/release/replay --config ci-mode1.toml --alloc-window | tee /tmp/alloc.txt

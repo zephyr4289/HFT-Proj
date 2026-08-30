@@ -119,6 +119,11 @@ fn test_r2_packet_mailbox_park_drain() {
 
         let _ = producer.join();
         assert_eq!(received, total);
+        assert!(
+            mb.parks() > 0,
+            "R2 must prove that parking actually occurred on mailbox full"
+        );
+        println!("R2_PARK_COUNT={}", mb.parks());
     });
 }
 
