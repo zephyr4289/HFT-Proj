@@ -129,5 +129,5 @@ fn test_x6_malicious_frames() {
     corrupt_frame[20..22].copy_from_slice(&1500u16.to_be_bytes()); // msg length 1500 > buffer
 
     seq.ingest(&corrupt_frame, 0, 1000, &mut sink);
-    assert!(seq.counters().total_violations > 0 || seq.counters().violations > 0);
+    assert!(seq.counters().total_violations > 0);
 }
