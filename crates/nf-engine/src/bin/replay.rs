@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_types, clippy::disallowed_methods)]
+
 use nf_arbitrator::Sequencer;
 use nf_engine::alloc::GLOBAL;
 use nf_testkit::sched::{

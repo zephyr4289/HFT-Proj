@@ -1,3 +1,5 @@
+#![allow(clippy::disallowed_types, clippy::disallowed_methods)]
+
 use nf_engine::audit_stream;
 use std::env;
 use std::fs::File;
