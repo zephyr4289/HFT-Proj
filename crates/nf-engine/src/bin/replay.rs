@@ -1,7 +1,11 @@
 #![allow(clippy::disallowed_types, clippy::disallowed_methods)]
 
+use nf_arbitrator::types::DeadReason;
 use nf_arbitrator::Sequencer;
 use nf_engine::alloc::GLOBAL;
+use nf_recovery::channel::CmdChannel;
+use nf_recovery::client::RecoveryClient;
+use nf_recovery::mailbox::PacketMailbox;
 use nf_testkit::sched::{
     build_schedule, DelayModel, LossModel, Packetize, ReplayConfig,
 };
@@ -98,6 +102,7 @@ fn main() {
     let mut config_path = "ci-mode1.toml".to_string();
     let mut alloc_window = false;
     let mut startup_probe = false;
+    let mut server_port: Option<u16> = None;
 
     let mut i = 1;
     while i < args.len() {
@@ -105,6 +110,12 @@ fn main() {
             "--config" => {
                 if i + 1 < args.len() {
                     config_path = args[i + 1].clone();
+                    i += 1;
+                }
+            }
+            "--server-port" => {
+                if i + 1 < args.len() {
+                    server_port = args[i + 1].parse().ok();
                     i += 1;
                 }
             }
@@ -128,6 +139,10 @@ fn main() {
     let mut sink = ConformanceSink::new();
     let mut batch = FrameBatch::new();
 
+    let cmd_chan = CmdChannel::new();
+    let mailbox = PacketMailbox::new();
+    let mut recovery_client = server_port.map(|p| RecoveryClient::new([127, 0, 0, 1], p));
+
     if startup_probe {
         // Startup probe finishes initialization and exits cleanly for baseline strace diffing
         return;
@@ -140,12 +155,54 @@ fn main() {
         (0, 0)
     };
 
+    let mut retry_count = 0u32;
+    let mut last_pending_to = None;
+
     while transport.poll(&mut batch) > 0 {
         let now = transport.now_ns();
+
+        // 1. Drain PacketMailbox -> ingest (P-ORDER 1)
+        mailbox.drain(|pkt| {
+            seq.ingest(pkt, 0, now, &mut sink);
+        });
+
+        // 2. Poll UDP transports -> ingest (P-ORDER 2)
         for frame in batch.frames() {
             seq.ingest(frame.bytes(), frame.feed, now, &mut sink);
         }
-        let _ = seq.recovery_intent(now);
+
+        // 3. Recovery intent evaluation (P-ORDER 3)
+        if let Some(intent) = seq.recovery_intent(now) {
+            if last_pending_to != Some(intent.to_excl) {
+                last_pending_to = Some(intent.to_excl);
+                retry_count = 0;
+            } else {
+                retry_count += 1;
+                if retry_count >= 4 {
+                    seq.seal(DeadReason::RetryExhausted);
+                }
+            }
+            cmd_chan.publish(intent, session);
+        }
+
+        // 4. Step recovery client if active
+        if let Some(ref mut client) = recovery_client {
+            client.step(&mailbox, &cmd_chan);
+        }
+    }
+
+    // Drain trailing responses
+    if let Some(ref mut client) = recovery_client {
+        for _ in 0..20 {
+            client.step(&mailbox, &cmd_chan);
+            let now = transport.now_ns();
+            mailbox.drain(|pkt| {
+                seq.ingest(pkt, 0, now, &mut sink);
+            });
+            if seq.watermark() >= gt.len() as u64 {
+                break;
+            }
+        }
     }
 
     if alloc_window {

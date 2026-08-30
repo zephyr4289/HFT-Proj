@@ -34,8 +34,8 @@ grep -q "ALLOC_DELTA=0" /tmp/alloc.txt
 echo "=== 9. Kernel Syscall Strace Diff Probe ==="
 strace -e trace=mmap,brk,munmap -o /tmp/strace-base.raw ./target/release/replay --config ci-mode1.toml --startup-probe
 strace -e trace=mmap,brk,munmap -o /tmp/strace-full.raw ./target/release/replay --config ci-mode1.toml
-sed -E 's/0x[0-9a-f]+/0xADDR/g; s/^[0-9]+ //' /tmp/strace-base.raw > /tmp/strace-base.txt
-sed -E 's/0x[0-9a-f]+/0xADDR/g; s/^[0-9]+ //' /tmp/strace-full.raw > /tmp/strace-full.txt
+bash scripts/normalize_strace.sh /tmp/strace-base.raw /tmp/strace-base.txt
+bash scripts/normalize_strace.sh /tmp/strace-full.raw /tmp/strace-full.txt
 diff -u /tmp/strace-base.txt /tmp/strace-full.txt
 
 echo "=== ALL CHECKS PASSED SUCCESSFULLY ==="

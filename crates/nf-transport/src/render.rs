@@ -46,6 +46,7 @@ pub struct ReplayTransport<'a> {
     arena: Box<[[u8; ARENA_SLOT_SIZE]; ARENA_SLOTS]>,
     cursors: [Cursor; 2],
     session: [u8; 10],
+    clock_clamp: Option<u64>,
 }
 
 impl<'a> ReplayTransport<'a> {
@@ -63,7 +64,53 @@ impl<'a> ReplayTransport<'a> {
             arena: Box::new([[0u8; ARENA_SLOT_SIZE]; ARENA_SLOTS]),
             cursors: [Cursor::default(), Cursor::default()],
             session,
+            clock_clamp: None,
         }
+    }
+
+    #[inline]
+    pub fn set_clock_clamp(&mut self, clamp: Option<u64>) {
+        self.clock_clamp = clamp;
+    }
+
+    pub fn poll_clamped(&mut self, batch: &mut FrameBatch, max_vt: Option<u64>) -> usize {
+        batch.clear();
+
+        if self.event_idx >= self.schedule.events.len() {
+            return 0;
+        }
+
+        let next_vt = self.schedule.events[self.event_idx].release_vt;
+        let jump_to = match max_vt.or(self.clock_clamp) {
+            Some(clamp) => std::cmp::min(next_vt, clamp),
+            None => next_vt,
+        };
+
+        if jump_to > self.virtual_clock {
+            self.virtual_clock = jump_to;
+        }
+
+        while self.event_idx < self.schedule.events.len()
+            && batch.len() < FrameBatch::capacity()
+        {
+            let ev = self.schedule.events[self.event_idx];
+            if ev.release_vt > self.virtual_clock {
+                break;
+            }
+
+            let slot_idx = batch.len();
+            let slot_ptr = self.arena[slot_idx].as_ptr();
+            if let Some(frame_len) = self.render_event(&ev, slot_idx) {
+                batch.push(FrameView {
+                    ptr: slot_ptr,
+                    len: frame_len,
+                    feed: ev.feed,
+                });
+            }
+            self.event_idx += 1;
+        }
+
+        batch.len()
     }
 
     #[inline]
@@ -119,37 +166,7 @@ impl<'a> ReplayTransport<'a> {
 
 impl<'a> Transport for ReplayTransport<'a> {
     fn poll(&mut self, batch: &mut FrameBatch) -> usize {
-        batch.clear();
-
-        if self.event_idx >= self.schedule.events.len() {
-            return 0;
-        }
-
-        if self.schedule.events[self.event_idx].release_vt > self.virtual_clock {
-            self.virtual_clock = self.schedule.events[self.event_idx].release_vt;
-        }
-
-        while self.event_idx < self.schedule.events.len()
-            && batch.len() < FrameBatch::capacity()
-        {
-            let ev = self.schedule.events[self.event_idx];
-            if ev.release_vt > self.virtual_clock {
-                break;
-            }
-
-            let slot_idx = batch.len();
-            let slot_ptr = self.arena[slot_idx].as_ptr();
-            if let Some(frame_len) = self.render_event(&ev, slot_idx) {
-                batch.push(FrameView {
-                    ptr: slot_ptr,
-                    len: frame_len,
-                    feed: ev.feed,
-                });
-            }
-            self.event_idx += 1;
-        }
-
-        batch.len()
+        self.poll_clamped(batch, None)
     }
 
     #[inline]

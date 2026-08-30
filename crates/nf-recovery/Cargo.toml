@@ -4,4 +4,10 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+libc = "0.2"
 nf-protocol = { path = "../nf-protocol" }
+nf-arbitrator = { path = "../nf-arbitrator" }
+
+[dev-dependencies]
+nf-testkit = { path = "../nf-testkit" }
+nf-transport = { path = "../nf-transport" }

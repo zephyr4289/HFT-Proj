@@ -247,6 +247,8 @@ wall-clock dependence in replay determinism.
 | Progress timeout | 250 µs | 08 |
 | Recovery retries | 4 → SessionDead | 08 |
 | SPSC mailbox | 16 × 1500 B | 08 |
+| CmdChannel | 64 B latest-wins register (AM-4) | 08 |
+| `grace_ns` | 10 ms (aliased to resuggest window) | 08 |
 | Feeds (v1) | 2 (design is N-agnostic) | 05 |
 
 ## Appendix A — Artifact Audit Commands
@@ -275,3 +277,4 @@ sha256sum data/sample-dev.itch data/tests/sample-mini.itch
 | 2026-08-30 | 1.1 | C6 added; Appendix A expected bytes corrected to `00 0c 53 .. 4f 00 27`. Freeze reaffirmed at v1.1. |
 | 2026-08-30 | 1.2 | C7 added: ITCH 5.0 Stock Directory is 'R' (0x52, 39B); 'H' (0x48, 25B) is Stock Trading Action. Freeze reaffirmed at v1.2. |
 | 2026-08-30 | 1.3 | C8 added: Golden hash folds (len_u16_le, msg_bytes) only, dropping seq. Freeze reaffirmed at v1.3. |
+| 2026-08-30 | 1.4 | G8 release: PR-3 stage-2 zero-allocation fully discharged; AM-4 latest-wins register, AM-5 vt-grace clock clamp, ADR-0006/0007 recorded. |

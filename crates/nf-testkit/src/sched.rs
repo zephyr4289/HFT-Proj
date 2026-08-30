@@ -200,7 +200,10 @@ pub fn build_schedule(gt: &[u8], config: &ReplayConfig) -> ReplaySchedule {
     let mut cumulative_msgs = 0u64;
 
     for pkt in &packets {
-        let first_seq = pkt.first_msg + 1; // 1-based sequence
+        let first_seq = match config.session_change_at_msg {
+            Some(split_m) if pkt.first_msg >= split_m => (pkt.first_msg - split_m) + 1,
+            _ => pkt.first_msg + 1,
+        };
         let base_vt = cumulative_msgs * ns_per_msg;
         cumulative_msgs += pkt.count as u64;
 
@@ -313,6 +316,11 @@ pub fn build_schedule(gt: &[u8], config: &ReplayConfig) -> ReplaySchedule {
         .max()
         .unwrap_or(0);
 
+    let final_next_seq = match config.session_change_at_msg {
+        Some(split_m) if total_msgs >= split_m => (total_msgs - split_m) + 1,
+        _ => total_msgs + 1,
+    };
+
     for feed in 0..2 {
         if (config.feeds_enabled & (1 << feed)) != 0 {
             // Rolling heartbeats
@@ -323,28 +331,28 @@ pub fn build_schedule(gt: &[u8], config: &ReplayConfig) -> ReplaySchedule {
                         release_vt: hb_vt,
                         feed: feed as FeedId,
                         kind: SchedKind::Heartbeat {
-                            next_seq: total_msgs + 1,
+                            next_seq: final_next_seq,
                         },
                     });
                     hb_vt += config.heartbeat_interval_ns;
                 }
             }
 
-            // Terminal Heartbeat (N+1)
+            // Terminal Heartbeat (N+1 or N-m+1)
             events.push(SchedEvent {
                 release_vt: final_vt + 1000,
                 feed: feed as FeedId,
                 kind: SchedKind::Heartbeat {
-                    next_seq: total_msgs + 1,
+                    next_seq: final_next_seq,
                 },
             });
 
-            // Terminal EOS (N+1)
+            // Terminal EOS (N+1 or N-m+1)
             events.push(SchedEvent {
                 release_vt: final_vt + 2000,
                 feed: feed as FeedId,
                 kind: SchedKind::EndOfSession {
-                    next_seq: total_msgs + 1,
+                    next_seq: final_next_seq,
                 },
             });
         }

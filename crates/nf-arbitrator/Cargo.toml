@@ -8,3 +8,5 @@ nf-protocol = { path = "../nf-protocol" }
 
 [dev-dependencies]
 trybuild = "1.0"
+nf-testkit = { path = "../nf-testkit" }
+nf-transport = { path = "../nf-transport" }
