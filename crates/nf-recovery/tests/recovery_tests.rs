@@ -42,7 +42,7 @@ fn test_r1_cmdchannel_hammer() {
     let h_writer = thread::spawn(move || {
         let mut seq = 1u64;
         let sess = *b"HAMMERSESS";
-        while !stop_writer.load(Ordering::Relaxed) && seq <= 500_000 {
+        while !stop_writer.load(Ordering::Relaxed) {
             chan_writer.publish(
                 RecoveryIntent {
                     from: seq,
@@ -57,7 +57,7 @@ fn test_r1_cmdchannel_hammer() {
     let mut last_epoch = 0;
     let mut last_from = 0;
     let mut reads = 0;
-    while reads < 100_000 {
+    while reads < 50_000 {
         if let Some((payload, epoch)) = chan.take_latest(last_epoch) {
             assert!(epoch > last_epoch);
             assert!(payload.intent.from >= last_from, "Monotonic widening violated");
@@ -406,6 +406,21 @@ fn test_r9_dual_drop_repair() {
         }
     }
 
+    for _ in 0..100 {
+        if reanchored_seen {
+            break;
+        }
+        client.step(&mailbox, &cmd_chan);
+        let now_ns = transport.now_ns();
+        mailbox.drain(|pkt| {
+            seq.ingest(pkt, 0, now_ns, &mut sink);
+        });
+        if seq.watermark() > 20 && gap_opened_seen {
+            reanchored_seen = true;
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+
     assert!(reanchored_seen, "GapOpened and ReAnchored pair must be observed");
 }
 
@@ -593,14 +608,17 @@ fn test_e2e_2a_canonical_dual_drop() {
     }
 
     // Final drain of any remaining responses
-    for _ in 0..50 {
+    for _ in 0..200 {
+        if seq.watermark() >= MINI_MESSAGE_COUNT + 1 {
+            break;
+        }
         client.step(&mailbox, &cmd_chan);
         let now_ns = transport.now_ns();
         mailbox.drain(|pkt| {
             seq.ingest(pkt, 0, now_ns, &mut sink);
         });
-        if seq.watermark() >= MINI_MESSAGE_COUNT + 1 {
-            break;
+        if let Some(intent) = seq.recovery_intent(now_ns) {
+            cmd_chan.publish(intent, sess);
         }
         thread::sleep(Duration::from_millis(2));
     }

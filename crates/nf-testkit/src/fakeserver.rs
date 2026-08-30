@@ -59,111 +59,120 @@ impl FakeRetransmissionServer {
         let gt_owned = gt.to_vec();
         let stop_clone = Arc::clone(&stop_signal);
         let counters_clone = Arc::clone(&counters);
-
         let handle = thread::spawn(move || {
-            let mut req_counter = 0usize;
+            let req_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
             while !stop_clone.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         counters_clone.connections.fetch_add(1, Ordering::Relaxed);
-                        let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
-                        let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
+                        let gt_conn = gt_owned.clone();
+                        let sess_conn = sessions.clone();
+                        let stop_conn = Arc::clone(&stop_clone);
+                        let counters_conn = Arc::clone(&counters_clone);
+                        let req_cnt = Arc::clone(&req_counter);
 
-                        let mut buf = [0u8; REQUEST_LEN];
-                        while !stop_clone.load(Ordering::Relaxed) {
-                            match stream.read_exact(&mut buf) {
-                                Ok(()) => {
-                                    req_counter += 1;
-                                    counters_clone.requests_seen.fetch_add(1, Ordering::Relaxed);
+                        thread::spawn(move || {
+                            let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
+                            let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
 
-                                    let req_sess = &buf[0..10];
-                                    let req_seq = u64::from_be_bytes(buf[10..18].try_into().unwrap());
-                                    let req_count = u16::from_be_bytes(buf[18..20].try_into().unwrap());
+                            let mut buf = [0u8; REQUEST_LEN];
+                            while !stop_conn.load(Ordering::Relaxed) {
+                                match stream.read_exact(&mut buf) {
+                                    Ok(()) => {
+                                        let req_n = req_cnt.fetch_add(1, Ordering::Relaxed) + 1;
+                                        counters_conn.requests_seen.fetch_add(1, Ordering::Relaxed);
 
-                                    match fault_mode {
-                                        FaultMode::DelayMs(ms) => {
-                                            thread::sleep(Duration::from_millis(ms));
+                                        let req_sess = &buf[0..10];
+                                        let req_seq = u64::from_be_bytes(buf[10..18].try_into().unwrap());
+                                        let req_count = u16::from_be_bytes(buf[18..20].try_into().unwrap());
+
+                                        match fault_mode {
+                                            FaultMode::DelayMs(ms) => {
+                                                thread::sleep(Duration::from_millis(ms));
+                                            }
+                                            FaultMode::CloseOnRequest(n) => {
+                                                if req_n == n {
+                                                    counters_conn.faults_injected.fetch_add(1, Ordering::Relaxed);
+                                                    break;
+                                                }
+                                            }
+                                            FaultMode::IgnoreRequest(n) => {
+                                                if req_n == n {
+                                                    counters_conn.faults_injected.fetch_add(1, Ordering::Relaxed);
+                                                    continue;
+                                                }
+                                            }
+                                            _ => {}
                                         }
-                                        FaultMode::CloseOnRequest(n) => {
-                                            if req_counter == n {
-                                                counters_clone.faults_injected.fetch_add(1, Ordering::Relaxed);
+
+                                        // Find matching session truth
+                                        let truth = sess_conn.iter().find(|s| &s.session_id == req_sess);
+                                        let session_truth = match truth {
+                                            Some(t) => t,
+                                            None => {
+                                                counters_conn.faults_injected.fetch_add(1, Ordering::Relaxed);
                                                 break;
                                             }
-                                        }
-                                        FaultMode::IgnoreRequest(n) => {
-                                            if req_counter == n {
-                                                counters_clone.faults_injected.fetch_add(1, Ordering::Relaxed);
-                                                continue;
+                                        };
+
+                                        let count_to_serve = match fault_mode {
+                                            FaultMode::TruncateAfter(k) => {
+                                                counters_conn.faults_injected.fetch_add(1, Ordering::Relaxed);
+                                                std::cmp::min(req_count, k)
                                             }
-                                        }
-                                        _ => {}
-                                    }
+                                            _ => req_count,
+                                        };
 
-                                    // Find matching session truth
-                                    let truth = sessions.iter().find(|s| &s.session_id == req_sess);
-                                    let session_truth = match truth {
-                                        Some(t) => t,
-                                        None => {
-                                            counters_clone.faults_injected.fetch_add(1, Ordering::Relaxed);
+                                        let effective_sess = match fault_mode {
+                                            FaultMode::WrongSession => {
+                                                counters_conn.faults_injected.fetch_add(1, Ordering::Relaxed);
+                                                *b"WRONGSESS1"
+                                            }
+                                            _ => session_truth.session_id,
+                                        };
+
+                                        // Serve requested messages
+                                        let packets = pack_response_packets(
+                                            &gt_conn,
+                                            &effective_sess,
+                                            session_truth,
+                                            req_seq,
+                                            count_to_serve,
+                                        );
+
+                                        let mut is_first = true;
+                                        for pkt in packets {
+                                            if fault_mode == FaultMode::DuplicateFirst && is_first {
+                                                counters_conn.faults_injected.fetch_add(1, Ordering::Relaxed);
+                                                let _ = send_framed_packet(&mut stream, &pkt);
+                                                counters_conn.packets_served.fetch_add(1, Ordering::Relaxed);
+                                            }
+                                            is_first = false;
+
+                                            if send_framed_packet(&mut stream, &pkt).is_err() {
+                                                break;
+                                            }
+                                            counters_conn.packets_served.fetch_add(1, Ordering::Relaxed);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        if e.kind() != std::io::ErrorKind::WouldBlock
+                                            && e.kind() != std::io::ErrorKind::TimedOut
+                                        {
                                             break;
                                         }
-                                    };
-
-                                    let count_to_serve = match fault_mode {
-                                        FaultMode::TruncateAfter(k) => {
-                                            counters_clone.faults_injected.fetch_add(1, Ordering::Relaxed);
-                                            std::cmp::min(req_count, k)
-                                        }
-                                        _ => req_count,
-                                    };
-
-                                    let effective_sess = match fault_mode {
-                                        FaultMode::WrongSession => {
-                                            counters_clone.faults_injected.fetch_add(1, Ordering::Relaxed);
-                                            *b"WRONGSESS1"
-                                        }
-                                        _ => session_truth.session_id,
-                                    };
-
-                                    // Serve requested messages
-                                    let packets = pack_response_packets(
-                                        &gt_owned,
-                                        &effective_sess,
-                                        session_truth,
-                                        req_seq,
-                                        count_to_serve,
-                                    );
-
-                                    let mut is_first = true;
-                                    for pkt in packets {
-                                        if fault_mode == FaultMode::DuplicateFirst && is_first {
-                                            counters_clone.faults_injected.fetch_add(1, Ordering::Relaxed);
-                                            let _ = send_framed_packet(&mut stream, &pkt);
-                                            counters_clone.packets_served.fetch_add(1, Ordering::Relaxed);
-                                        }
-                                        is_first = false;
-
-                                        if send_framed_packet(&mut stream, &pkt).is_err() {
-                                            break;
-                                        }
-                                        counters_clone.packets_served.fetch_add(1, Ordering::Relaxed);
-                                    }
-                                }
-                                Err(e) => {
-                                    if e.kind() != std::io::ErrorKind::WouldBlock
-                                        && e.kind() != std::io::ErrorKind::TimedOut
-                                    {
-                                        break;
                                     }
                                 }
                             }
-                        }
+                        });
                     }
                     Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(2));
                     }
-                    Err(_) => break,
+                    Err(_) => {
+                        break;
+                    }
                 }
             }
         });
