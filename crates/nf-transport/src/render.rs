@@ -112,6 +112,7 @@ impl<'a> ReplayTransport<'a> {
 
         batch.len()
     }
+}
 
 pub fn render_event_standalone(
     gt: &[u8],
