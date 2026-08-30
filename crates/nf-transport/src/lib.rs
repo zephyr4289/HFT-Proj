@@ -1,4 +1,6 @@
+pub mod render;
 pub mod replay;
+pub mod sched_types;
 
 pub type FeedId = u8;
 

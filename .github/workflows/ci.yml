@@ -16,3 +16,33 @@ jobs:
       - run: diff /tmp/h.txt data/tests/mini-histogram.txt
       - run: cargo run --release -p nf-engine --bin replay -- --config ci-mode1.toml | tee /tmp/verdict.txt
       - run: grep -q "VERDICT hash=0xF6EF154EFDE905D8 count=505849 watermark=505850 violations=0" /tmp/verdict.txt
+
+  alloc-lane:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo build --release -p nf-engine
+      - run: ./target/release/replay --config ci-mode1.toml --alloc-window | tee /tmp/alloc.txt
+      - run: grep -q "ALLOC_DELTA=0" /tmp/alloc.txt
+
+  strace-lane:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y strace
+      - run: cargo build --release -p nf-engine
+      - run: |
+          strace -f -e trace=mmap,brk,munmap -o base.txt ./target/release/replay --startup-probe
+          strace -f -e trace=mmap,brk,munmap -o full.txt ./target/release/replay --config ci-mode1.toml
+          diff base.txt full.txt
+
+  lint-lane:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy }
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: "! cargo clippy --manifest-path tests/lint_fixture/Cargo.toml -- -D warnings"

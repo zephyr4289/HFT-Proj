@@ -1,0 +1,23 @@
+# Clippy configuration for zero-allocation enforcement (doc 07 §3 L2)
+
+disallowed-types = [
+    { path = "std::vec::Vec", reason = "Tier-F zero-allocation ban" },
+    { path = "alloc::vec::Vec", reason = "Tier-F zero-allocation ban" },
+    { path = "std::string::String", reason = "Tier-F zero-allocation ban" },
+    { path = "alloc::string::String", reason = "Tier-F zero-allocation ban" },
+    { path = "std::collections::HashMap", reason = "Tier-F zero-allocation ban" },
+    { path = "std::collections::HashSet", reason = "Tier-F zero-allocation ban" },
+    { path = "std::collections::BTreeMap", reason = "Tier-F zero-allocation ban" },
+    { path = "std::collections::BTreeSet", reason = "Tier-F zero-allocation ban" },
+    { path = "std::path::PathBuf", reason = "Tier-F zero-allocation ban" },
+    { path = "std::rc::Rc", reason = "Tier-F zero-allocation ban" },
+    { path = "alloc::rc::Rc", reason = "Tier-F zero-allocation ban" },
+    { path = "std::sync::Arc", reason = "Tier-F zero-allocation ban" },
+    { path = "alloc::sync::Arc", reason = "Tier-F zero-allocation ban" },
+]
+
+disallowed-methods = [
+    { path = "std::string::ToString::to_string", reason = "Tier-M zero-allocation hot-loop ban" },
+    { path = "alloc::string::ToString::to_string", reason = "Tier-M zero-allocation hot-loop ban" },
+    { path = "alloc::borrow::ToOwned::to_owned", reason = "Tier-M zero-allocation hot-loop ban" },
+]

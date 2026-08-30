@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![cfg_attr(not(test), deny(clippy::disallowed_types))]
 
 pub mod itch5;
 pub mod moldudp64;

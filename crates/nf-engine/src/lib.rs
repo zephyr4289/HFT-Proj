@@ -1,5 +1,7 @@
 //! Engine loop, thread pinning, and end-to-end wiring.
 
+pub mod alloc;
+
 use nf_protocol::itch5;
 use std::io::Read;
 
