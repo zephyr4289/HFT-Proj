@@ -53,7 +53,7 @@ impl StaticHistogram {
             val as usize
         } else {
             let log = (63 - val.leading_zeros()) as usize; // 10..26
-            if log >= 10 && log < 26 {
+            if (10..26).contains(&log) {
                 let band = log - 10;
                 let base = 1u64 << log;
                 let offset = val - base;
