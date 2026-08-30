@@ -9,53 +9,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: clippy }
-      - run: sudo apt-get update && sudo apt-get install -y strace
 
-      - name: Setup Log Directory
-        run: mkdir -p $RUNNER_TEMP/ci-logs
-
-      - name: 1. Mini Sample SHA256 Check
+      - name: Run CI Suite with Full Log Capture
+        id: ci_run
         run: |
-          echo "5e347abbaa69f12226a6506e875f51633af690b3fc890d9d20a7213fe73275c9  data/tests/sample-mini.itch" | sha256sum -c - 2>&1 | tee $RUNNER_TEMP/ci-logs/01-sha256.log
+          set -o pipefail
+          ./scripts/ci.sh 2>&1 | tee /tmp/ci_full_output.log
 
-      - name: 2. Build Workspace Release
-        run: cargo build --workspace --release 2>&1 | tee $RUNNER_TEMP/ci-logs/02-build.log
-
-      - name: 3. Clippy Workspace
-        run: cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee $RUNNER_TEMP/ci-logs/03-clippy.log
-
-      - name: 4. Negative Lint Tripwire Test
-        run: |
-          (! cargo clippy --manifest-path tests/lint_fixture/Cargo.toml -- -D warnings 2>&1) | tee $RUNNER_TEMP/ci-logs/04-lint-tripwire.log
-
-      - name: 5. Unit & Conformance Tests
-        run: |
-          TRYBUILD=overwrite cargo test --workspace -- --include-ignored 2>&1 | tee $RUNNER_TEMP/ci-logs/05-tests.log
-
-      - name: 6. Full Day Audit & Histogram Diff
-        run: |
-          cargo run --release -p nf-engine --bin audit -- data/tests/sample-mini.itch 2>&1 | tee /tmp/h.txt $RUNNER_TEMP/ci-logs/06-audit.log
-          diff /tmp/h.txt data/tests/mini-histogram.txt 2>&1 | tee $RUNNER_TEMP/ci-logs/06-histogram-diff.log
-
-      - name: 7. Replay Conformance & Golden Hash Check
-        run: |
-          cargo run --release -p nf-engine --bin replay -- --config ci-mode1.toml 2>&1 | tee /tmp/verdict.txt $RUNNER_TEMP/ci-logs/07-replay-verdict.log
-          grep -q "VERDICT hash=0xF6EF154EFDE905D8 count=505849 watermark=505850 violations=0" /tmp/verdict.txt
-
-      - name: 8. Zero-Allocation Window (ALLOC_DELTA=0)
-        run: |
-          ./target/release/replay --config ci-mode1.toml --alloc-window 2>&1 | tee /tmp/alloc.txt $RUNNER_TEMP/ci-logs/08-alloc-window.log
-          grep -q "ALLOC_DELTA=0" /tmp/alloc.txt
-
-      - name: 9. Kernel Syscall Strace Diff Probe
-        run: |
-          strace -f -e trace=mmap,brk,munmap -o $RUNNER_TEMP/ci-logs/strace-base.txt ./target/release/replay --startup-probe
-          strace -f -e trace=mmap,brk,munmap -o $RUNNER_TEMP/ci-logs/strace-full.txt ./target/release/replay --config ci-mode1.toml
-          diff $RUNNER_TEMP/ci-logs/strace-base.txt $RUNNER_TEMP/ci-logs/strace-full.txt 2>&1 | tee $RUNNER_TEMP/ci-logs/09-strace-diff.log
-
-      - name: Auto-push Logs to build-log Branch
+      - name: Auto-push Execution Logs to build-log Branch
         if: always()
         run: |
           git config --global user.name "github-actions[bot]"
@@ -63,7 +24,8 @@ jobs:
           git fetch origin || true
           git checkout -B build-log
           mkdir -p ci-logs
-          cp -r $RUNNER_TEMP/ci-logs/* ci-logs/ 2>/dev/null || true
+          cp /tmp/ci_full_output.log ci-logs/ 2>/dev/null || true
+          cp /tmp/*.txt ci-logs/ 2>/dev/null || true
           echo "Run triggered by commit: ${{ github.sha }}" > ci-logs/run-metadata.txt
           echo "Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> ci-logs/run-metadata.txt
           echo "Timestamp: $(date -u)" >> ci-logs/run-metadata.txt
