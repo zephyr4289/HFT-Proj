@@ -28,10 +28,12 @@ Rule:      Timing artifacts are STATISTICAL — sanity-gated, never
 
 | Claim | Evidence required | Basis |
 |---|---|---|
-| "≥ 10M msg/s sustained, single core" | §6 sustained definition, 5-run median, reference hardware, URL | PR-1 |
-| "p50 < 60 cyc, p99 < 150 cyc" | replay-core histogram (§3), 5-run median, URL | PR-2 |
+| "≥ 10M msg/s sustained, single core" | §6 sustained definition, 5-run median, un-instrumented build, reference hardware, URL | PR-1 |
+| "p50 < 60 cyc, p99 < 150 cyc" | replay-core per-message histogram (§3, P2-L1), 5-run median, URL | PR-2 |
 | "zero allocations" | already machine law (doc 07 lanes) — bench changes nothing | PR-3 |
 | NOT CLAIMED, ever | FPGA-tier latency; real-NIC zero-copy; vendor comparisons | NG-10 |
+
+**PR-1 Measurement Law:** PR-1 throughput is evaluated strictly on the un-instrumented build via wall-clock × message count over the full dataset. Instrumented builds report throughput only for tax quantification and rate reconciliation (P2-L3).
 
 **Vendor comparison law:** we compare against our own PR-4 budgets and
 nothing else. Comparing our VM-measured numbers to a vendor's marketing
