@@ -116,7 +116,17 @@ impl<'a> ReplayTransport<'a> {
     #[inline]
     fn render_event(&mut self, ev: &SchedEvent, slot_idx: usize) -> Option<u16> {
         let slot = &mut self.arena[slot_idx];
-        slot[0..10].copy_from_slice(&self.session);
+
+        let effective_session = match self.schedule.session_split {
+            Some((split_m, next_sess)) => match ev.kind {
+                SchedKind::Packet { first_msg, .. } if first_msg >= split_m => next_sess,
+                SchedKind::Heartbeat { .. } | SchedKind::EndOfSession { .. } => next_sess,
+                _ => self.session,
+            },
+            None => self.session,
+        };
+
+        slot[0..10].copy_from_slice(&effective_session);
         match ev.kind {
             SchedKind::Heartbeat { next_seq } => {
                 slot[10..18].copy_from_slice(&next_seq.to_be_bytes());

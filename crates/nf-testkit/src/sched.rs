@@ -361,5 +361,12 @@ pub fn build_schedule(gt: &[u8], config: &ReplayConfig) -> ReplaySchedule {
     // 4. Sort by total order law
     events.sort();
 
-    ReplaySchedule { events }
+    let session_split = config.session_change_at_msg.map(|m| {
+        (m, *b"SPLITSESS2")
+    });
+
+    ReplaySchedule {
+        events,
+        session_split,
+    }
 }

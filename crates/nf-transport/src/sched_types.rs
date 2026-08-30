@@ -67,4 +67,5 @@ impl PartialOrd for SchedEvent {
 #[derive(Debug, Clone, Default)]
 pub struct ReplaySchedule {
     pub events: Vec<SchedEvent>,
+    pub session_split: Option<(u64, [u8; 10])>,
 }
