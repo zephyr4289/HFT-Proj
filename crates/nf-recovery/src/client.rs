@@ -221,7 +221,9 @@ impl RecoveryClient {
             // INV-R5: Stale-session guard
             let current_cmd = cmd_chan.read_current();
             if pkt.len() >= 10 && pkt[0..10] == current_cmd.session {
-                mailbox.push_park(pkt);
+                if !mailbox.try_push(pkt) {
+                    break;
+                }
                 self.counters.packets_forwarded += 1;
             } else {
                 self.counters.stale_session_dropped += 1;

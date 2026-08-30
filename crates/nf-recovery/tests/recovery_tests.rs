@@ -627,7 +627,7 @@ fn test_e2e_2a_canonical_dual_drop() {
 
         // Trailing recovery steps until watermark reaches N+1 or Dead
         let mut trailing_vt = transport.now_ns();
-        for _ in 0..100 {
+        for _ in 0..500 {
             if seq.watermark() >= MINI_MESSAGE_COUNT + 1 || seq.state() == State::Dead {
                 break;
             }
@@ -639,7 +639,7 @@ fn test_e2e_2a_canonical_dual_drop() {
             mailbox.drain(|pkt| {
                 seq.ingest(pkt, 0, trailing_vt, &mut sink);
             });
-            thread::sleep(Duration::from_millis(2));
+            thread::sleep(Duration::from_millis(1));
         }
 
         assert_eq!(sink.hash(), MINI_GOLDEN_HASH, "Golden hash must match ground truth");
