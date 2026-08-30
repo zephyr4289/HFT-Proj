@@ -168,7 +168,7 @@ fn run_engine<T: Transport>(
     let mut seq = Sequencer::new();
     let mut sink = ConformanceSink::new();
     let mut batch = FrameBatch::new();
-    let mut rec_batch = FrameBatch::new();
+    let mut rec_slot = [0u8; 1500];
 
     let mut recovery_client = server_port.map(|p| RecoveryClient::new([127, 0, 0, 1], p));
 
@@ -194,10 +194,8 @@ fn run_engine<T: Transport>(
 
         // 1. Poll UDP recovery socket -> ingest (P-ORDER 1)
         if let Some(ref mut client) = recovery_client {
-            rec_batch.clear();
-            client.poll_frames(&mut rec_batch);
-            for frame in rec_batch.frames() {
-                seq.ingest(frame.bytes(), frame.feed, now, &mut sink);
+            while let Some(len) = client.recv_packet(&mut rec_slot) {
+                seq.ingest(&rec_slot[..len], 2, now, &mut sink);
             }
         }
 

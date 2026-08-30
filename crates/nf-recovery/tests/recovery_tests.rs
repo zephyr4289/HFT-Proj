@@ -150,14 +150,12 @@ fn test_r3_inv_r5_wrong_session() {
 
         let mut seq = Sequencer::new();
         let mut sink = ConformanceSink::new();
-        let mut batch = FrameBatch::new();
+        let mut rec_slot = [0u8; 1500];
 
         for _ in 0..50 {
-            client.poll_frames(&mut batch);
-            for frame in batch.frames() {
-                seq.ingest(frame.bytes(), frame.feed, 1000, &mut sink);
+            while let Some(len) = client.recv_packet(&mut rec_slot) {
+                seq.ingest(&rec_slot[..len], 2, 1000, &mut sink);
             }
-            batch.clear();
             if seq.counters().sessions > 0 {
                 break;
             }
@@ -225,15 +223,14 @@ fn test_r5_partial_fill_truncate_after() {
         seq.ingest(&f1, 0, 2000, &mut sink);
 
         let mut vt = 1000 + 300_000;
+        let mut rec_slot = [0u8; 1500];
         for _ in 0..100 {
             if let Some(intent) = seq.recovery_intent(vt) {
                 let count = (intent.to_excl - intent.from) as u16;
                 client.send_request(&sess, intent.from, count);
             }
-            batch.clear();
-            client.poll_frames(&mut batch);
-            for frame in batch.frames() {
-                seq.ingest(frame.bytes(), frame.feed, vt, &mut sink);
+            while let Some(len) = client.recv_packet(&mut rec_slot) {
+                seq.ingest(&rec_slot[..len], 2, vt, &mut sink);
             }
             vt += 10_000_000;
             if seq.watermark() >= 22 {
@@ -356,13 +353,11 @@ fn test_r8_duplicate_first() {
 
         let mut seq = Sequencer::new();
         let mut sink = ConformanceSink::new();
-        let mut batch = FrameBatch::new();
+        let mut rec_slot = [0u8; 1500];
 
         for _ in 0..100 {
-            batch.clear();
-            client.poll_frames(&mut batch);
-            for frame in batch.frames() {
-                seq.ingest(frame.bytes(), frame.feed, 1000, &mut sink);
+            while let Some(len) = client.recv_packet(&mut rec_slot) {
+                seq.ingest(&rec_slot[..len], 2, 1000, &mut sink);
             }
             if seq.watermark() >= 20 {
                 break;
@@ -407,7 +402,7 @@ fn test_r9_dual_drop_repair() {
         let mut seq = Sequencer::new();
         let mut sink = ConformanceSink::new();
         let mut batch = FrameBatch::new();
-        let mut rec_batch = FrameBatch::new();
+        let mut rec_slot = [0u8; 1500];
 
         let mut client = RecoveryClient::new([127, 0, 0, 1], server.port());
 
@@ -427,10 +422,8 @@ fn test_r9_dual_drop_repair() {
                 client.send_request(&sess, intent.from, count);
             }
 
-            rec_batch.clear();
-            client.poll_frames(&mut rec_batch);
-            for frame in rec_batch.frames() {
-                seq.ingest(frame.bytes(), frame.feed, now_ns, &mut sink);
+            while let Some(len) = client.recv_packet(&mut rec_slot) {
+                seq.ingest(&rec_slot[..len], 2, now_ns, &mut sink);
             }
 
             if sink.gap_open_gen.is_some() {
@@ -599,16 +592,15 @@ fn test_e2e_2a_canonical_dual_drop() {
         let mut batch = FrameBatch::new();
         let mut rec_batch = FrameBatch::new();
 
+        let mut rec_slot = [0u8; 1500];
         let mut client = RecoveryClient::new([127, 0, 0, 1], server.port());
 
         while transport.poll(&mut batch) > 0 {
             let now_ns = transport.now_ns();
 
             // 1. Ingest recovery frames (P-ORDER 1)
-            rec_batch.clear();
-            client.poll_frames(&mut rec_batch);
-            for frame in rec_batch.frames() {
-                seq.ingest(frame.bytes(), frame.feed, now_ns, &mut sink);
+            while let Some(len) = client.recv_packet(&mut rec_slot) {
+                seq.ingest(&rec_slot[..len], 2, now_ns, &mut sink);
             }
 
             // 2. Ingest multicast frames (P-ORDER 2)
@@ -634,10 +626,8 @@ fn test_e2e_2a_canonical_dual_drop() {
                 let count = (intent.to_excl - intent.from) as u16;
                 client.send_request(&sess, intent.from, count);
             }
-            rec_batch.clear();
-            client.poll_frames(&mut rec_batch);
-            for frame in rec_batch.frames() {
-                seq.ingest(frame.bytes(), frame.feed, trailing_vt, &mut sink);
+            while let Some(len) = client.recv_packet(&mut rec_slot) {
+                seq.ingest(&rec_slot[..len], 2, trailing_vt, &mut sink);
             }
             thread::sleep(Duration::from_millis(1));
         }

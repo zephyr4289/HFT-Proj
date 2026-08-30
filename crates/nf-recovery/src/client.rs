@@ -5,8 +5,6 @@ use crate::channel::CmdChannel;
 use crate::mailbox::PacketMailbox;
 use crate::types::*;
 use nf_protocol::moldudp64::{encode_request, REQUEST_LEN};
-use nf_transport::{FrameBatch, FrameView};
-use std::sync::atomic::AtomicBool;
 
 pub const FEED_R: u8 = 2;
 
@@ -22,7 +20,6 @@ pub struct RecoveryClient {
     port: u16,
     fd: Option<i32>,
     state: ClientState,
-    arena: Box<[[u8; 1500]; 256]>,
     counters: RecoveryCounters,
 }
 
@@ -61,7 +58,6 @@ impl RecoveryClient {
             } else {
                 ClientState::Disconnected
             },
-            arena: Box::new([[0u8; 1500]; 256]),
             counters: RecoveryCounters::default(),
         }
     }
@@ -96,38 +92,26 @@ impl RecoveryClient {
         }
     }
 
-    pub fn poll_frames(&mut self, batch: &mut FrameBatch) -> usize {
-        let mut count = 0;
+    pub fn recv_packet(&mut self, buf: &mut [u8]) -> Option<usize> {
         if let Some(fd) = self.fd {
-            while batch.len() < FrameBatch::capacity() && count < 256 {
-                let slot = &mut self.arena[count];
-                let n = unsafe {
-                    libc::recv(
-                        fd,
-                        slot.as_mut_ptr() as *mut libc::c_void,
-                        slot.len(),
-                        0,
-                    )
-                };
-                if n <= 0 {
-                    break;
-                }
+            let n = unsafe {
+                libc::recv(
+                    fd,
+                    buf.as_mut_ptr() as *mut libc::c_void,
+                    buf.len(),
+                    0,
+                )
+            };
+            if n > 0 {
                 self.counters.packets_received += 1;
-                batch.push(FrameView {
-                    ptr: slot.as_ptr(),
-                    len: n as u16,
-                    feed: FEED_R,
-                });
-                count += 1;
+                return Some(n as usize);
             }
         }
-        count
+        None
     }
 
     // Retained for testkit backward compatibility
-    pub fn poll(&mut self, _cmd_chan: &CmdChannel, _mailbox: &PacketMailbox) {
-        // In doc 08 v2.0, recovery uses non-blocking poll_frames directly on Thread H
-    }
+    pub fn poll(&mut self, _cmd_chan: &CmdChannel, _mailbox: &PacketMailbox) {}
 
     pub fn disconnect(&mut self, _cmd_chan: &CmdChannel, _status: u32) {
         if let Some(fd) = self.fd.take() {
