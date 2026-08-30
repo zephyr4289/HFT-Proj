@@ -120,9 +120,10 @@ pub enum SchedKind {
 
 ---
 
-## 7. TH-1 Harness Termination
+## 7. TH-1 Harness Termination & AM-6 Venue Realism
 
 Builder appends rolling heartbeats, terminal heartbeat ($N+1$), and EOS ($N+1$) per feed.
+- **AM-6 Venue Realism (Tail-Drop Race Resolution)**: Terminal EOS per feed is scheduled at `terminal_heartbeat_vt + eos_lead_ns`, where `eos_lead_ns = 50_000_000` (50 ms, $\ge 250\mu s\text{ trigger} + 4 \times 10\text{ ms grace} + \text{slack}$). Rationale: real venues heartbeat for ~1s before ending a session; modeling this ensures honest venue dynamics and provides recovery its lawful virtual-time budget.
 
 ---
 
@@ -152,3 +153,4 @@ for msg in messages:
 |---|---|---|
 | 2026-08-30 | 1.0 | Initial replay fabricator, Irwin-Hall determinism model, ReplayTransport arena. |
 | 2026-08-30 | 1.1 | C8 applied: golden hash folds (len_le \|\| msg_bytes) only, dropping seq. Pinned mini hash updated to `0xF6EF_154E_FDE9_05D8`. |
+| 2026-08-30 | 1.2 | AM-6 applied: EOS scheduled with 50 ms lead time after terminal heartbeat, resolving tail-drop race. |

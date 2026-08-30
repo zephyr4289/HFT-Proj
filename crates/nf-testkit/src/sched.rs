@@ -339,17 +339,19 @@ pub fn build_schedule(gt: &[u8], config: &ReplayConfig) -> ReplaySchedule {
             }
 
             // Terminal Heartbeat (N+1 or N-m+1)
+            let thb_vt = final_vt + 1000;
             events.push(SchedEvent {
-                release_vt: final_vt + 1000,
+                release_vt: thb_vt,
                 feed: feed as FeedId,
                 kind: SchedKind::Heartbeat {
                     next_seq: final_next_seq,
                 },
             });
 
-            // Terminal EOS (N+1 or N-m+1)
+            // AM-6: Terminal EOS scheduled at thb_vt + 50ms (>= 250us trigger + 4x10ms grace + slack)
+            let eos_lead_ns = 50_000_000u64;
             events.push(SchedEvent {
-                release_vt: final_vt + 2000,
+                release_vt: thb_vt + eos_lead_ns,
                 feed: feed as FeedId,
                 kind: SchedKind::EndOfSession {
                     next_seq: final_next_seq,

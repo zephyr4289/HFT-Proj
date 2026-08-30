@@ -110,6 +110,14 @@ apply(cmd):
 
 Notes that are law: **no `std::net`** (io::Error construction allocates on error paths; raw errno ints only — this **resolves doc 01 R-1** and is recorded as ADR-0006). **Resync on malformed stream is forbidden** — an oversize length means the stream is untrustworthy; disconnect and let intents re-drive. **Requests are never queued**: one outstanding logical range (the register's latest); superseded ranges are simply never sent. Duplicate service (two overlapping requests) is harmless — C-1 kills the overlap at ingest.
 
+## 4a. Loop Termination Law (engine binary & test harness)
+
+The engine loop — in the binary *and* across test harnesses — runs until:
+$$\text{sequencer.state} \in \{\text{ENDED}, \text{DEAD}\}$$
+plus (multi-session) schedule events remaining in transport.
+
+ENDED-clean, ENDED-unclean (`final_wm < announced_next`), and DEAD are all *terminal outcomes asserted against expectations* — never conditions to spin past. One universal termination rule everywhere guarantees that harness semantics cannot diverge from engine semantics (P-ORDER's twin: the poll order law and the loop termination law).
+
 ## 5. Retry & SessionDead Semantics (deterministic — hot thread owns them)
 
 - **Retry counting lives in Thread H**, not R. Counter `intent_emissions` resets when `pending_to` widens; each re-emission (resuggest window elapsed, no W progress) increments.

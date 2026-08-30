@@ -159,7 +159,9 @@ fn main() {
     let mut retry_count = 0u32;
     let mut last_pending_to = None;
 
-    while transport.poll(&mut batch) > 0 {
+    while (transport.poll(&mut batch) > 0 || seq.state() == nf_arbitrator::State::Contig || seq.state() == nf_arbitrator::State::Init)
+        && seq.state() != nf_arbitrator::State::Dead
+    {
         let now = transport.now_ns();
 
         // 1. Drain PacketMailbox -> ingest (P-ORDER 1)
@@ -181,6 +183,7 @@ fn main() {
                 retry_count += 1;
                 if retry_count >= 4 {
                     seq.seal(DeadReason::RetryExhausted, &mut sink);
+                    break;
                 }
             }
             cmd_chan.publish(intent, session);
@@ -190,19 +193,9 @@ fn main() {
         if let Some(ref mut client) = recovery_client {
             client.step(&mailbox, &cmd_chan);
         }
-    }
 
-    // Drain trailing responses
-    if let Some(ref mut client) = recovery_client {
-        for _ in 0..20 {
-            client.step(&mailbox, &cmd_chan);
-            let now = transport.now_ns();
-            mailbox.drain(|pkt| {
-                seq.ingest(pkt, 0, now, &mut sink);
-            });
-            if seq.watermark() >= gt.len() as u64 {
-                break;
-            }
+        if seq.state() == nf_arbitrator::State::Ended {
+            break;
         }
     }
 

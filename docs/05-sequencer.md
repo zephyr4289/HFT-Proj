@@ -390,3 +390,4 @@ first, the sequencer last.
 |---|---|---|
 | 2026-08-30 | 1.0 | Initial: normative ingest, W1 + zombie hazard + clear-on-advance law, event grammar, gen law, session lifecycle, intent mechanism, U1..U14, E2E-1. |
 | 2026-08-30 | 1.1 | C8 applied: E2E-1 pass condition updated to byte-stream golden hash (0xF6EF154EFDE905D8), watermark under split at m asserted as N-m+1 (or N+1 un-split). |
+| 2026-08-30 | 1.2 | A-1 & A-2 resolved: (b) Fabricator session split restarts sequence at 1 in S2 (`first_seq = (pkt.first_msg - split_m) + 1`), yielding lawful final watermark `final_wm == N - m + 1`. U-ZOMBIE §4.1 verbatim trace verified passing. |
