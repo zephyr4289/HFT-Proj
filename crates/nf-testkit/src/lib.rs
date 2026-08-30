@@ -187,22 +187,26 @@ mod tests {
                 .iter()
                 .filter(|e| e.feed == feed)
                 .collect();
-            assert!(feed_events.len() >= 2);
-            let last_ev = feed_events[feed_events.len() - 1];
-            let prev_ev = feed_events[feed_events.len() - 2];
+            assert!(feed_events.len() >= 6);
 
-            match last_ev.kind {
-                SchedKind::EndOfSession { next_seq } => {
-                    assert_eq!(next_seq, MINI_MESSAGE_COUNT + 1);
+            // AM-7: Last 5 events form the EOS train (C11)
+            for step in 0..5 {
+                let eos_ev = feed_events[feed_events.len() - 1 - step];
+                match eos_ev.kind {
+                    SchedKind::EndOfSession { next_seq } => {
+                        assert_eq!(next_seq, MINI_MESSAGE_COUNT + 1);
+                    }
+                    _ => panic!("Event {} from end on feed {} must be EndOfSession in EOS train", step + 1, feed),
                 }
-                _ => panic!("Last event on feed {} must be EndOfSession", feed),
             }
 
-            match prev_ev.kind {
+            // Event before EOS train must be Terminal Heartbeat
+            let thb_ev = feed_events[feed_events.len() - 6];
+            match thb_ev.kind {
                 SchedKind::Heartbeat { next_seq } => {
                     assert_eq!(next_seq, MINI_MESSAGE_COUNT + 1);
                 }
-                _ => panic!("Penultimate event on feed {} must be Terminal Heartbeat", feed),
+                _ => panic!("Event preceding EOS train on feed {} must be Terminal Heartbeat", feed),
             }
         }
     }
