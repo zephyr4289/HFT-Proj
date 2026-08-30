@@ -300,7 +300,7 @@ fn run_packet_size_sweep(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
             ..Default::default()
         };
         let sched = build_schedule(gt, &cfg);
-        let packet_count = sched.len();
+        let packet_count = sched.events.len();
 
         for rep in 1..=2 {
             let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
