@@ -112,6 +112,18 @@ pub fn handle_eos<S: Sink>(
         counters.eos_dup += 1;
         return;
     }
+    if *state == State::Init {
+        counters.eos_seen += 1;
+        let final_wm = w;
+        let announced_next = hdr.seq;
+        *state = State::Ended;
+        sink.on_event(&Event::EndOfSession {
+            session,
+            final_wm,
+            announced_next,
+        });
+        return;
+    }
     if *state == State::EosPersist {
         counters.eos_dup += 1;
         if w >= hdr.seq {
