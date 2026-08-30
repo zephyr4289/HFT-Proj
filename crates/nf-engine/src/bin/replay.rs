@@ -106,6 +106,7 @@ fn main() {
     let mut config_path = "ci-mode1.toml".to_string();
     let mut alloc_window = false;
     let mut startup_probe = false;
+    let mut use_xdp = false;
     let mut server_port: Option<u16> = None;
 
     let mut i = 1;
@@ -120,6 +121,14 @@ fn main() {
             "--server-port" => {
                 if i + 1 < args.len() {
                     server_port = args[i + 1].parse().ok();
+                    i += 1;
+                }
+            }
+            "--transport" => {
+                if i + 1 < args.len() {
+                    if args[i + 1] == "xdp" {
+                        use_xdp = true;
+                    }
                     i += 1;
                 }
             }
@@ -138,7 +147,24 @@ fn main() {
     });
 
     let sched = build_schedule(&gt, &cfg);
-    let mut transport = ReplayTransport::new(&gt, sched, session);
+
+    if use_xdp {
+        let transport = nf_transport::xdp::XdpTransport::bind(1)
+            .unwrap_or_else(|_| nf_transport::xdp::XdpTransport::new_mock());
+        run_engine(transport, session, server_port, startup_probe, alloc_window);
+    } else {
+        let transport = ReplayTransport::new(&gt, sched, session);
+        run_engine(transport, session, server_port, startup_probe, alloc_window);
+    }
+}
+
+fn run_engine<T: Transport>(
+    mut transport: T,
+    session: [u8; 10],
+    server_port: Option<u16>,
+    startup_probe: bool,
+    alloc_window: bool,
+) {
     let mut seq = Sequencer::new();
     let mut sink = ConformanceSink::new();
     let mut batch = FrameBatch::new();

@@ -1,6 +1,7 @@
 pub mod render;
 pub mod replay;
 pub mod sched_types;
+pub mod xdp;
 
 pub type FeedId = u8;
 
@@ -69,6 +70,21 @@ impl FrameBatch {
     pub fn push(&mut self, frame: FrameView) -> bool {
         if self.len < 256 {
             self.slots[self.len] = frame;
+            self.len += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    #[inline]
+    pub fn push_raw(&mut self, ptr: *const u8, len: usize, feed: FeedId) -> bool {
+        if self.len < 256 {
+            self.slots[self.len] = FrameView {
+                ptr,
+                len: len as u16,
+                feed,
+            };
             self.len += 1;
             true
         } else {

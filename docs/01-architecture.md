@@ -255,6 +255,13 @@ impl Sequencer {
 
 ---
 
+### ADR-0008: BPF Loader via libbpf-sys for XDP Transport
+- **Context:** AF_XDP requires loading an eBPF redirect program and configuring `XSKMAP`.
+- **Decision:** Load via `libbpf-sys` under the scoped `xdp` feature flag, rather than a custom ELF loader.
+- **Rationale:** BPF relocation and map creation is high-risk, low-value to hand-roll; libbpf is the kernel ecosystem's battle-tested standard. The zero-dependency rule remains strictly intact for all non-XDP builds (`cargo tree -p nf-arbitrator` clean).
+
+---
+
 ## 11. Reader Comprehension Gate
 
 1. State L2 and name the one property of the emission rule that makes it true.
@@ -270,3 +277,4 @@ impl Sequencer {
 | 2026-08-30 | 1.0 | Initial architecture. L1/L2 proven; C-1..C-4; scope limits S-1..S-3; layer laws LI-1..7. |
 | 2026-08-30 | 1.1 | AM-1 added: Transport trait gains `fn now_ns(&self) -> u64`. Render arena 384 KiB added to memory inventory. |
 | 2026-08-30 | 1.2 | AM-2: Gap pairing closure includes SessionBoundary; EndOfSession gains announced_next: u64; Sequencer::new() takes no args. AM-3: No-ABA claim affirmed with Clear-on-Advance Law (§4.2) mechanism. |
+| 2026-08-30 | 1.3 | ADR-0008 added: libbpf-sys loader under `xdp` feature flag for kernel AF_XDP transport. |

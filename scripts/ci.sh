@@ -38,4 +38,7 @@ bash scripts/normalize_strace.sh /tmp/strace-base.raw /tmp/strace-base.txt
 bash scripts/normalize_strace.sh /tmp/strace-full.raw /tmp/strace-full.txt
 diff -u /tmp/strace-base.txt /tmp/strace-full.txt
 
+echo "=== 10. Venue Sender & XDP Transport Smoke Check ==="
+cargo run --release -p nf-testkit --bin venue -- --sample data/tests/sample-mini.itch
+
 echo "=== ALL CHECKS PASSED SUCCESSFULLY ==="
