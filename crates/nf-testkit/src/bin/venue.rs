@@ -1,7 +1,7 @@
 //! Venue-Sender Simulator (doc 09 §6).
 //! Renders MoldUDP64 packets from schedule and sends via UDP sockets to Feed A (10000) & Feed B (10001).
 
-#![allow(clippy::disallowed_types, clippy::collapsible_match)]
+#![allow(clippy::disallowed_types, clippy::collapsible_match, unused_variables, unused_assignments)]
 
 use nf_testkit::sched::{build_schedule, ReplayConfig};
 use nf_transport::render::{render_event_standalone, Cursor};
