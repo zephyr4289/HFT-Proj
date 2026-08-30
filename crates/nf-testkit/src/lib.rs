@@ -4,6 +4,7 @@
 
 pub mod fakeserver;
 pub mod golden;
+pub mod reference;
 pub mod sched;
 pub mod sink;
 

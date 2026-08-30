@@ -46,4 +46,10 @@ cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.
 grep -q "STUDY_REPORT written to" /tmp/bench.txt
 grep -q "allocs=0" /tmp/bench.txt
 
+echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D8) ==="
+# R-1 Independence Grep Audit
+! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)
+cargo run --release -p nf-testkit --bin diff_oracle | tee /tmp/diff_oracle.txt
+grep -q "ALL D1..D8 DIFFERENTIAL ORACLE CHECKS PASSED SUCCESSFULLY" /tmp/diff_oracle.txt
+
 echo "=== ALL CHECKS PASSED SUCCESSFULLY ==="
