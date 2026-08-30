@@ -161,6 +161,6 @@ fn main() {
         sink.hash(),
         sink.count(),
         seq.watermark(),
-        seq.counters().malformed_frames
+        seq.counters().total_violations
     );
 }
