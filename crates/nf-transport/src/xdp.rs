@@ -312,7 +312,7 @@ impl Transport for XdpTransport {
             let avail_a = prod_a.wrapping_sub(cons_a);
 
             let mut count = 0usize;
-            let cap = batch.capacity();
+            let cap = FrameBatch::capacity();
 
             for i in 0..avail_a {
                 if count >= cap {
