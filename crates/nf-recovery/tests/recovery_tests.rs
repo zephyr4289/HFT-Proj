@@ -591,7 +591,7 @@ fn test_e2e_2a_canonical_dual_drop() {
             seq_to_incl: 505_000,
             feed_mask: 3, // Vanished from both feeds
         }];
-        cfg.guarantee_coverage = false;
+        cfg.guarantee_coverage = true;
 
         let sched = build_schedule(&gt, &cfg);
         let mut transport = ReplayTransport::new(&gt, sched, sess);
