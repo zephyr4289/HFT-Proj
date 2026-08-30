@@ -3,6 +3,8 @@
 #![allow(clippy::disallowed_types, clippy::disallowed_methods, clippy::field_reassign_with_default)]
 
 pub mod alloc;
+pub mod clock;
+pub mod histogram;
 
 use nf_protocol::itch5;
 use std::io::Read;

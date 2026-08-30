@@ -41,4 +41,9 @@ diff -u /tmp/strace-base.txt /tmp/strace-full.txt
 echo "=== 10. Venue Sender & XDP Transport Smoke Check ==="
 cargo run --release -p nf-testkit --bin venue -- --sample data/tests/sample-mini.itch
 
+echo "=== 11. Benchmark & Build Separation Law ==="
+cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --runs 5 | tee /tmp/bench.txt
+grep -q "BENCH_MEDIAN" /tmp/bench.txt
+grep -q "allocs=0" /tmp/bench.txt
+
 echo "=== ALL CHECKS PASSED SUCCESSFULLY ==="
