@@ -179,7 +179,7 @@ fn main() {
             } else {
                 retry_count += 1;
                 if retry_count >= 4 {
-                    seq.seal(DeadReason::RetryExhausted);
+                    seq.seal(DeadReason::RetryExhausted, &mut sink);
                 }
             }
             cmd_chan.publish(intent, session);

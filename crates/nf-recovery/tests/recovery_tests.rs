@@ -262,7 +262,7 @@ fn test_r6_close_on_request_dead() {
     }
 
     // Seal on retry exhaustion
-    seq.seal(DeadReason::RetryExhausted);
+    seq.seal(DeadReason::RetryExhausted, &mut sink);
     assert_eq!(seq.state(), nf_arbitrator::State::Dead);
 
     // Ingest after dead must be ignored
@@ -298,7 +298,7 @@ fn test_r7_ignore_request_silence_dead() {
         let _ = seq.recovery_intent(vt);
         vt += 10_000_000;
     }
-    seq.seal(DeadReason::RetryExhausted);
+    seq.seal(DeadReason::RetryExhausted, &mut sink);
     assert_eq!(seq.state(), nf_arbitrator::State::Dead);
 }
 
