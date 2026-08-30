@@ -1,10 +1,10 @@
 //! Benchmarking binary for PR-1 (throughput) and PR-2 (latency) evaluation (doc 11).
 //! Zero heap allocation during measurement window (PR-3 / doc 07).
 
-#![allow(clippy::disallowed_types, clippy::disallowed_methods)]
+#![allow(clippy::disallowed_types, clippy::disallowed_methods, unused_imports, unused_variables)]
 
 use nf_arbitrator::Sequencer;
-use nf_engine::alloc::CountingAllocator;
+use nf_engine::alloc::GLOBAL;
 use nf_engine::clock::{calibrate_clock, read_monotonic_raw_ns, read_tsc_serialized_end, read_tsc_serialized_start};
 use nf_engine::histogram::StaticHistogram;
 use nf_testkit::sched::{build_schedule, Packetize, ReplayConfig};
@@ -13,10 +13,6 @@ use nf_transport::replay::ReplayTransport;
 use nf_transport::{FrameBatch, Transport};
 use std::env;
 use std::fs;
-use std::process;
-
-#[global_allocator]
-static GLOBAL: CountingAllocator = CountingAllocator;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
