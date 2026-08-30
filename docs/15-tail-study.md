@@ -156,16 +156,31 @@ a finding, stated in "What we don't know").
 7. `docs/artifacts/tail-study/study-report.md` in the five-section
    format: know / measured / don't-know / falsified / unproven.
 
-## 8. Mark Placement Audit Table (M-AUD)
+## 8. Phase 2 (post-F-11..F-14) — Re-baseline and Re-attribution
+
+Laws (standing):
+- **P2-L1 (unit law)**: m0/m3 are strictly PER-MESSAGE (ingest entry → dispatch return). Unit test: synthetic 5-msg packet yields 5 stamps with `m0[i+1] >= m3[i]`. Old per-packet numbers re-published alongside, both labeled, in doc 11 §3 amendment.
+- **P2-L2 (denominator law)**: `count(latency > p99) == Σ taxonomy counts`, asserted in code; denominator printed in every taxonomy table.
+- **P2-L3 (reconciliation law)**: every claimed mechanism (N samples × M cycles) must be visible in the rate delta at N×M; table row required.
+- **P2-L4 (control law)**: empty arm keeps the identical skeleton incl. the message loop over a no-op body; RAW only; acceptance: `rate(empty) > rate(full)`.
+- **P2-L5 (labeling law)**: every table column marked raw or overhead-adjusted; no mixed arithmetic.
+
+Arms: cold / prefault / empty, 5 runs, medians + spread.
+Pre-registered **H5**: packet-leader cache misses (first ingest touch of packet bytes: frame line, gt source lines, sink state) produce any surviving per-message leader tail. Prediction: leader tail scales with packet size; kill: tail uniform across batch positions.
+F-9 final verdict re-issued after rate-reconciliation (expected drift toward refuted-with-nuance: page-cache-resident faults ~free).
+
+## 9. Mark Placement Audit Table (M-AUD)
 
 | Mark | Target | File & Line | Timing Point | Level | Finding |
 |---|---|---|---|---|---|
-| m0 | Ingest start | `crates/nf-engine/src/bin/bench.rs:77` | Before `seq.ingest` call | per-packet | **F-10**: packet-level mark, not per-message |
-| m3 | Ingest finish | `crates/nf-engine/src/bin/bench.rs:79` | After `seq.ingest` return | per-packet | **F-10**: encompasses entire packet ($K$ messages) |
-| mR0/mR1 | Render | `crates/nf-transport/src/replay.rs:92` | Inside `poll()` | per-batch | outside in-window bench loop |
+| m0_pkt | Packet Ingest start | `crates/nf-engine/src/bin/bench.rs` | Before `seq.ingest` call | per-packet | **F-10**: packet-level mark |
+| m3_pkt | Packet Ingest finish | `crates/nf-engine/src/bin/bench.rs` | After `seq.ingest` return | per-packet | **F-10**: packet-level mark |
+| m0_msg | Message Ingest start | `crates/nf-engine/src/bin/bench.rs` | Per-message loop entry | per-message | **P2-L1**: individual message latency |
+| m3_msg | Message Dispatch finish | `crates/nf-engine/src/bin/bench.rs` | Per-message dispatch return | per-message | **P2-L1**: individual message latency |
 
 ## Changelog
 
 | Date | Version | Entry |
 |---|---|---|
 | 2026-08-31 | 1.0 | Pre-registration: H1–H4 with kill conditions, M-AUD law, three arms, conditional capture, taxonomy, three-outcome F-9 rule. Committed BEFORE study execution. |
+| 2026-08-31 | 1.1 | Phase 2 Pre-registration: F-11..F-14 findings recorded, Laws P2-L1..P2-L5, H5 hypothesis pre-registered. Committed BEFORE Phase 2 execution. |
