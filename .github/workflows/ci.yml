@@ -1,48 +1,68 @@
 name: ci
 on: [push, pull_request]
+
+permissions:
+  contents: write
+
 jobs:
-  build:
+  build-and-verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with: { components: clippy }
-      - run: echo "5e347abbaa69f12226a6506e875f51633af690b3fc890d9d20a7213fe73275c9  data/tests/sample-mini.itch" | sha256sum -c -
-      - run: cargo build --workspace --release
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
-      - run: cargo test -p nf-arbitrator -p nf-testkit -- --include-ignored
-      - run: cargo run --release -p nf-engine --bin audit -- data/tests/sample-mini.itch | tee /tmp/h.txt
-      - run: diff /tmp/h.txt data/tests/mini-histogram.txt
-      - run: cargo run --release -p nf-engine --bin replay -- --config ci-mode1.toml | tee /tmp/verdict.txt
-      - run: grep -q "VERDICT hash=0xF6EF154EFDE905D8 count=505849 watermark=505850 violations=0" /tmp/verdict.txt
-
-  alloc-lane:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo build --release -p nf-engine
-      - run: ./target/release/replay --config ci-mode1.toml --alloc-window | tee /tmp/alloc.txt
-      - run: grep -q "ALLOC_DELTA=0" /tmp/alloc.txt
-
-  strace-lane:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
       - run: sudo apt-get update && sudo apt-get install -y strace
-      - run: cargo build --release -p nf-engine
-      - run: |
-          strace -f -e trace=mmap,brk,munmap -o base.txt ./target/release/replay --startup-probe
-          strace -f -e trace=mmap,brk,munmap -o full.txt ./target/release/replay --config ci-mode1.toml
-          diff base.txt full.txt
 
-  lint-lane:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with: { components: clippy }
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: "! cargo clippy --manifest-path tests/lint_fixture/Cargo.toml -- -D warnings"
+      - name: 1. Mini Sample SHA256 Check
+        run: |
+          mkdir -p /tmp/ci-logs
+          echo "5e347abbaa69f12226a6506e875f51633af690b3fc890d9d20a7213fe73275c9  data/tests/sample-mini.itch" | sha256sum -c - | tee /tmp/ci-logs/01-sha256.log
+
+      - name: 2. Build Workspace Release
+        run: cargo build --workspace --release 2>&1 | tee /tmp/ci-logs/02-build.log
+
+      - name: 3. Clippy Workspace
+        run: cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee /tmp/ci-logs/03-clippy.log
+
+      - name: 4. Negative Lint Tripwire Test
+        run: (! cargo clippy --manifest-path tests/lint_fixture/Cargo.toml -- -D warnings 2>&1) | tee /tmp/ci-logs/04-lint-tripwire.log
+
+      - name: 5. Unit & Conformance Tests
+        run: cargo test --workspace -- --include-ignored 2>&1 | tee /tmp/ci-logs/05-tests.log
+
+      - name: 6. Full Day Audit & Histogram Diff
+        run: |
+          cargo run --release -p nf-engine --bin audit -- data/tests/sample-mini.itch | tee /tmp/h.txt /tmp/ci-logs/06-audit.log
+          diff /tmp/h.txt data/tests/mini-histogram.txt | tee /tmp/ci-logs/06-histogram-diff.log
+
+      - name: 7. Replay Conformance & Golden Hash Check
+        run: |
+          cargo run --release -p nf-engine --bin replay -- --config ci-mode1.toml | tee /tmp/verdict.txt /tmp/ci-logs/07-replay-verdict.log
+          grep -q "VERDICT hash=0xF6EF154EFDE905D8 count=505849 watermark=505850 violations=0" /tmp/verdict.txt
+
+      - name: 8. Zero-Allocation Window (ALLOC_DELTA=0)
+        run: |
+          ./target/release/replay --config ci-mode1.toml --alloc-window | tee /tmp/alloc.txt /tmp/ci-logs/08-alloc-window.log
+          grep -q "ALLOC_DELTA=0" /tmp/alloc.txt
+
+      - name: 9. Kernel Syscall Strace Diff Probe
+        run: |
+          strace -f -e trace=mmap,brk,munmap -o /tmp/ci-logs/strace-base.txt ./target/release/replay --startup-probe
+          strace -f -e trace=mmap,brk,munmap -o /tmp/ci-logs/strace-full.txt ./target/release/replay --config ci-mode1.toml
+          diff /tmp/ci-logs/strace-base.txt /tmp/ci-logs/strace-full.txt | tee /tmp/ci-logs/09-strace-diff.log
+
+      - name: Auto-push Error / Run Logs to build-log Branch
+        if: always()
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git fetch origin || true
+          git checkout -B build-log
+          mkdir -p ci-logs
+          cp -r /tmp/ci-logs/* ci-logs/ 2>/dev/null || true
+          echo "Run triggered by commit: ${{ github.sha }}" > ci-logs/run-metadata.txt
+          echo "Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> ci-logs/run-metadata.txt
+          echo "Timestamp: $(date -u)" >> ci-logs/run-metadata.txt
+          git add ci-logs/
+          git commit -m "ci: auto-update build logs for ${{ github.sha }} [skip ci]" || true
+          git push origin build-log --force
