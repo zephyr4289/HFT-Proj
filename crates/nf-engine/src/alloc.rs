@@ -8,6 +8,7 @@ pub struct CountingAllocator {
     deallocs: AtomicU64,
 }
 
+#[global_allocator]
 pub static GLOBAL: CountingAllocator = CountingAllocator::new();
 
 impl CountingAllocator {

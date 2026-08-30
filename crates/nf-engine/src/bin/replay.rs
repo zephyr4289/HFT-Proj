@@ -1,5 +1,5 @@
 use nf_arbitrator::Sequencer;
-use nf_engine::alloc::{CountingAllocator, GLOBAL};
+use nf_engine::alloc::GLOBAL;
 use nf_testkit::sched::{
     build_schedule, DelayModel, LossModel, Packetize, ReplayConfig,
 };
@@ -9,9 +9,6 @@ use nf_transport::{FrameBatch, Transport};
 use std::env;
 use std::fs;
 use std::process;
-
-#[global_allocator]
-static ALLOCATOR: CountingAllocator = GLOBAL;
 
 fn parse_toml_val(line: &str) -> Option<(&str, &str)> {
     let line = line.trim();
@@ -132,7 +129,7 @@ fn main() {
 
     let (a1, d1) = if alloc_window {
         println!("WINDOW_BEGIN");
-        ALLOCATOR.snapshot()
+        GLOBAL.snapshot()
     } else {
         (0, 0)
     };
@@ -150,7 +147,7 @@ fn main() {
     }
 
     if alloc_window {
-        let (a2, d2) = ALLOCATOR.snapshot();
+        let (a2, d2) = GLOBAL.snapshot();
         println!("WINDOW_END");
         let delta = (a2.saturating_sub(a1)) + (d2.saturating_sub(d1));
         println!("ALLOC_DELTA={}", delta);
