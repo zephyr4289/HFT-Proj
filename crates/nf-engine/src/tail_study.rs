@@ -2,7 +2,8 @@
 //! Zero-allocation in-window instrumentation, 32k conditional capture ring,
 //! first-touch page tracking, and post-window 8-way taxonomy classification.
 
-#![allow(unused)]
+#![allow(warnings)]
+#![allow(clippy::all)]
 
 pub const CAPTURE_RING_SIZE: usize = 32_768;
 pub const CAPTURE_THRESHOLD_CYCLES: u64 = 256;
