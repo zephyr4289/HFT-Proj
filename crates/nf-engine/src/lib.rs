@@ -5,6 +5,7 @@
 pub mod alloc;
 pub mod clock;
 pub mod histogram;
+pub mod tail_study;
 
 use nf_protocol::itch5;
 use std::io::Read;
