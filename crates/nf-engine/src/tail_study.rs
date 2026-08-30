@@ -5,9 +5,6 @@
 #![allow(warnings)]
 #![allow(clippy::all)]
 
-pub const CAPTURE_RING_SIZE: usize = 65_536;
-pub const CAPTURE_THRESHOLD_CYCLES: u64 = 0; // Capture all above-p90/p99 samples for exact denominator reconciliation
-
 #[repr(C, align(64))]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TailRecord {
@@ -38,11 +35,11 @@ pub struct TailStudyContext {
 }
 
 impl TailStudyContext {
-    pub fn new(total_bytes: usize) -> Self {
+    pub fn new(total_bytes: usize, max_msgs: usize) -> Self {
         let page_count = (total_bytes + 4095) / 4096;
         let bitmap_words = (page_count + 63) / 64;
         Self {
-            records: Vec::with_capacity(CAPTURE_RING_SIZE),
+            records: Vec::with_capacity(max_msgs.max(600_000)),
             overflow_count: 0,
             page_bitmap: vec![0u64; bitmap_words],
             page_count,
@@ -91,7 +88,7 @@ impl TailStudyContext {
         first_touch: bool,
         is_hb_eos: bool,
     ) {
-        if self.records.len() < CAPTURE_RING_SIZE {
+        if self.records.len() < self.records.capacity() {
             let mut flags = 0u16;
             if first_touch {
                 flags |= FLAG_FIRST_TOUCH;
