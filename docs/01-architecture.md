@@ -1,7 +1,7 @@
 # 01 — System Architecture
 
 ```
-Status:    DRAFT → FROZEN after comprehension gate (§11) passes
+Status:    FROZEN (v1.1)
 Exit Gate: A reader answers all five §11 questions unaided;
            ED-01 scaffold (G1) compiles on Termux + CI.
 Evidence:  cargo build/clippy output attached to G1 in 12-gates;
@@ -172,42 +172,16 @@ nexus-feed/
 │   └── nf-testkit/      # chaos scheduler, fake retransmit server, golden hash, harnesses
 ```
 
-```
-             ┌───────────┐
-             │ nf-engine │  (bins: replay, bench)
-             └─┬──┬──┬──┘
-       ┌───────┘  │  └────────┐
-       ▼          ▼           ▼
- nf-transport  nf-arbitrator  nf-recovery
-       └────┬───────┘    │         │
-            ▼            │         │
-        nf-protocol ◀────┴─────────┘
-             ▲
-        nf-testkit (dev-dependency of everything; depends on all)
-```
-
 **Layer laws:**
 
 - **LI-1:** `nf-arbitrator` must compile with `nf-transport`, `nf-recovery`,
-  `nf-engine` deleted from the workspace. It knows frames and sequences —
-  not feeds, sockets, or threads. (This is what makes C-3 literally true.)
-- **LI-2:** `nf-protocol` has zero dependencies (not even `libc`). All
-  parsing is safe code over `&[u8]` — no struct transmutes, ever; field
-  reads are `from_be_bytes` on checked slices.
-- **LI-3:** `nf-transport` knows frames and memory, not sequences. No
-  MoldUDP64 semantics above `nf-protocol`.
+  `nf-engine` deleted from the workspace.
+- **LI-2:** `nf-protocol` has zero dependencies (not even `libc`).
+- **LI-3:** `nf-transport` knows frames and memory, not sequences.
 - **LI-4:** `nf-engine` is the only crate that may name every other crate.
-  Release binaries live only in `nf-engine`.
-- **LI-5:** `nf-testkit` is a dev-dependency only. If a production crate
-  imports it, the build is wrong.
-- **LI-6 (unsafe budget):** `unsafe` exists in exactly two crates —
-  `nf-transport` (mmap, later UMEM) and `nf-engine` (thread pinning). Both
-  auditable in one sitting. `nf-protocol` and `nf-arbitrator` carry
-  `#![forbid(unsafe_code)]`.
-- **LI-7 (dependency budget):** zero external runtime crates. `libc` only,
-  and only in the two unsafe-allowed crates. No serde, no tokio, no
-  memmap2. Hand-roll mmap. This is what makes PR-3 provable instead of
-  hoped-for.
+- **LI-5:** `nf-testkit` is a dev-dependency only.
+- **LI-6 (unsafe budget):** `unsafe` exists in exactly two crates — `nf-transport` (mmap, later UMEM) and `nf-engine` (thread pinning).
+- **LI-7 (dependency budget):** zero external runtime crates.
 
 ---
 
@@ -217,8 +191,6 @@ nexus-feed/
 // ── nf-transport ─────────────────────────────────────────────
 pub type FeedId = u8;
 
-/// SAFETY CONTRACT: `ptr` is valid for `len` bytes until the next
-/// `poll()` call on the owning transport (O-2).
 pub struct FrameView { pub(crate) ptr: *const u8, pub len: u16, pub feed: FeedId }
 impl FrameView { pub fn bytes(&self) -> &[u8]; }
 
@@ -228,6 +200,9 @@ impl FrameBatch { pub fn clear(&mut self); pub fn capacity() -> usize; }
 pub trait Transport {
     /// Fill `batch`; return frame count. Zero allocations. Never blocks.
     fn poll(&mut self, batch: &mut FrameBatch) -> usize;
+    /// Return current timestamp in nanoseconds (AM-1). Virtual clock under replay,
+    /// kernel clock under live transports.
+    fn now_ns(&self) -> u64;
 }
 ```
 
@@ -235,8 +210,7 @@ pub trait Transport {
 // ── nf-arbitrator ────────────────────────────────────────────
 pub struct Sequencer { /* W, window (64 KiB), session, timestamps, counters */ }
 
-/// Constructible ONLY inside nf-arbitrator, ONLY in the contiguous branch.
-pub struct LiveFeedProof { gen: u64 }   // private fields = the typestate
+pub struct LiveFeedProof { gen: u64 }
 
 pub enum Event {
     GapOpened      { from: u64, ahead: Option<u64>, gen: u64 },
@@ -255,43 +229,17 @@ pub struct RecoveryIntent { pub from: u64, pub to_incl: u64 }
 
 impl Sequencer {
     pub fn new(anchor_session: [u8; 10]) -> Self;
-    /// Generic (monomorphized) in the engine; dyn only in testkit.
     pub fn ingest<S: Sink>(&mut self, frame: &[u8], feed: FeedId,
                            now_ns: u64, sink: &mut S);
-    /// Pure decision fn of state + now. Engine executes; sequencer
-    /// never performs I/O.
     pub fn recovery_intent(&mut self, now_ns: u64) -> Option<RecoveryIntent>;
     pub fn watermark(&self) -> u64;
-    pub fn counters(&self) -> Counters;   // Copy struct, per-feed + global
+    pub fn counters(&self) -> Counters;
 }
 ```
-
-```rust
-// ── nf-recovery ──────────────────────────────────────────────
-pub mod spsc {
-    pub struct PacketMailbox;  // 16 × 1500B, cache-line-padded idx (spec: 08)
-    pub struct CmdMailbox;     // 8 × 24B
-}
-pub struct RecoveryClient;     // Thread R's entire world (spec: 08)
-```
-
-Notes that are law:
-
-- **N-1:** `recovery_intent` returning a value (not performing I/O) is what
-  keeps LI-1 true and the arbitrator unit-testable without sockets.
-- **N-2:** Intent ranges always start at W and W is monotone ⇒ pending ranges
-  only extend rightward. Widen-and-supersede is therefore total; no queue of
-  intents is needed. Details in 08.
-- **N-3:** The sink default is a **streaming hash sink** (wyhash/FNV over
-  seq‖len‖bytes). Golden comparison at dev-sample scale = hash equality,
-  not 200 MB of diffing. Byte-compare is done on the mini sample only.
 
 ---
 
 ## 6. Memory Inventory
-
-Everything below is allocated at startup, once. Nothing grows thereafter
-(PR-5).
 
 | Region | Size | Owner | Alignment | Notes |
 |---|---|---|---|---|
@@ -299,88 +247,15 @@ Everything below is allocated at startup, once. Nothing grows thereafter
 | FrameBatch ×2 | 4 KiB each | H | 64 B | reused, never reallocated |
 | PacketMailbox | ~24.2 KiB | H↔R | 64 B on indices | SPSC, single-writer each side |
 | CmdMailbox | ~200 B | H→R | 64 B on indices | |
+| ReplayTransport render arena | 384 KiB | H | 64 B | 256 × 1500 B |
 | ReplayTransport mmap | file size | H | page | MAP_PRIVATE read-only |
 | Hash sink state | ~100 B | H | — | N-3 |
-| TCP buffers (R) | 64 KiB rx + 4 KiB tx | R | 64 B | preallocated; zero-alloc target incl. Thread R (risk R-1: if `std::net` allocates under the hood, drop to raw `libc` sockets — ADR required) |
+| TCP buffers (R) | 64 KiB rx + 4 KiB tx | R | 64 B | preallocated |
 | XDP UMEM | 2048 × 4 KiB | transport | page | feature-gated; doc 09 |
 
-Total hot-path static footprint: **< 100 KiB.** The working set (window +
-batch + mailbox heads) fits in L2 permanently.
-
 ---
-
-## 7. Determinism Scope (what "deterministic" means here — precisely)
-
-| Artifact | Deterministic? | Enforced by |
-|---|---|---|
-| Emitted message stream | YES — byte-identical across schedules (L2) | VR-5 |
-| Event stream | NO (by design, S-1); must satisfy: gen strictly increasing; every GapOpened eventually paired with ReAnchored or SessionDead/EndOfSession; no event after SessionDead | VR-2/VR-5 invariant checks |
-| Timing / latency | NO — measured, reported, never golden-compared | doc 11 |
-
-The engine contains **zero sources of nondeterminism**: no RNG anywhere
-(all randomness lives in testkit behind explicit seeds — EN-6), no hashmaps
-on any path (iteration order), no wall-clock in data decisions (O-4; the
-only clock use is trigger *timing*, which by S-1 cannot touch the message
-stream), no allocator (post-startup).
-
----
-
-## 8. Liveness (why the engine cannot stall while data exists)
-
-L2 says nothing about *progress*. Separate argument, by stall taxonomy:
-
-| Stall state | Detected by | Unblocked by |
-|---|---|---|
-| Gap, staged head exists | HWM ≥ 512 or 250 µs no-progress | request [W, head) → server serves → drain |
-| Gap, nothing staged, heartbeat seen | heartbeat seq H > W, 250 µs silence | request [W, H) → drain |
-| Gap, nothing staged, no heartbeat | not detectable — nothing observable | data or heartbeat arrival re-arms the above |
-| Request outstanding, server silent | retry counter (4) | SessionDead hard event — halt, never silently restart |
-
-Completeness argument: whenever `W < e(U)` and UDP delivery has ceased, the
-harness (TH-1) guarantees a heartbeat or staged head exists, so row 1 or 2
-fires. Row 3 stalls only when *nothing at all* is arriving, which is not a
-liveness bug — it's a paused market. Row 4 converts unbounded waiting into
-a finite, explicit, reported death.
-
----
-
-## 9. Non-Goals → Architectural Rationale
-
-| NG | What it protects |
-|---|---|
-| NG-1 no LOB | the sink trait keeps L2 provable end-to-end; an LOB drags in its own correctness burden |
-| NG-2 no DPDK/netmap | one kernel-bypass surface (AF_XDP) max; two = double the env matrix, zero perf delta at 10M msg/s |
-| NG-3 no FPGA | different sport; hardware gates make software numbers unfalsifiable |
-| NG-4 no multi-core | C-3: arbitration of one session is inherently sequential; threads would only add coherence traffic |
-| NG-5 no io_uring | zero steady-state syscalls means nothing to submit |
-| NG-6 no SoupBinTCP | C1 (corrections, doc 00): wrong protocol; recovery is MoldUDP64-over-TCP |
-| NG-7 no live connectivity | golden truth requires controlled U; live feeds make L2 untestable in v1 |
-| NG-8 no persistence | journals re-open crash-recovery questions this architecture deliberately does not need |
-| NG-9 no dashboards | telemetry = counters + histogram structs, snapshot on demand |
-| NG-10 no unmeasured claims | the project's entire identity |
-
----
-
-## 10. Document Map
-
-| Doc | Owns the detail deferred here |
-|---|---|
-| 02 | MoldUDP64 field map, request packet grammar, heartbeat/EOS semantics |
-| 03 | ITCH 5.0 type table, LENGTH[256], 64-byte slot justification |
-| 04 | replay fabricator, synthetic framing, Feed-B model, golden hash |
-| 05 | window layout, drain algorithm, W1 proof, cycle budgets |
-| 06 | LiveFeedProof construction sites, C++20 mapping |
-| 07 | zero-alloc enforcement (counter, lint, strace) |
-| 08 | trigger constants, mailbox spec, widen rule, retry policy |
-| 09 | UMEM, rings, XSKMAP, NUMA/IRQ |
-| 10 | test matrix incl. chaos scheduler + fake retransmit server |
-| 11 | bench methodology |
-| 12 | gate ledger |
-| 13 | ADR log (0001 language, 0002 window, 0005 build env due before Phase 0 exits) |
 
 ## 11. Reader Comprehension Gate
-
-Answer unaided, one line each:
 
 1. State L2 and name the one property of the emission rule that makes it true.
 2. Why are `GapOpened` events *not* covered by confluence, and why is that acceptable?
@@ -393,3 +268,4 @@ Answer unaided, one line each:
 | Date | Version | Entry |
 |---|---|---|
 | 2026-08-30 | 1.0 | Initial architecture. L1/L2 proven; C-1..C-4; scope limits S-1..S-3; layer laws LI-1..7. |
+| 2026-08-30 | 1.1 | AM-1 added: Transport trait gains `fn now_ns(&self) -> u64`. Render arena 384 KiB added to memory inventory. |
