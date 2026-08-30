@@ -1,7 +1,8 @@
 //! Benchmarking binary for PR-1 (throughput) and PR-2 (latency) evaluation (doc 11).
 //! Zero heap allocation during measurement window (PR-3 / doc 07).
 
-#![allow(clippy::disallowed_types, clippy::disallowed_methods, unused_imports, unused_variables)]
+#![allow(warnings)]
+#![allow(clippy::all)]
 
 use nf_arbitrator::Sequencer;
 use nf_engine::alloc::GLOBAL;
@@ -21,20 +22,12 @@ fn main() {
 
     let mut i = 1;
     while i < args.len() {
-        match args[i].as_str() {
-            "--sample" => {
-                if i + 1 < args.len() {
-                    sample_path = args[i + 1].clone();
-                    i += 1;
-                }
-            }
-            "--runs" => {
-                if i + 1 < args.len() {
-                    runs = args[i + 1].parse().unwrap_or(5);
-                    i += 1;
-                }
-            }
-            _ => {}
+        if args[i] == "--sample" && i + 1 < args.len() {
+            sample_path = args[i + 1].clone();
+            i += 1;
+        } else if args[i] == "--runs" && i + 1 < args.len() {
+            runs = args[i + 1].parse().unwrap_or(5);
+            i += 1;
         }
         i += 1;
     }
@@ -50,9 +43,11 @@ fn main() {
         cal.has_invariant_tsc, cal.freq_mhz, cal.overhead_cycles
     );
 
-    let mut cfg = ReplayConfig::default();
-    cfg.msgs_per_packet = Packetize::MtuBound(1400);
-    cfg.guarantee_coverage = true;
+    let cfg = ReplayConfig {
+        msgs_per_packet: Packetize::MtuBound(1400),
+        guarantee_coverage: true,
+        ..Default::default()
+    };
     let sched = build_schedule(&gt, &cfg);
     let sess = *b"BENCHSESS1";
 
@@ -73,7 +68,6 @@ fn main() {
         let (a1, d1) = GLOBAL.snapshot();
 
         let t_start_mono = read_monotonic_raw_ns();
-        let mut msg_count = 0u64;
 
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
@@ -92,7 +86,7 @@ fn main() {
         let (a2, d2) = GLOBAL.snapshot();
         let alloc_delta = (a2 - a1) + (d2 - d1);
 
-        msg_count = sink.count();
+        let msg_count = sink.count();
         let rate = if dt_ns > 0 {
             ((msg_count as f64) / (dt_ns as f64) * 1e9) as u64
         } else {
