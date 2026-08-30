@@ -32,7 +32,7 @@ echo "=== 8. Zero-Allocation Window (ALLOC_DELTA=0) ==="
 grep -q "ALLOC_DELTA=0" /tmp/alloc.txt
 
 echo "=== 9. Kernel Syscall Strace Diff Probe ==="
-strace -e trace=mmap,brk,munmap -o /tmp/strace-base.raw ./target/release/replay --startup-probe
+strace -e trace=mmap,brk,munmap -o /tmp/strace-base.raw ./target/release/replay --config ci-mode1.toml --startup-probe
 strace -e trace=mmap,brk,munmap -o /tmp/strace-full.raw ./target/release/replay --config ci-mode1.toml
 sed -E 's/0x[0-9a-f]+/0xADDR/g; s/^[0-9]+ //' /tmp/strace-base.raw > /tmp/strace-base.txt
 sed -E 's/0x[0-9a-f]+/0xADDR/g; s/^[0-9]+ //' /tmp/strace-full.raw > /tmp/strace-full.txt
