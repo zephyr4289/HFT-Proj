@@ -1,0 +1,16 @@
+AUDIT file=data/tests/sample-mini.itch bytes=14999991 blocks=505849 violations=0 truncated_tail=true
+HIST 0x41 A len=36 count=180684 pct=35.72
+HIST 0x43 C len=36 count=20 pct=0.00
+HIST 0x44 D len=19 count=164385 pct=32.50
+HIST 0x45 E len=31 count=1507 pct=0.30
+HIST 0x46 F len=40 count=27934 pct=5.52
+HIST 0x48 H len=25 count=8900 pct=1.76
+HIST 0x4C L len=26 count=6171 pct=1.22
+HIST 0x4E N len=20 count=76670 pct=15.16
+HIST 0x50 P len=44 count=1544 pct=0.31
+HIST 0x52 R len=39 count=8906 pct=1.76
+HIST 0x53 S len=12 count=3 pct=0.00
+HIST 0x55 U len=35 count=18395 pct=3.64
+HIST 0x56 V len=35 count=1 pct=0.00
+HIST 0x58 X len=23 count=1821 pct=0.36
+HIST 0x59 Y len=20 count=8908 pct=1.76
