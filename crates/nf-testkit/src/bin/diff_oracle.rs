@@ -40,8 +40,8 @@ fn run_differential(
         }
     }
 
-    let (ref_anchor, ref_wm, _ref_fnv, ref_emitted) = ref_arb.evaluate_latest_session();
-    let seq_wm = sink.watermark();
+    let (ref_anchor, ref_wm, ref_hash, ref_emitted) = ref_arb.evaluate_latest_session();
+    let seq_wm = seq.watermark();
     let seq_count = sink.count();
     let seq_hash = sink.hash();
 
@@ -61,12 +61,19 @@ fn run_differential(
         ));
     }
 
+    if seq_hash != ref_hash {
+        return Err(format!(
+            "Hash divergence between sequencer and reference: seq_hash={:#X} ref_hash={:#X}",
+            seq_hash, ref_hash
+        ));
+    }
+
     // Verify Triple Equality against ground truth range fold (L-FOLD)
-    let fold_result = golden(gt);
-    if seq_count == 505_849 && seq_hash != fold_result.hash {
+    let (gt_count, gt_hash) = golden(gt);
+    if seq_count == gt_count && seq_hash != gt_hash {
         return Err(format!(
             "Hash divergence on full dataset: seq_hash={:#X} gt_hash={:#X}",
-            seq_hash, fold_result.hash
+            seq_hash, gt_hash
         ));
     }
 
@@ -110,12 +117,13 @@ fn test_d3_oracle_validation(gt: &[u8]) {
             }
         }
 
-        let (_ref_a, _ref_w, _ref_h, _ref_emitted) = ref_arb.evaluate_latest_session();
-        let diff_detected = sink.hash() != 0xF6EF_154E_FDE9_05D8;
+        let (_ref_a, _ref_w, ref_h, _ref_emitted) = ref_arb.evaluate_latest_session();
+        let diff_detected = sink.hash() != ref_h;
         println!(
-            "D3 Bug A (payload corruption): detected={}, sink_hash={:#X}",
+            "D3 Bug A (payload corruption): detected={}, sink_hash={:#X} ref_hash={:#X}",
             diff_detected,
-            sink.hash()
+            sink.hash(),
+            ref_h
         );
         assert!(diff_detected, "Oracle harness must catch Bug A");
     }

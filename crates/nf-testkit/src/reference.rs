@@ -106,7 +106,7 @@ impl ReferenceArbitrator {
         }
     }
 
-    /// Emits contiguous ordered stream for the latest session and returns (anchor, watermark, hash).
+    /// Emits contiguous ordered stream for the latest session and returns (anchor, watermark, hash, emitted).
     pub fn evaluate_latest_session(&self) -> (u64, u64, u64, Vec<(u64, Vec<u8>)>) {
         if let Some(session) = self.sessions.last() {
             let anchor = session.anchor.unwrap_or(1);
@@ -116,10 +116,17 @@ impl ReferenceArbitrator {
 
             while let Some(data) = session.messages.get(&cur) {
                 emitted.push((cur, data.clone()));
+
+                // Canonical golden hash fold: [u16 len le][bytes]
+                for &b in &(data.len() as u16).to_le_bytes() {
+                    running_hash ^= b as u64;
+                    running_hash = running_hash.wrapping_mul(0x100000001b3);
+                }
                 for &b in data {
                     running_hash ^= b as u64;
                     running_hash = running_hash.wrapping_mul(0x100000001b3);
                 }
+
                 cur += 1;
             }
 
