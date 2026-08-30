@@ -1,3 +1,4 @@
+#![allow(warnings)]
 #![allow(clippy::all)]
 
 use nf_testkit::fakeserver::{FakeRetransmissionServer, FaultMode, SessionTruth};

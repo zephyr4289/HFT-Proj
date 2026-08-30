@@ -1,6 +1,8 @@
 //! A-1 Watermark discriminator test (doc 08 §12, E2E-2b / A-1).
 //! Proves that with session split at message m, final watermark is strictly N - m + 1.
 
+#![allow(warnings)]
+
 use nf_arbitrator::Sequencer;
 use nf_testkit::golden::golden;
 use nf_testkit::sched::{build_schedule, Packetize, ReplayConfig};
