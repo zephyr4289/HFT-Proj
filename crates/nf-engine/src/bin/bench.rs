@@ -4,7 +4,7 @@
 #![allow(warnings)]
 #![allow(clippy::all)]
 
-use nf_arbitrator::types::Event;
+use nf_arbitrator::types::{Event, LiveFeedProof};
 use nf_arbitrator::{Sequencer, Sink};
 use nf_engine::alloc::GLOBAL;
 use nf_engine::clock::{
@@ -46,11 +46,11 @@ pub struct InstrumentedSink<'a> {
 
 impl<'a> Sink for InstrumentedSink<'a> {
     #[inline(always)]
-    fn on_message(&mut self, seq: u64, msg: &[u8]) {
+    fn on_msg(&mut self, proof: &LiveFeedProof, seq: u64, msg: &[u8]) {
         let t0 = read_tsc_serialized_start();
 
         if !self.is_empty {
-            self.inner.on_message(seq, msg);
+            self.inner.on_msg(proof, seq, msg);
         } else {
             std::hint::black_box(msg.len());
         }
@@ -156,10 +156,9 @@ fn run_single_arm(
                 if arm == Arm::Empty {
                     // P2-L4: Empty control arm walks identical message loop skeleton over no-op
                     if let Ok(moldudp64::Parsed::Data { blocks, .. }) = moldudp64::parse(bytes) {
-                        for (off, len) in blocks {
-                            let msg = &bytes[off..off + len];
+                        for block in blocks {
                             let t0 = read_tsc_serialized_start();
-                            std::hint::black_box(msg.len());
+                            std::hint::black_box(block.data.len());
                             let t1 = read_tsc_serialized_end();
 
                             let dt_raw = t1.saturating_sub(t0);
