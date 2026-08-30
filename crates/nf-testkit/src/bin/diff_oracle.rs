@@ -9,8 +9,7 @@ use nf_arbitrator::{FeedId, Sequencer};
 use nf_testkit::golden::golden;
 use nf_testkit::reference::ReferenceArbitrator;
 use nf_testkit::sched::{
-    build_schedule, DelayModel, DropsModel, FaultModel, LossModel, Packetize, ReplayConfig,
-    SplitMix64, SplitModel,
+    build_schedule, DelayModel, DropRange, LossModel, Packetize, ReplayConfig, SplitMix64,
 };
 use nf_testkit::sink::ConformanceSink;
 use nf_transport::replay::ReplayTransport;
@@ -111,7 +110,7 @@ fn test_d3_oracle_validation(gt: &[u8]) {
             }
         }
 
-        let (_ref_a, _ref_w, _ref_h, ref_emitted) = ref_arb.evaluate_latest_session();
+        let (_ref_a, _ref_w, _ref_h, _ref_emitted) = ref_arb.evaluate_latest_session();
         let diff_detected = sink.hash() != 0xF6EF_154E_FDE9_05D8;
         println!(
             "D3 Bug A (payload corruption): detected={}, sink_hash={:#X}",
@@ -121,16 +120,16 @@ fn test_d3_oracle_validation(gt: &[u8]) {
         assert!(diff_detected, "Oracle harness must catch Bug A");
     }
 
-    // Bug B: Off-by-one clamp / dropped packet
+    // Bug B: Loss without coverage guarantee (drops messages)
     {
         let cfg = ReplayConfig {
             msgs_per_packet: Packetize::Fixed(1),
-            loss: LossModel::Uniform(0.01),
+            loss: [LossModel::Bernoulli { p_pm: 50 }, LossModel::Bernoulli { p_pm: 50 }],
             guarantee_coverage: false,
             ..Default::default()
         };
         let res = run_differential(gt, &cfg, sess);
-        println!("D3 Bug B (loss without recovery): {:?}", res);
+        println!("D3 Bug B (uncovered drop detection): {:?}", res);
     }
 
     // Bug C: Truncated frame injection
@@ -138,7 +137,7 @@ fn test_d3_oracle_validation(gt: &[u8]) {
         let mut ref_arb = ReferenceArbitrator::new();
         let bad_frame = [0u8; 15]; // shorter than HEADER_LEN
         ref_arb.ingest_packet(&bad_frame);
-        let (a, w, h, em) = ref_arb.evaluate_latest_session();
+        let (_a, _w, _h, em) = ref_arb.evaluate_latest_session();
         assert_eq!(em.len(), 0, "D3 Bug C: reference must ignore truncated frame");
         println!("D3 Bug C (truncated frame): reference safely ignored malformed packet");
     }
@@ -149,11 +148,11 @@ fn test_d3_oracle_validation(gt: &[u8]) {
 fn test_d1_matrix_cells(gt: &[u8]) {
     println!("=== D1: All Matrix Cells Differential Verification ===");
     let configs = vec![
-        ("M1 (Baseline contiguous)", ReplayConfig { msgs_per_packet: Packetize::MtuBound(1400), guarantee_coverage: true, ..Default::default() }),
+        ("M1 (Baseline MTU contiguous)", ReplayConfig { msgs_per_packet: Packetize::MtuBound(1400), guarantee_coverage: true, ..Default::default() }),
         ("M2 (Fixed 1 msg)", ReplayConfig { msgs_per_packet: Packetize::Fixed(1), guarantee_coverage: true, ..Default::default() }),
         ("M3 (Fixed 16 msgs)", ReplayConfig { msgs_per_packet: Packetize::Fixed(16), guarantee_coverage: true, ..Default::default() }),
-        ("M4 (Burst reorder)", ReplayConfig { delay: DelayModel::Burst { prob: 0.1, max_delay: 5 }, guarantee_coverage: true, ..Default::default() }),
-        ("M5 (Reorder window 32)", ReplayConfig { delay: DelayModel::ReorderWindow(32), guarantee_coverage: true, ..Default::default() }),
+        ("M4 (Gaussian delay jitter)", ReplayConfig { delay: [DelayModel::GaussianApprox { mean_ns: 500, sigma_ns: 100 }, DelayModel::None], guarantee_coverage: true, ..Default::default() }),
+        ("M5 (Bernoulli loss with dual feed)", ReplayConfig { loss: [LossModel::Bernoulli { p_pm: 100 }, LossModel::None], guarantee_coverage: true, ..Default::default() }),
     ];
 
     let sess = *b"DIFFSESS01";
@@ -183,9 +182,15 @@ fn test_d2_random_configs(gt: &[u8]) {
         };
 
         let delay = if rng.next_u64() % 2 == 0 {
-            DelayModel::ReorderWindow((rng.next_u64() % 16 + 1) as usize)
+            [
+                DelayModel::GaussianApprox {
+                    mean_ns: (rng.next_u64() % 1000) as i64,
+                    sigma_ns: (rng.next_u64() % 200) as u64,
+                },
+                DelayModel::None,
+            ]
         } else {
-            DelayModel::None
+            [DelayModel::None, DelayModel::None]
         };
 
         let cfg = ReplayConfig {
@@ -206,7 +211,10 @@ fn test_d4_duplicate_ordering(gt: &[u8]) {
     println!("=== D4: Duplicate Ordering (First-Received Wins) ===");
     let cfg = ReplayConfig {
         msgs_per_packet: Packetize::MtuBound(1400),
-        drops: DropsModel::DuplicateBOnly { dup_prob: 0.2 },
+        delay: [
+            DelayModel::GaussianApprox { mean_ns: 2000, sigma_ns: 500 },
+            DelayModel::None,
+        ],
         guarantee_coverage: true,
         ..Default::default()
     };
@@ -223,7 +231,7 @@ fn test_d4_duplicate_ordering(gt: &[u8]) {
 fn test_d5_session_splits(gt: &[u8]) {
     println!("=== D5: Session Splits Verification ===");
     let cfg = ReplayConfig {
-        split: SplitModel::TwoSessions { split_seq: 250_000 },
+        session_change_at_msg: Some(250_000),
         guarantee_coverage: true,
         ..Default::default()
     };
@@ -235,9 +243,13 @@ fn test_d5_session_splits(gt: &[u8]) {
 }
 
 fn test_d6_unclean_death(gt: &[u8]) {
-    println!("=== D6: Unclean Death (DropRequest) Verification ===");
+    println!("=== D6: Unclean Death (Scripted Drops) Verification ===");
     let cfg = ReplayConfig {
-        fault: FaultModel::DropRequest(4),
+        scripted_drops: vec![DropRange {
+            seq_from: 10_000,
+            seq_to_incl: 10_005,
+            feed_mask: 1, // Drop from Feed A only
+        }],
         guarantee_coverage: true,
         ..Default::default()
     };
