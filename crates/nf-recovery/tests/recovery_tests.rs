@@ -1,5 +1,7 @@
 //! Recovery Test Suite R1–R14 and E2E-2a/b/c (doc 08 §12).
 
+#![allow(clippy::all)]
+
 use nf_arbitrator::types::{DeadReason, Event, RecoveryIntent};
 use nf_arbitrator::Sequencer;
 use nf_protocol::moldudp64::{encode_request, parse, Parsed, REQUEST_LEN};

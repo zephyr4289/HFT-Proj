@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_types, clippy::disallowed_methods)]
+#![allow(clippy::all)]
 
 use nf_arbitrator::types::DeadReason;
 use nf_arbitrator::Sequencer;

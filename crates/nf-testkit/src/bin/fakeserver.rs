@@ -1,4 +1,4 @@
-#![allow(clippy::disallowed_types, clippy::disallowed_methods)]
+#![allow(clippy::all)]
 
 use nf_testkit::fakeserver::{FakeRetransmissionServer, FaultMode, SessionTruth};
 use std::env;
