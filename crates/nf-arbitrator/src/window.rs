@@ -23,9 +23,12 @@ pub fn stage_msg(
             *staged_count += 1;
         }
         let len = data.len().min(SLOT_SIZE);
-        lens[slot] = len as u8;
+        // C10: Presence encoded as len + 1 (0 = absent, >0 = present with length stored - 1)
+        lens[slot] = (len as u8) + 1;
         let start = slot << 6;
-        arena[start..start + len].copy_from_slice(&data[..len]);
+        if len > 0 {
+            arena[start..start + len].copy_from_slice(&data[..len]);
+        }
         true
     } else {
         false
@@ -73,9 +76,14 @@ pub fn drain<S: Sink>(
     let mut emitted = 0u64;
     while lens[(*w & 1023) as usize] != 0 {
         let slot = (*w & 1023) as usize;
-        let len = lens[slot] as usize;
+        let stored = lens[slot];
+        let len = (stored - 1) as usize;
         let start = slot << 6;
-        let msg = &arena[start..start + len];
+        let msg = if len > 0 {
+            &arena[start..start + len]
+        } else {
+            &[]
+        };
         let proof = LiveFeedProof { gen };
         sink.on_msg(&proof, *w, msg);
         emitted += 1;

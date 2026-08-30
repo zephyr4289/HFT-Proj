@@ -168,9 +168,8 @@ fn run_engine<T: Transport>(
     let mut seq = Sequencer::new();
     let mut sink = ConformanceSink::new();
     let mut batch = FrameBatch::new();
+    let mut rec_batch = FrameBatch::new();
 
-    let cmd_chan = CmdChannel::new();
-    let mailbox = PacketMailbox::new();
     let mut recovery_client = server_port.map(|p| RecoveryClient::new([127, 0, 0, 1], p));
 
     if startup_probe {
@@ -188,17 +187,21 @@ fn run_engine<T: Transport>(
     let mut retry_count = 0u32;
     let mut last_pending_to = None;
 
-    while (transport.poll(&mut batch) > 0 || seq.state() == nf_arbitrator::State::Contig || seq.state() == nf_arbitrator::State::Init)
+    while (transport.poll(&mut batch) > 0 || seq.state() == nf_arbitrator::State::Contig || seq.state() == nf_arbitrator::State::Init || seq.state() == nf_arbitrator::State::EosPersist)
         && seq.state() != nf_arbitrator::State::Dead
     {
         let now = transport.now_ns();
 
-        // 1. Drain PacketMailbox -> ingest (P-ORDER 1)
-        mailbox.drain(|pkt| {
-            seq.ingest(pkt, 0, now, &mut sink);
-        });
+        // 1. Poll UDP recovery socket -> ingest (P-ORDER 1)
+        if let Some(ref mut client) = recovery_client {
+            rec_batch.clear();
+            client.poll_frames(&mut rec_batch);
+            for frame in rec_batch.frames() {
+                seq.ingest(frame.bytes(), frame.feed, now, &mut sink);
+            }
+        }
 
-        // 2. Poll UDP transports -> ingest (P-ORDER 2)
+        // 2. Ingest multicast / replay transport batch (P-ORDER 2)
         for frame in batch.frames() {
             seq.ingest(frame.bytes(), frame.feed, now, &mut sink);
         }
@@ -215,12 +218,10 @@ fn run_engine<T: Transport>(
                     break;
                 }
             }
-            cmd_chan.publish(intent, session);
-        }
-
-        // 4. Step recovery client if active
-        if let Some(ref mut client) = recovery_client {
-            client.step(&mailbox, &cmd_chan);
+            if let Some(ref mut client) = recovery_client {
+                let count = (intent.to_excl.saturating_sub(intent.from)) as u16;
+                client.send_request(&session, intent.from, count);
+            }
         }
 
         if seq.state() == nf_arbitrator::State::Ended {

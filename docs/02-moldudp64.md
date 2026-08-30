@@ -97,28 +97,14 @@ enforcement in this layer.
 
 ---
 
-## 4. Retransmission Channel
+## 4. Retransmission Channel (C9: UDP Unicast)
 
-1. Engine connects TCP to the venue's retransmission server (doc 08 owns
-   connection lifecycle, retries, backoff).
-2. Engine sends a request packet (§2.3).
-3. Server responds with one or more standard downstream packets carrying
-   the requested messages, in sequence order, possibly split across
-   multiple packets.
-4. **TCP framing:** each MoldUDP64 packet on the TCP stream is preceded by
-   a 2-byte binary length prefix (big-endian) giving the packet's total
-   byte length. Applies to response packets; whether the request is also
-   length-prefixed on the wire: VERIFY-3.
-5. Server behavior when requested messages are unavailable (aged out):
-   spec-defined response vs. silence — VERIFY-4. Our client is safe under
-   either: silence hits the retry cap → `SessionDead` (doc 08).
-6. Duplicate service is harmless: a re-served range already delivered dies
-   in the watermark compare (doc 01, C-1). The server being stateless about
-   our retries is a feature we exploit, not a problem we solve.
-
-**Requested count bounds:** wire maximum 65535 messages per request. Our
-client's request-sizing policy is doc 08. The encoder contract here:
-`count ∈ [1, 65535]` — a zero-count request is meaningless and never sent.
+1. Retransmission in MoldUDP64 operates over **UDP** (no TCP).
+2. Engine sends a 20-byte MoldUDP64 Request Packet (§2.3) via UDP to the Re-request server.
+3. Server responds with standard Downstream Packets unicast back to the source address/port of the request.
+4. Response packets are standard MoldUDP64 packets (`Session[10] | Seq[8] | Count[2] | [len[2] | data]...`) directly on the wire with zero stream framing prefixes.
+5. Ingest: Recovery packets arrive on the recovery UDP socket and enter the same ingest path as Feed R. Confluence (doc 01) guarantees byte-identical downstream emission regardless of whether packets came from multicast feeds or unicast recovery.
+6. Requested count bounds: wire maximum 65535 messages per request. The encoder contract: `count ∈ [1, 65535]`.
 
 ---
 

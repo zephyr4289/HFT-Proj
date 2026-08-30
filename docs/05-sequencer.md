@@ -51,7 +51,7 @@ pub struct Sequencer {
     counters: Counters,          // §11, Copy
 
     // ── lines 4..19 ── presence bitmap ────────────────────────
-    lens: [u8; 1024],            // slot i: 0 = absent, else msg length
+    lens: [u8; 1024],            // slot i: 0 = absent, else msg length + 1 (C10)
 
     // ── lines 20..1043 ── arena (64 KiB) ──────────────────────
     arena: [u8; 64 * 1024],      // slot i at byte offset i << 6
@@ -68,10 +68,12 @@ a sequencer concern — no overclaim here.
 INIT ──first Data──▶ CONTIG ──stage (first>W)──▶ GAP ──W≥evidence_hwm──▶ CONTIG
   │                    │                            │
   │                    ├──HB(seq>W)──▶ GAP          ├──SessionChange──▶ INIT
-  │                    ├──EOS──▶ ENDED              └──seal()──▶ DEAD
-  ├──HB────────(evidence only)                      │
+  │                    ├──EOS(gap)──▶ EOS-PERSIST   └──seal()──▶ DEAD
+  │                    ├──EOS(clean)──▶ ENDED        │
+  ├──HB────────(evidence only)                       │
   ├──EOS──▶ ENDED                                    │
-  └──seal()──▶ DEAD        ENDED ──SessionChange──▶ INIT
+  └──seal()──▶ DEAD        EOS-PERSIST ──gap closed──▶ ENDED
+                           ENDED ──SessionChange──▶ INIT
                            ENDED ──seal()──▶ DEAD
 Any state ──SessionChange──▶ INIT (after boundary flush)
 ```
@@ -82,8 +84,9 @@ counted + dropped, never a panic:
 | State \ Event | Data pkt | Heartbeat | EOS | Other session | seal() |
 |---|---|---|---|---|---|
 | INIT | anchor W=seq; apply → CONTIG/GAP | record hb evidence | Ended(clean-by-anchor) | n/a (is anchor) | DEAD |
-| CONTIG | §5 apply | hb>W → GAP open; else count | Ended | boundary → INIT | DEAD |
-| GAP | §5 apply (stage or fill) | extend evidence_hwm | Ended+GapUnresolved | boundary → INIT (gap closes via boundary) | DEAD |
+| CONTIG | §5 apply | hb>W → GAP open; else count | W<announced → EOS-PERSIST; else Ended | boundary → INIT | DEAD |
+| GAP | §5 apply (stage or fill) | extend evidence_hwm | W<announced → EOS-PERSIST; else Ended | boundary → INIT | DEAD |
+| EOS-PERSIST | §5 apply (fill gap → Ended) | count / extend | count (EOS train dup) | boundary → INIT | DEAD |
 | ENDED | violation (data-after-EOS) | count | count (EOS dedup) | boundary → INIT | DEAD |
 | DEAD | count ignored | count ignored | count ignored | count ignored | — |
 

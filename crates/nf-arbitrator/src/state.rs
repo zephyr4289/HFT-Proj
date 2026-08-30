@@ -9,8 +9,10 @@ pub enum State {
     Contig = 1,
     /// Gap opened: actively staging disordered packets.
     Gap = 2,
+    /// End-of-session persist train: actively recovering remaining gaps (doc 05 C11).
+    EosPersist = 3,
     /// End-of-session reached for current session.
-    Ended = 3,
+    Ended = 4,
     /// Permanently sealed / dead.
-    Dead = 4,
+    Dead = 5,
 }

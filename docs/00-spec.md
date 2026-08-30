@@ -27,6 +27,9 @@ Rule:        Once frozen, requirement numbers are never renumbered or
 | C6 | C3 implied bare messages | Observed ground truth (20191230.BX): the archive is a **MoldUDP64 MESSAGE-BLOCK stream** — `[u16 BE len][message]` repeated, no 20-byte headers. Evidence: `00 0c` (len 12 = System Event), msg ends `4f` 'O', next prefix `00 27` (len 39 = Stock Directory). | Doc 04 reads blocks via length prefix; doc 03 table becomes cross-VALIDATOR |
 | C7 | Prior doc claimed 'H' = Stock Directory | ITCH 5.0 Stock Directory is **'R'** (0x52, 39B); **'H'** (0x48, 25B) is Stock Trading Action. Evidence: `0x52` at file offset `0x10`, declared len `0x27=39`, locate 1, stock `"A       "`. | Doc 03 table |
 | C8 | Doc 04 §8 folded seq into golden hash, making E2E-1 with session split unsatisfiable (split restarts seq; walker doesn't) | Golden hash folds `(len_u16_le, msg_bytes)` ONLY. Count tracked separately. Order enforced by ConformanceSink. Hash becomes session-split-invariant by construction. | Doc 04 §8, doc 05 E2E-1 amended; pinned hashes regenerated |
+| C9 | "MoldUDP64 retransmission over TCP, 2-byte framed" (doc 00 C1, doc 02 §4, doc 08) | Spec V1.00 has NO TCP: Request Packet is UDP to a Re-request server; responses are standard Downstream Packets unicast to the request's source (may share the multicast socket). C1's TCP claim originated with the architect. G6's "§3.2" quotes were fabricated. | Doc 08 → v2.0 UDP recovery; Thread R + mailboxes deleted; fakeserver → UDP |
+| C10 | Doc 02 V-5: zero-length block = violation | Spec: Message Data "can be zero length". Framing accepts len=0; ITCH layer rejects empty payloads; window presence encoding → len+1 | Doc 02 §7, doc 05 §2/§4 |
+| C11 | Doc 05 §8: first EOS terminal; data-after-EOS = violation | Spec: EOS sent "for a short while in place of Heartbeats"; re-requests expected during persistence | EOS-PERSIST state; AM-7 EOS train in fabricator |
 
 ---
 
@@ -278,3 +281,4 @@ sha256sum data/sample-dev.itch data/tests/sample-mini.itch
 | 2026-08-30 | 1.2 | C7 added: ITCH 5.0 Stock Directory is 'R' (0x52, 39B); 'H' (0x48, 25B) is Stock Trading Action. Freeze reaffirmed at v1.2. |
 | 2026-08-30 | 1.3 | C8 added: Golden hash folds (len_u16_le, msg_bytes) only, dropping seq. Freeze reaffirmed at v1.3. |
 | 2026-08-30 | 1.4 | G8 release: PR-3 stage-2 zero-allocation fully discharged; AM-4 latest-wins register, AM-5 vt-grace clock clamp, ADR-0006/0007 recorded. |
+| 2026-08-30 | 1.5 | C9/C10/C11 from primary-source read. C1 lineage closed. Freeze reaffirmed at v1.5. |

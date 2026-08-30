@@ -112,17 +112,33 @@ pub fn handle_eos<S: Sink>(
         counters.eos_dup += 1;
         return;
     }
+    if *state == State::EosPersist {
+        counters.eos_dup += 1;
+        if w >= hdr.seq {
+            *state = State::Ended;
+            sink.on_event(&Event::EndOfSession {
+                session,
+                final_wm: w,
+                announced_next: hdr.seq,
+            });
+        }
+        return;
+    }
 
     counters.eos_seen += 1;
-    let final_wm = w;
     let announced_next = hdr.seq;
-    *state = State::Ended;
-
-    sink.on_event(&Event::EndOfSession {
-        session,
-        final_wm,
-        announced_next,
-    });
+    if w < announced_next {
+        // C11: Gap persists during EOS train -> enter EosPersist state
+        *state = State::EosPersist;
+    } else {
+        let final_wm = w;
+        *state = State::Ended;
+        sink.on_event(&Event::EndOfSession {
+            session,
+            final_wm,
+            announced_next,
+        });
+    }
 }
 
 /// Permanently seals the sequencer to DEAD state (doc 05 §10).

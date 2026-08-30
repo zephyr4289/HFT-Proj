@@ -1,9 +1,8 @@
-//! Fake Retransmission Server (doc 08 §7).
-//! Harness component (std::net allowed); serves ground truth slices over loopback TCP with deterministic fault injection.
+//! UDP Fake Retransmission Server (doc 08 §7, C9).
+//! Serves ground truth slices over loopback UDP with deterministic fault injection.
 
 use nf_protocol::moldudp64::{HEADER_LEN, REQUEST_LEN};
-use std::io::{Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::net::{SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -13,11 +12,12 @@ use std::time::Duration;
 pub enum FaultMode {
     Ok,
     DelayMs(u64),
-    CloseOnRequest(usize),
-    IgnoreRequest(usize),
+    DropRequest(usize),
+    DropResponse(usize),
     TruncateAfter(u16),
     WrongSession,
     DuplicateFirst,
+    Unbound,
 }
 
 #[derive(Debug, Clone)]
@@ -49,9 +49,9 @@ impl FakeRetransmissionServer {
         sessions: Vec<SessionTruth>,
         fault_mode: FaultMode,
     ) -> std::io::Result<Self> {
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        let addr = listener.local_addr()?;
-        listener.set_nonblocking(true)?;
+        let socket = UdpSocket::bind("127.0.0.1:0")?;
+        let addr = socket.local_addr()?;
+        socket.set_read_timeout(Some(Duration::from_millis(50)))?;
 
         let stop_signal = Arc::new(AtomicBool::new(false));
         let counters = Arc::new(ServerCounters::default());
@@ -59,119 +59,89 @@ impl FakeRetransmissionServer {
         let gt_owned = gt.to_vec();
         let stop_clone = Arc::clone(&stop_signal);
         let counters_clone = Arc::clone(&counters);
+
         let handle = thread::spawn(move || {
-            let req_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut req_counter = 0usize;
+            let mut buf = [0u8; 1500];
 
             while !stop_clone.load(Ordering::Relaxed) {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        counters_clone.connections.fetch_add(1, Ordering::Relaxed);
-                        let gt_conn = gt_owned.clone();
-                        let sess_conn = sessions.clone();
-                        let stop_conn = Arc::clone(&stop_clone);
-                        let counters_conn = Arc::clone(&counters_clone);
-                        let req_cnt = Arc::clone(&req_counter);
+                if let Ok((amt, src)) = socket.recv_from(&mut buf) {
+                    if amt < REQUEST_LEN {
+                        continue;
+                    }
+                    req_counter += 1;
+                    counters_clone.requests_seen.fetch_add(1, Ordering::Relaxed);
 
-                        thread::spawn(move || {
-                            let _ = stream.set_read_timeout(Some(Duration::from_millis(50)));
-                            let _ = stream.set_write_timeout(Some(Duration::from_millis(200)));
+                    let req_sess = &buf[0..10];
+                    let req_seq = u64::from_be_bytes(buf[10..18].try_into().unwrap());
+                    let req_count = u16::from_be_bytes(buf[18..20].try_into().unwrap());
 
-                            let mut buf = [0u8; REQUEST_LEN];
-                            while !stop_conn.load(Ordering::Relaxed) {
-                                match stream.read_exact(&mut buf) {
-                                    Ok(()) => {
-                                        let req_n = req_cnt.fetch_add(1, Ordering::Relaxed) + 1;
-                                        counters_conn.requests_seen.fetch_add(1, Ordering::Relaxed);
-
-                                        let req_sess = &buf[0..10];
-                                        let req_seq = u64::from_be_bytes(buf[10..18].try_into().unwrap());
-                                        let req_count = u16::from_be_bytes(buf[18..20].try_into().unwrap());
-
-                                        match fault_mode {
-                                            FaultMode::DelayMs(ms) => {
-                                                thread::sleep(Duration::from_millis(ms));
-                                            }
-                                            FaultMode::CloseOnRequest(n) => {
-                                                if req_n == n {
-                                                    counters_conn.faults_injected.fetch_add(1, Ordering::Relaxed);
-                                                    break;
-                                                }
-                                            }
-                                            FaultMode::IgnoreRequest(n) => {
-                                                if req_n == n {
-                                                    counters_conn.faults_injected.fetch_add(1, Ordering::Relaxed);
-                                                    continue;
-                                                }
-                                            }
-                                            _ => {}
-                                        }
-
-                                        // Find matching session truth
-                                        let truth = sess_conn.iter().find(|s| &s.session_id == req_sess);
-                                        let session_truth = match truth {
-                                            Some(t) => t,
-                                            None => {
-                                                counters_conn.faults_injected.fetch_add(1, Ordering::Relaxed);
-                                                break;
-                                            }
-                                        };
-
-                                        let count_to_serve = match fault_mode {
-                                            FaultMode::TruncateAfter(k) => {
-                                                counters_conn.faults_injected.fetch_add(1, Ordering::Relaxed);
-                                                std::cmp::min(req_count, k)
-                                            }
-                                            _ => req_count,
-                                        };
-
-                                        let effective_sess = match fault_mode {
-                                            FaultMode::WrongSession => {
-                                                counters_conn.faults_injected.fetch_add(1, Ordering::Relaxed);
-                                                *b"WRONGSESS1"
-                                            }
-                                            _ => session_truth.session_id,
-                                        };
-
-                                        // Serve requested messages
-                                        let packets = pack_response_packets(
-                                            &gt_conn,
-                                            &effective_sess,
-                                            session_truth,
-                                            req_seq,
-                                            count_to_serve,
-                                        );
-
-                                        let mut is_first = true;
-                                        for pkt in packets {
-                                            if fault_mode == FaultMode::DuplicateFirst && is_first {
-                                                counters_conn.faults_injected.fetch_add(1, Ordering::Relaxed);
-                                                let _ = send_framed_packet(&mut stream, &pkt);
-                                                counters_conn.packets_served.fetch_add(1, Ordering::Relaxed);
-                                            }
-                                            is_first = false;
-
-                                            if send_framed_packet(&mut stream, &pkt).is_err() {
-                                                break;
-                                            }
-                                            counters_conn.packets_served.fetch_add(1, Ordering::Relaxed);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        if e.kind() != std::io::ErrorKind::WouldBlock
-                                            && e.kind() != std::io::ErrorKind::TimedOut
-                                        {
-                                            break;
-                                        }
-                                    }
-                                }
+                    match fault_mode {
+                        FaultMode::DelayMs(ms) => {
+                            thread::sleep(Duration::from_millis(ms));
+                        }
+                        FaultMode::DropRequest(n) => {
+                            if req_counter == n {
+                                counters_clone.faults_injected.fetch_add(1, Ordering::Relaxed);
+                                continue;
                             }
-                        });
+                        }
+                        _ => {}
                     }
-                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(2));
-                    }
-                    Err(_) => {
-                        break;
+
+                    // Find matching session truth
+                    let truth = sessions.iter().find(|s| &s.session_id == req_sess);
+                    let session_truth = match truth {
+                        Some(t) => t,
+                        None => {
+                            counters_clone.faults_injected.fetch_add(1, Ordering::Relaxed);
+                            continue;
+                        }
+                    };
+
+                    let count_to_serve = match fault_mode {
+                        FaultMode::TruncateAfter(k) => {
+                            counters_clone.faults_injected.fetch_add(1, Ordering::Relaxed);
+                            std::cmp::min(req_count, k)
+                        }
+                        _ => req_count,
+                    };
+
+                    let effective_sess = match fault_mode {
+                        FaultMode::WrongSession => {
+                            counters_clone.faults_injected.fetch_add(1, Ordering::Relaxed);
+                            *b"WRONGSESS1"
+                        }
+                        _ => session_truth.session_id,
+                    };
+
+                    // Serve requested messages
+                    let packets = pack_response_packets(
+                        &gt_owned,
+                        &effective_sess,
+                        session_truth,
+                        req_seq,
+                        count_to_serve,
+                    );
+
+                    let mut is_first = true;
+                    let mut pkt_idx = 0usize;
+                    for pkt in packets {
+                        pkt_idx += 1;
+                        if let FaultMode::DropResponse(n) = fault_mode {
+                            if pkt_idx == n {
+                                counters_clone.faults_injected.fetch_add(1, Ordering::Relaxed);
+                                continue;
+                            }
+                        }
+                        if fault_mode == FaultMode::DuplicateFirst && is_first {
+                            counters_clone.faults_injected.fetch_add(1, Ordering::Relaxed);
+                            let _ = socket.send_to(&pkt, src);
+                            counters_clone.packets_served.fetch_add(1, Ordering::Relaxed);
+                        }
+                        is_first = false;
+                        let _ = socket.send_to(&pkt, src);
+                        counters_clone.packets_served.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
@@ -185,37 +155,22 @@ impl FakeRetransmissionServer {
         })
     }
 
-    #[inline]
     pub fn port(&self) -> u16 {
         self.addr.port()
     }
 
-    #[inline]
     pub fn counters(&self) -> &ServerCounters {
         &self.counters
-    }
-
-    pub fn stop(mut self) {
-        self.stop_signal.store(true, Ordering::Relaxed);
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
     }
 }
 
 impl Drop for FakeRetransmissionServer {
     fn drop(&mut self) {
         self.stop_signal.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
     }
-}
-
-fn send_framed_packet(stream: &mut TcpStream, packet: &[u8]) -> std::io::Result<()> {
-    let len = packet.len() as u16;
-    let len_be = len.to_be_bytes();
-    stream.write_all(&len_be)?;
-    stream.write_all(packet)?;
-    stream.flush()?;
-    Ok(())
 }
 
 fn pack_response_packets(
@@ -225,65 +180,59 @@ fn pack_response_packets(
     from_seq: u64,
     count: u16,
 ) -> Vec<Vec<u8>> {
-    if count == 0 || from_seq < truth.first_seq {
-        return Vec::new();
-    }
-
-    let rel_seq = from_seq - truth.first_seq;
-    let start_msg_idx = truth.first_msg_index + rel_seq;
-
-    // Locate start byte offset in GT
-    let mut cur_msg = 0u64;
-    let mut pos = 0usize;
-    while cur_msg < start_msg_idx && pos + 2 <= gt.len() {
-        let len = u16::from_be_bytes([gt[pos], gt[pos + 1]]) as usize;
-        pos += 2 + len;
-        cur_msg += 1;
-    }
-
     let mut packets = Vec::new();
-    let mut remaining = count as u64;
-    let mut current_seq = from_seq;
+    if count == 0 {
+        return packets;
+    }
 
-    while remaining > 0 && pos + 2 <= gt.len() {
+    let mut cur_seq = from_seq;
+    let end_seq = from_seq + (count as u64);
+
+    let mut cur_msg_index = 0u64;
+    let mut cur_offset = 0usize;
+
+    // Scan to find first_msg_index
+    let target_msg_index = truth.first_msg_index + (from_seq.saturating_sub(truth.first_seq));
+
+    while cur_msg_index < target_msg_index && cur_offset + 2 <= gt.len() {
+        let len = u16::from_be_bytes([gt[cur_offset], gt[cur_offset + 1]]) as usize;
+        cur_offset += 2 + len;
+        cur_msg_index += 1;
+    }
+
+    while cur_seq < end_seq && cur_offset < gt.len() {
         let mut pkt = Vec::with_capacity(1400);
         pkt.extend_from_slice(session);
-        pkt.extend_from_slice(&current_seq.to_be_bytes());
-        pkt.extend_from_slice(&[0u8, 0u8]); // count placeholder
+        pkt.extend_from_slice(&cur_seq.to_be_bytes());
+        pkt.extend_from_slice(&0u16.to_be_bytes()); // placeholder count
 
-        let mut pkt_msg_count = 0u16;
-        let mut pkt_pos = pos;
+        let mut pkt_count = 0u16;
+        let mut pkt_offset = cur_offset;
 
-        while remaining > 0 && pkt_pos + 2 <= gt.len() {
-            let msg_len = u16::from_be_bytes([gt[pkt_pos], gt[pkt_pos + 1]]) as usize;
-            let block_size = 2 + msg_len;
-
-            if HEADER_LEN + (pkt.len() - HEADER_LEN) + block_size > 1400 && pkt_msg_count > 0 {
+        while cur_seq + (pkt_count as u64) < end_seq && pkt_offset + 2 <= gt.len() {
+            let len = u16::from_be_bytes([gt[pkt_offset], gt[pkt_offset + 1]]) as usize;
+            if pkt_offset + 2 + len > gt.len() {
                 break;
             }
-
-            if pkt_pos + block_size > gt.len() {
+            let block_total = 2 + len;
+            if pkt.len() + block_total > 1400 && pkt_count > 0 {
                 break;
             }
-
-            pkt.extend_from_slice(&gt[pkt_pos..pkt_pos + block_size]);
-            pkt_pos += block_size;
-            pkt_msg_count += 1;
-            remaining -= 1;
+            pkt.extend_from_slice(&gt[pkt_offset..pkt_offset + block_total]);
+            pkt_offset += block_total;
+            pkt_count += 1;
         }
 
-        if pkt_msg_count == 0 {
+        if pkt_count == 0 {
             break;
         }
 
         // Patch count
-        let count_be = pkt_msg_count.to_be_bytes();
-        pkt[18] = count_be[0];
-        pkt[19] = count_be[1];
-
+        pkt[18..20].copy_from_slice(&pkt_count.to_be_bytes());
         packets.push(pkt);
-        pos = pkt_pos;
-        current_seq += pkt_msg_count as u64;
+
+        cur_seq += pkt_count as u64;
+        cur_offset = pkt_offset;
     }
 
     packets

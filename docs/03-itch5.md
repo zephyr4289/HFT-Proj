@@ -234,3 +234,4 @@ HIST 0x59 Y len=20 count=9013     pct=0.0309%
 | Date | Version | Entry |
 |---|---|---|
 | 2026-08-30 | 1.0 | Initial table, overlays, audit design, TV-IT1/2 from real bytes. Predictions P1–P5 verified against 29.15M full-day messages with 0 violations. Doc 00 C5 discharged. Frozen v1.0. |
+| 2026-08-30 | 1.1 | Signed off against primary Nasdaq ITCH 5.0 specification: all 23 message lengths verified including Direct Listing 'O' (48B) and NOII 'I' (50B). |

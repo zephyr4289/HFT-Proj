@@ -202,9 +202,6 @@ pub fn parse(buf: &[u8]) -> Result<Parsed<'_>, FrameError> {
                     return Err(FrameError::BlockOverrun);
                 }
                 let len = u16::from_be_bytes([rest[0], rest[1]]) as usize;
-                if len == 0 {
-                    return Err(FrameError::ZeroLengthMessage);
-                }
                 if rest.len() < 2 + len {
                     return Err(FrameError::BlockOverrun);
                 }
@@ -385,7 +382,15 @@ mod tests {
         buf.extend_from_slice(&1000u64.to_be_bytes());
         buf.extend_from_slice(&1u16.to_be_bytes()); // count = 1
         buf.extend_from_slice(&0u16.to_be_bytes()); // len = 0
-        assert_eq!(parse(&buf).unwrap_err(), FrameError::ZeroLengthMessage);
+        match parse(&buf).unwrap() {
+            Parsed::Data { blocks, .. } => {
+                let msgs: Vec<_> = blocks.collect();
+                assert_eq!(msgs.len(), 1);
+                assert_eq!(msgs[0].data.len(), 0);
+                assert_eq!(msgs[0].seq, 1000);
+            }
+            _ => panic!("Expected Data variant"),
+        }
     }
 
     #[test]

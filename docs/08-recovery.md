@@ -1,21 +1,14 @@
-# 08 — Recovery Engine: TCP Gap-Fill Client, Fake Server & Dual-Drop Endgame
+# 08 — Recovery Engine: UDP MoldUDP64 Retransmission & Dual-Drop Endgame (v2.0)
 
 ```
-Status:    DRAFT → FROZEN after G8
+Status:    FROZEN (v2.0 reaffirmed under C9)
 Exit Gate: E2E-2a/b/c green on Termux AND CI; recovery-inclusive
-           ALLOC_DELTA=0 + strace diff (PR-3 stage 2); A-1 watermark
-           discriminator resolved; A-2 zombie trace restored-or-proven;
-           R1..R14 green. See ED-08.
+           ALLOC_DELTA=0 + strace diff (PR-3 stage 2); R1..R14 green.
 Evidence:  Run URLs; intent-sequence assertions output; server counters;
            alloc/strace lane logs covering the recovery window.
-Authority: This doc owns Thread R's loop, channel specs, intent→request
-           protocol, retry/SessionDead semantics, vt-grace determinism
-           law, fake server contract. Trigger constants: doc 05 §10
-           (unchanged). Socket/alloc obligations inherited from doc 07 §4.
-Rule:      The determinism split (§1) is law: output bytes are
-           transport-timing-independent BY CONSTRUCTION (L2); retry
-           counts are vt-deterministic (AM-5). Anything that breaks
-           either is a design bug, not a flaky test.
+Authority: This doc owns UDP re-request client, non-blocking socket loop,
+           intent→request protocol (C9), retry/SessionDead semantics,
+           vt-grace determinism law, fake UDP server contract.
 ```
 
 ---
@@ -29,28 +22,22 @@ Two clocks, two responsibilities, one boundary:
 | Emitted message bytes | virtual (vt) | **YES — byte-identical across runs** | L2 confluence: recovered packets enter the same ingest; arrival order is irrelevant to output |
 | Intent emission + retry count | virtual (vt) | **YES — exact sequence** | AM-5 grace-stepping (§6): vt advances through silence in grace-sized steps; each step re-evaluates intents; exactly 4 steps → SessionDead |
 | Event stream (GapOpened timing, gen) | mixed | NO (S-1) | observation telemetry; invariants only, never golden-compared |
-| Socket mechanics (connect, recv, RST) | real | NO — and irrelevant | Thread R plumbing; affects latency, never bytes (row 1), never retries (row 2) |
+| Socket mechanics (sendto, recvfrom) | real | NO — and irrelevant | Plumbing; affects latency, never bytes (row 1), never retries (row 2) |
 
-The consequence you must internalize: **E2E-2c (double-run) must produce identical hashes even though Thread R's real-time behavior differs between runs.** If it ever doesn't, confluence is broken — that test is L2's live fire exercise across a genuinely nondeterministic transport.
+---
 
-## 2. Architecture
+## 2. Architecture (v2.0 UDP Retransmission per C9)
 
 ```
-┌─ Thread H (hot) ─────────────────────────────────────────────────┐
-│ P-ORDER (poll order law — deadlock freedom):                     │
-│  1. drain PacketMailbox → ingest()          (frees R if parked)  │
-│  2. poll UDP transports → ingest()                               │
-│  3. recovery_intent(now_vt) → CmdChannel.publish + retry count   │
+┌─ Thread H (hot path) ────────────────────────────────────────────┐
+│ P-ORDER (poll order law):                                        │
+│  1. poll UDP recovery socket -> ingest()                         │
+│  2. poll UDP multicast / replay transport -> ingest()            │
+│  3. recovery_intent(now_vt) -> sendto 20-byte request + retry cnt│
 │  4. transport.poll advances vt under AM-5 clamp (§6)             │
-└───────┬──────────────────────────────────────────▲───────────────┘
-        │ CmdChannel (latest-wins register, §3)    │ PacketMailbox
-        ▼                                          │ (SPSC 16×1500)
-┌─ Thread R ───────────────────────────────────────┴───────────────┐
-│ raw libc non-blocking socket (ADR-0006) · IP literal only        │
-│ request encode (doc 02 §2.3) · 2B-BE framed response parse       │
-│ session-register filter (INV-R5) → push whole packets            │
-└──────────────────────────────────────────────────────────────────┘
-        ▲ loopback TCP ▼
+└──────────────────────────────────┬───────────────────────────────┘
+                                   │ UDP unicast (Request / Responses)
+                                   ▼
 ┌─ Fake Retransmission Server (nf-testkit, harness thread) ────────┐
 │ std::net allowed · serves ground truth · seeded fault injection  │
 └──────────────────────────────────────────────────────────────────┘
