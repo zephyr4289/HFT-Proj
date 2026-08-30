@@ -64,6 +64,15 @@ pub fn check_recovery_intent(
                 from: w,
                 to_excl: t,
             });
+        } else if let Some(prev_p) = *pending_to {
+            if now_ns.saturating_sub(*last_intent_vt) >= RESUGGEST_WINDOW_NS {
+                *last_intent_vt = now_ns;
+                counters.intents_issued += 1;
+                return Some(RecoveryIntent {
+                    from: w,
+                    to_excl: prev_p,
+                });
+            }
         }
     }
 

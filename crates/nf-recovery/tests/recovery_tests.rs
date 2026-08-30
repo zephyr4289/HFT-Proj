@@ -221,15 +221,17 @@ fn test_r5_partial_fill_truncate_after() {
         f1.extend_from_slice(&[b'S', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b'O']);
         seq.ingest(&f1, 0, 2000, &mut sink);
 
-        let intent = seq.recovery_intent(3000).expect("Intent generated");
+        let intent = seq.recovery_intent(1000 + 300_000).expect("Intent generated");
         cmd_chan.publish(intent, sess);
 
+        let mut vt = 1000 + 300_000;
         for _ in 0..100 {
             client.step(&mailbox, &cmd_chan);
             mailbox.drain(|pkt| {
-                seq.ingest(pkt, 0, 4000, &mut sink);
+                seq.ingest(pkt, 0, vt, &mut sink);
             });
-            if let Some(next_intent) = seq.recovery_intent(4000) {
+            vt += 10_000_000;
+            if let Some(next_intent) = seq.recovery_intent(vt) {
                 cmd_chan.publish(next_intent, sess);
             }
             if seq.watermark() >= 22 {
@@ -601,10 +603,7 @@ fn test_e2e_2a_canonical_dual_drop() {
         let mailbox = Arc::new(PacketMailbox::new());
         let mut client = RecoveryClient::new([127, 0, 0, 1], server.port());
 
-        // Loop Termination Law: runs until Ended or Dead
-        while (transport.poll(&mut batch) > 0 || seq.state() == State::Contig || seq.state() == State::Init)
-            && seq.state() != State::Dead
-        {
+        while transport.poll(&mut batch) > 0 {
             let now_ns = transport.now_ns();
 
             // 1. Drain PacketMailbox -> ingest (P-ORDER 1)
@@ -624,10 +623,23 @@ fn test_e2e_2a_canonical_dual_drop() {
 
             // 4. Step Thread R
             client.step(&mailbox, &cmd_chan);
+        }
 
-            if seq.state() == State::Ended {
+        // Trailing recovery steps until watermark reaches N+1 or Dead
+        let mut trailing_vt = transport.now_ns();
+        for _ in 0..100 {
+            if seq.watermark() >= MINI_MESSAGE_COUNT + 1 || seq.state() == State::Dead {
                 break;
             }
+            trailing_vt += 10_000_000;
+            if let Some(intent) = seq.recovery_intent(trailing_vt) {
+                cmd_chan.publish(intent, sess);
+            }
+            client.step(&mailbox, &cmd_chan);
+            mailbox.drain(|pkt| {
+                seq.ingest(pkt, 0, trailing_vt, &mut sink);
+            });
+            thread::sleep(Duration::from_millis(2));
         }
 
         assert_eq!(sink.hash(), MINI_GOLDEN_HASH, "Golden hash must match ground truth");
