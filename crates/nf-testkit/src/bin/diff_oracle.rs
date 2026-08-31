@@ -78,7 +78,7 @@ fn run_differential_with_mutation(
         ));
     }
 
-    let (gt_count, gt_hash) = golden(gt);
+    let (gt_hash, gt_count) = golden(gt);
     if seq_count == gt_count && seq_hash != gt_hash {
         return Err(format!(
             "Hash divergence on full dataset: seq_hash={:#X} gt_hash={:#X}",

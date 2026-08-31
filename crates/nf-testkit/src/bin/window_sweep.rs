@@ -30,7 +30,7 @@ struct WindowStats {
 }
 
 fn run_sweep_for_slots(gt: &[u8], slots: usize) -> WindowStats {
-    let (gt_count, gt_hash) = golden(gt);
+    let (gt_hash, gt_count) = golden(gt);
     let sess = *b"WINDSWEEP1";
 
     // 1. Evaluate M1 (Baseline MTU contiguous)
