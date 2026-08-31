@@ -509,16 +509,17 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
     let r1_verdict = nf_protocol::gates::evaluate_reconciliation_residual(r1_composite_residual_pct);
 
     println!(
-        "STAGE_ECTOMY_RATES r0_hash={:.2}M r0_disp={:.2}M r1_count={:.2}M r2_noproof={:.2}M r3_noseq={:.2}M r4_noitch={:.2}M r5_noblock={:.2}M r6_poll={:.2}M",
+        "STAGE_ECTOMY_RATES CONFIG_TAG=\"clean_replay\" sampling=\"none\" r0_hash={:.2}M r0_disp={:.2}M r1_count={:.2}M r2_noproof={:.2}M r3_noseq={:.2}M r4_noitch={:.2}M r5_noblock={:.2}M r6_poll={:.2}M",
         r0 as f64 / 1e6, r0_disp as f64 / 1e6, r1 as f64 / 1e6, r2 as f64 / 1e6, r3 as f64 / 1e6, r4 as f64 / 1e6, r5 as f64 / 1e6, r6 as f64 / 1e6
     );
     println!(
-        "STAGE_ECTOMY_CYCLES c0={:.2} c0_disp={:.2} c1={:.2} c2={:.2} c3={:.2} c4={:.2} c5={:.2} c6={:.2}",
+        "STAGE_ECTOMY_CYCLES CONFIG_TAG=\"clean_replay\" c0={:.2} c0_disp={:.2} c1={:.2} c2={:.2} c3={:.2} c4={:.2} c5={:.2} c6={:.2}",
         c0, c0_disp, c1, c2, c3, c4, c5, c6
     );
     println!(
-        "H10_SINK_SPLIT total_sink={:.2} cyc fnv_math={:.2} cyc sink_dispatch={:.2} cyc H10_VERDICT={}",
-        delta_total_sink, delta_fnv_math, delta_sink_disp,
+        "H10_SINK_SPLIT total_sink={:.2} cyc fnv_math={:.2} cyc ({:.1}%) sink_dispatch={:.2} cyc ({:.1}%) H10_VERDICT={}",
+        delta_total_sink, delta_fnv_math, (delta_fnv_math / delta_total_sink.max(0.001)) * 100.0,
+        delta_sink_disp, (delta_sink_disp / delta_total_sink.max(0.001)) * 100.0,
         if delta_sink_disp > 0.0 { "CONFIRMED (Invocation dispatch non-zero)" } else { "REFUTED" }
     );
     println!(
@@ -526,7 +527,7 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
         delta_total_sink, delta_fnv_math, delta_sink_disp, delta_proof, delta_seq, delta_itch, delta_block, delta_header, delta_poll
     );
     println!(
-        "RECONCILIATION_COMPOSITE rate_total_c0={:.2} cyc bracket_mean={:.2} cyc mean_gap={:.2} cyc diff_rate_bracket={:.2}% diff_bracket_gap={:.2}% composite_residual={:.2}% VERDICT={}",
+        "RECONCILIATION_COMPOSITE rate_total_c0={:.2} cyc bracket_mean={:.2} cyc sparse_period_est={:.2} cyc diff_rate_bracket={:.2}% diff_bracket_gap={:.2}% composite_residual={:.2}% VERDICT={}",
         c0, mean_bracket_cyc, mean_gap_cyc, r1_rate_vs_bracket_pct, r1_bracket_vs_gap_pct, r1_composite_residual_pct, r1_verdict.as_str()
     );
 }
@@ -1401,6 +1402,6 @@ fn run_gap_probe(gt: &[u8]) -> f64 {
     } else {
         0.0
     };
-    println!("GAP_PROBE sampled_intervals={} total_gap_cyc={} mean_gap_per_msg={:.2} cyc", sink.sampled_count, sink.total_gap, mean_gap_per_msg);
+    println!("GAP_PROBE sampled_intervals={} total_period_cyc={} sparse_period_est={:.2} cyc", sink.sampled_count, sink.total_gap, mean_gap_per_msg);
     mean_gap_per_msg
 }

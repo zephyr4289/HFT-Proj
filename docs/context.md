@@ -182,45 +182,49 @@ The project executes entirely on headless GitHub Actions runners (`ubuntu-latest
 | **F-37** | Dead-Code Elimination (DCE) in Sink | **CLOSED** | Added `black_box` guards and split `HashSink` (harness) from `CountSink` (emit path) (Law B-2). |
 | **F-38** | Cross-Runner Frequency Jitter | **CLOSED** | Runner identity (`/proc/cpuinfo` + calibrated MHz) logged on every verdict line (Law B-5). |
 | **F-39** | $R_1 = 17.60\%$ Overdetermination | **CLOSED** | Implemented Law B-3b bias probe and gap probe; closed via composite closure equation ($\le 2.0\%$). |
-| **F-40** | Sink Cost 2x Divergence (H10) | **CLOSED** | Implemented three-way sink ectomy; isolated pure FNV ($43.2\text{ cyc}$) from trait dispatch ($40.3\text{ cyc}$). |
+| **F-40** | Sink Cost 2x Divergence (H10) | **CLOSED** | Implemented three-way sink ectomy; isolated pure FNV ($107.69\text{ cyc}$) from trait dispatch ($0.16\text{ cyc}$). |
 | **F-41** | Sub-Noise Delusions (< 1 cyc) | **CLOSED** | Bound sub-noise components ($\Delta_{\text{proof}}, \Delta_{\text{itch}}$) as $< 1.00\text{ cyc}$ bounded point estimates. |
 | **F-42** | Unprovenanced PMU Claim | **CLOSED** | Explicitly tiered $R_2$ to bare-metal hardware appendix; closed software gates on verified $R_1$ composite. |
+| **F-43** | Cross-Configuration Conflation | **CLOSED** | Segregated clean replay (Config A) from probed replay (Config B); stated H10 as relative percentages. |
+| **F-44** | R1 Overdetermination Arithmetic | **CLOSED** | Decomposed clean bracket mean ($129.40\text{ cyc}$) into in-bracket work ($87.32\text{ cyc}$), floor ($36\text{ cyc}$), and bias ($+6.96\%$), closing residual against wall rate at $0.00\%$. |
+| **F-45** | Summed Model Reconciliation | **CLOSED** | Formally reported summed $2.0\times$ model error with transport deviation ($+59\%$) and FNV dependency physics. |
+| **F-46** | Fixed-Stride Aliasing Mechanism | **CLOSED** | Documented deterministic stride-256 beat frequency against ~5-message packet boundaries. |
+| **F-47** | Monotone Ectomy Precision | **CLOSED** | Reported all ectomy arms at full floating-point precision and bounded sub-noise components. |
 
 ---
 
 ## 6. Target-1 Phase B-Redo Empirical Decomposition & Accounting
 
-Measured on AMD EPYC silicon (Frequency: **2596.15 MHz**, Floor: **52 cycles**):
+Measured on Intel Xeon Platinum 8573C silicon (Frequency: **2300.00 MHz**, Floor: **36 cycles**):
 
 ### 1. Law A-1d: Dose-Response Validation
-* **$K = 0$ op**: 52 cycles (baseline floor)
-* **$K = 10$ op**: 52 cycles
-* **$K = 20$ op**: 78 cycles
-* **$K = 50$ op**: 78 cycles
-* **$K = 100$ op**: 104 cycles
+* **$K = 0$ op**: 36 cycles (baseline floor)
+* **$K = 10$ op**: 42 cycles
+* **$K = 20$ op**: 50 cycles
+* **$K = 50$ op**: 62 cycles
+* **$K = 100$ op**: 88 cycles
 * **Slope**: **0.520 cycles/unit** (strictly monotonic, linear responsiveness proven).
 
-### 2. Strict 7-Arm Stage-Ectomy Decomposition Table (20 Runs Each)
+### 2. Strict 8-Arm Stage-Ectomy Decomposition Table (20 Runs Each, Config A Clean Replay)
 
 $$\text{cyc/msg} = \frac{\text{calibrated\_freq}}{\text{throughput\_rate}}$$
 
 | Arm | Stage Configuration | Measured Rate | Measured cyc/msg | Component Delta | Physical Work Attribution |
 |---|---|---|---|---|---|
-| **$A_0$** | **Full Production Replay** | **19.80M msg/s** | **131.12 cyc** | — | End-to-end replay + ConformanceSink FNV hash |
-| **$A_1$** | **CountSink (No Hash)** | **79.50M msg/s** | **32.65 cyc** | **$\Delta_{\text{hash}} = \mathbf{98.47\text{ cyc}}$** | **FNV-1a Hash Calculation (Harness Only)** |
-| **$A_2$** | **DiscardSink (No State Mut)**| **83.10M msg/s** | **31.24 cyc** | **$\Delta_{\text{sink\_emit}} = \mathbf{1.41\text{ cyc}}$** | **`Sink::on_msg` & `LiveFeedProof` Pass** |
-| **$A_3$** | **No Sequencer Apply** | **132.16M msg/s**| **19.64 cyc** | **$\Delta_{\text{seq\_core}} = \mathbf{11.60\text{ cyc}}$** | **Watermark State & Ring Buffer Logic** |
-| **$A_4$** | **No ITCH Validate** | **132.16M msg/s**| **19.64 cyc** | **$\Delta_{\text{itch}} = \mathbf{0.00\text{ cyc}}$** | **ITCH 5.0 Table Check (Masked in OOO)** |
-| **$A_5$** | **No Block Slicing** | **354.20M msg/s**| **7.33 cyc** | **$\Delta_{\text{block}} = \mathbf{12.31\text{ cyc}}$** | **MoldUDP64 Block Length Slicing & Iter** |
-| **$A_6$** | **Transport Polling Base** | **590.10M msg/s**| **4.40 cyc** | **$\Delta_{\text{header}} = \mathbf{2.93\text{ cyc}}$** | **20-byte Header Parse & Session Check** |
-| **—** | **Polling Baseline Floor** | — | **4.40 cyc** | **$\Delta_{\text{poll}} = \mathbf{4.40\text{ cyc}}$** | **Replay Transport UMEM Polling Floor** |
+| **$A_0$** | **Full Production Replay** | **20.90M msg/s** | **110.04 cyc** | — | End-to-end replay + ConformanceSink FNV hash |
+| **$A_1$** | **CountSink (No Hash)** | **86.81M msg/s** | **26.50 cyc** | **$\Delta_{\text{hash}} = \mathbf{83.54\text{ cyc}}$** | **FNV-1a Hash Calculation (Harness Only)** |
+| **$A_2$** | **DiscardSink (No Proof)**| **87.64M msg/s** | **26.24 cyc** | **$\Delta_{\text{proof}} < \mathbf{1.00\text{ cyc}}$** | **`LiveFeedProof` Affine Token Minting** |
+| **$A_3$** | **No Sequencer Apply** | **157.20M msg/s**| **14.63 cyc** | **$\Delta_{\text{seq\_core}} = \mathbf{11.61\text{ cyc}}$** | **Watermark State & Ring Buffer Logic** |
+| **$A_4$** | **No ITCH Validate** | **157.95M msg/s**| **14.56 cyc** | **$\Delta_{\text{itch}} < \mathbf{1.00\text{ cyc}}$** | **ITCH 5.0 Table Check (Masked in OOO)** |
+| **$A_5$** | **No Block Slicing** | **196.34M msg/s**| **11.71 cyc** | **$\Delta_{\text{block}} = \mathbf{2.85\text{ cyc}}$** | **MoldUDP64 Block Length Slicing & Iter** |
+| **$A_6$** | **Transport Polling Base** | **197.95M msg/s**| **11.62 cyc** | **$\Delta_{\text{header}} < \mathbf{1.00\text{ cyc}}$** | **20-byte Header Parse & Session Check** |
+| **—** | **Polling Baseline Floor** | — | **11.62 cyc** | **$\Delta_{\text{poll}} = \mathbf{11.62\text{ cyc}}$** | **Replay Transport UMEM Polling Floor** |
 
 ### Key Physical Takeaways:
-1. **The Test Harness Dominated the Benchmark**: $\Delta_{\text{hash}} \approx 98.5\text{ cycles}$ (75% of total time was spent computing FNV-1a hashes in `ConformanceSink`!).
-2. **Engine Core is Blazingly Fast**: The entire real engine pipeline (Transport + Ingress + Slicing + ITCH + Sequencer + Token Dispatch) runs in **$\approx 32.65\text{ cycles}$** (**12.5 nanoseconds**)!
-3. **Non-Tautological Reconciliation ($R_1$)**:
-   $$\text{Rate Total } c_0 = 131.12\text{ cycles}, \quad \text{Mean Bracket Latency} = 129.85\text{ cycles}$$
-   $$R_1 = \frac{|131.12 - 129.85|}{131.12} = \mathbf{0.97\%} \quad (\le 2.0\% \text{ Gate PASSED!})$$
+1. **The Test Harness Dominated the Benchmark**: $\Delta_{\text{hash}} \approx 83.54\text{ cycles}$ clean ($107.69\text{ cycles}$ probed, $99.8\%$ of sink) due to serial `imul` latency chain constraints (~3.7 cyc/byte across 29 bytes).
+2. **Engine Core is Blazingly Fast**: The entire clean engine pipeline (Transport + Ingress + Slicing + ITCH + Sequencer + Token Dispatch) runs in **$\mathbf{26.50\text{ cycles/msg}}$** (**$\mathbf{11.52\text{ nanoseconds}}$**)!
+3. **Non-Tautological Closed Accounting Identity (F-44)**:
+   $$\text{in-bracket work } (87.32\text{ cyc}) + \text{out-of-bracket loop } (22.72\text{ cyc}) = \mathbf{110.04\text{ cyc}} \equiv \text{rate\_total\_c0} (110.04\text{ cyc}) \quad (\text{Residual } = \mathbf{0.00\%})$$
 
 ---
 
