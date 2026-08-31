@@ -57,11 +57,12 @@ fn test_r1_fakeserver_drop_request_fault() {
             vec![SessionTruth {
                 session_id: sess,
                 first_seq: 1,
-                last_seq: 500,
-                msgs: (1..=500).map(|seq| vec![b'S', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b'O']).collect(),
+                first_msg_index: 0,
+                total_msgs: 500,
             }],
             FaultMode::DropRequest(2),
-        );
+        )
+        .expect("spawn server");
 
         let mut client = RecoveryClient::new([127, 0, 0, 1], server.port());
         let mut buf = [0u8; 1500];
@@ -99,11 +100,12 @@ fn test_r2_fakeserver_drop_response_fault() {
             vec![SessionTruth {
                 session_id: sess,
                 first_seq: 1,
-                last_seq: 500,
-                msgs: (1..=500).map(|seq| vec![b'S', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b'O']).collect(),
+                first_msg_index: 0,
+                total_msgs: 500,
             }],
             FaultMode::DropResponse(2),
-        );
+        )
+        .expect("spawn server");
 
         let mut client = RecoveryClient::new([127, 0, 0, 1], server.port());
         let mut buf = [0u8; 1500];
