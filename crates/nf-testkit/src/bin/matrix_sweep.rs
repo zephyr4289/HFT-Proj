@@ -87,7 +87,7 @@ fn main() {
             .unwrap_or_else(|_| fs::read("../data/tests/sample-mini.itch").expect("Failed to load sample"))
     });
 
-    let (gt_count, gt_hash) = golden(&gt);
+    let (gt_hash, gt_count) = golden(&gt);
 
     println!("=== EXECUTING COMPLETE 17-CELL MATRIX CONFLUENCE CAMPAIGN (M1..M17) ===");
 
