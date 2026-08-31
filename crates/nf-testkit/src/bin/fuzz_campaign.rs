@@ -119,17 +119,21 @@ fn main() {
             _ => {
                 // Synthesize valid ITCH message types from table
                 let valid_types = [
-                    0x53u8, 0x52, 0x48, 0x59, 0x4C, 0x56, 0x57, 0x4B, 0x4A, 0x68,
-                    0x41, 0x46, 0x45, 0x43, 0x58, 0x44, 0x55, 0x50, 0x51, 0x42,
-                    0x49, 0x4E, 0x4F,
+                    b'S', b'R', b'H', b'Y', b'L', b'V', b'W', b'K', b'J', b'h',
+                    b'A', b'F', b'E', b'C', b'X', b'D', b'U', b'P', b'Q', b'B',
+                    b'I', b'N',
                 ];
                 let chosen_type = valid_types[(rng.next_u64() as usize) % valid_types.len()];
                 let expected_len = itch5::LENGTH[chosen_type as usize] as usize;
-                mut_buf[0] = chosen_type;
-                for b in mut_buf[1..expected_len].iter_mut() {
-                    *b = (rng.next_u64() & 0xFF) as u8;
+                if expected_len > 0 {
+                    mut_buf[0] = chosen_type;
+                    if expected_len > 1 {
+                        for b in mut_buf[1..expected_len].iter_mut() {
+                            *b = (rng.next_u64() & 0xFF) as u8;
+                        }
+                    }
+                    fuzz_itch_harness(&mut_buf[..expected_len], &mut types_seen);
                 }
-                fuzz_itch_harness(&mut_buf[..expected_len], &mut types_seen);
             }
         }
 
