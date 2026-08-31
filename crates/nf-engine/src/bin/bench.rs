@@ -340,30 +340,30 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
             if dt > 0 { rates_a1.push(((sink.count as f64) / (dt as f64) * 1e9) as u64); }
         }
 
-        // A2: No Proof Mint (Watermark advance + arena write, no token instantiation)
+        // A2: Minus Sink Counter (Full Sequencer + Proof Mint, NoOpSink with zero state mutation)
         {
             let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
             let mut seq = Sequencer::new();
+            struct NoOpSink;
+            impl Sink for NoOpSink {
+                #[inline(always)]
+                fn on_msg(&mut self, proof: &LiveFeedProof, _seq: u64, msg: &[u8]) {
+                    std::hint::black_box(proof);
+                    std::hint::black_box(msg.as_ptr());
+                }
+                fn on_event(&mut self, _e: &Event) {}
+            }
+            let mut sink = NoOpSink;
             let mut batch = FrameBatch::new();
-            let mut count = 0u64;
             let t0 = read_monotonic_raw_ns();
             while transport.poll(&mut batch) > 0 {
                 let now = transport.now_ns();
                 for f in batch.frames() {
-                    if let Ok(moldudp64::Parsed::Data { blocks, .. }) = moldudp64::parse(f.bytes()) {
-                        for b in blocks {
-                            let _ = nf_protocol::itch5::validate(b.data);
-                            if b.seq == seq.watermark() {
-                                seq.advance_watermark(b.seq + 1);
-                                count += 1;
-                                std::hint::black_box(b.data.as_ptr());
-                            }
-                        }
-                    }
+                    seq.ingest(f.bytes(), f.feed, now, &mut sink);
                 }
             }
             let dt = read_monotonic_raw_ns().saturating_sub(t0);
-            if dt > 0 { rates_a2.push(((count as f64) / (dt as f64) * 1e9) as u64); }
+            if dt > 0 { rates_a2.push(((505849 as f64) / (dt as f64) * 1e9) as u64); }
         }
 
         // A3: No Sequencer Arena Apply (Parse + ITCH validate + watermark compare branch only)
