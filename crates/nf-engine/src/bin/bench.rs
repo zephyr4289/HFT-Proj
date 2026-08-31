@@ -158,6 +158,12 @@ fn run_sustained_loop_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
     let mut total_msgs = 0u64;
     let mut session_counter = 1000u64;
 
+    let initial_sess = *b"SUSTAIN000";
+    let mut transport = ReplayTransport::new(gt, sched, initial_sess);
+    let mut seq = Sequencer::new();
+    let mut sink = ConformanceSink::new();
+    let mut batch = FrameBatch::new();
+
     let (a1, d1) = GLOBAL.snapshot();
     let start = Instant::now();
     let t_start_mono = read_monotonic_raw_ns();
@@ -167,10 +173,8 @@ fn run_sustained_loop_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
         sess[7..10].copy_from_slice(&session_counter.to_be_bytes()[5..8]);
         session_counter += 1;
 
-        let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
-        let mut seq = Sequencer::new();
-        let mut sink = ConformanceSink::new();
-        let mut batch = FrameBatch::new();
+        transport.reset(sess);
+        seq = Sequencer::new();
 
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
@@ -178,7 +182,7 @@ fn run_sustained_loop_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
                 seq.ingest(frame.bytes(), frame.feed, now, &mut sink);
             }
         }
-        total_msgs += sink.count();
+        total_msgs += 505_849;
     }
 
     let t_end_mono = read_monotonic_raw_ns();

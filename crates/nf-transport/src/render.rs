@@ -69,6 +69,21 @@ impl<'a> ReplayTransport<'a> {
     }
 
     #[inline]
+    pub fn reset(&mut self, session: [u8; 10]) {
+        let first_vt = self
+            .schedule
+            .events
+            .first()
+            .map(|e| e.release_vt)
+            .unwrap_or(0);
+        self.event_idx = 0;
+        self.virtual_clock = first_vt;
+        self.cursors = [Cursor::default(), Cursor::default()];
+        self.session = session;
+        self.clock_clamp = None;
+    }
+
+    #[inline]
     pub fn set_clock_clamp(&mut self, clamp: Option<u64>) {
         self.clock_clamp = clamp;
     }
