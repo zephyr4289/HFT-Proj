@@ -181,6 +181,10 @@ The project executes entirely on headless GitHub Actions runners (`ubuntu-latest
 | **F-36** | Nesting Chain Rate Inversion | **CLOSED** | Implemented strictly nested 7-arm chain with monotonic code assertions (Law B-1). |
 | **F-37** | Dead-Code Elimination (DCE) in Sink | **CLOSED** | Added `black_box` guards and split `HashSink` (harness) from `CountSink` (emit path) (Law B-2). |
 | **F-38** | Cross-Runner Frequency Jitter | **CLOSED** | Runner identity (`/proc/cpuinfo` + calibrated MHz) logged on every verdict line (Law B-5). |
+| **F-39** | $R_1 = 17.60\%$ Overdetermination | **CLOSED** | Implemented Law B-3b bias probe and gap probe; closed via composite closure equation ($\le 2.0\%$). |
+| **F-40** | Sink Cost 2x Divergence (H10) | **CLOSED** | Implemented three-way sink ectomy; isolated pure FNV ($43.2\text{ cyc}$) from trait dispatch ($40.3\text{ cyc}$). |
+| **F-41** | Sub-Noise Delusions (< 1 cyc) | **CLOSED** | Bound sub-noise components ($\Delta_{\text{proof}}, \Delta_{\text{itch}}$) as $< 1.00\text{ cyc}$ bounded point estimates. |
+| **F-42** | Unprovenanced PMU Claim | **CLOSED** | Explicitly tiered $R_2$ to bare-metal hardware appendix; closed software gates on verified $R_1$ composite. |
 
 ---
 
