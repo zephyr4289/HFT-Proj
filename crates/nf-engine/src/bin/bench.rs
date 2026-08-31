@@ -30,6 +30,7 @@ enum Arm {
     Cold,
     Prefault,
     Empty,
+    Loop,
 }
 
 pub struct InstrumentedSink<'a> {
@@ -455,6 +456,35 @@ fn run_single_arm(
                             msg_seq += 1;
                         }
                     }
+                } else if arm == Arm::Loop {
+                    // A-1c: Loop-cost arm runs full transport poll + MoldUDP64 block slice + ITCH length parsing, no-oping sequencer state
+                    if let Ok(moldudp64::Parsed::Data { blocks, .. }) = moldudp64::parse(bytes) {
+                        for block in blocks {
+                            let t0 = read_tsc_serialized_start();
+                            let _ = nf_protocol::itch5::validate(block.data);
+                            std::hint::black_box(block.data);
+                            let t1 = read_tsc_serialized_end();
+
+                            let dt_raw = t1.saturating_sub(t0);
+                            let dt_adj = dt_raw.saturating_sub(cal.overhead_cycles);
+                            hist_raw.record(dt_raw);
+                            hist_adj.record(dt_adj);
+
+                            study_ctx.record_sample(
+                                dt_raw,
+                                dt_adj,
+                                msg_seq,
+                                t0,
+                                t1,
+                                (msg_seq as usize * 32) % gt.len(),
+                                pos,
+                                batch_len,
+                                is_first_touch,
+                                is_hb_eos,
+                            );
+                            msg_seq += 1;
+                        }
+                    }
                 } else {
                     // P2-L1: Hot path with per-message instrumented sink
                     let cur_seq = base_sink.count() + 1;
@@ -485,7 +515,7 @@ fn run_single_arm(
         let (a2, d2) = GLOBAL.snapshot();
         let alloc_delta = (a2 - a1) + (d2 - d1);
 
-        let msg_count = if arm == Arm::Empty {
+        let msg_count = if arm == Arm::Empty || arm == Arm::Loop {
             msg_seq - 1
         } else {
             base_sink.count()
@@ -515,6 +545,7 @@ fn run_single_arm(
             Arm::Cold => "cold",
             Arm::Prefault => "prefault",
             Arm::Empty => "empty",
+            Arm::Loop => "loop",
         };
 
         println!(
@@ -818,32 +849,40 @@ fn main() {
         let _ = fs::write(&report_path, report_content);
         println!("STUDY_REPORT written to {}", report_path);
 
-        println!("=== 6. TARGET-1 PHASE A: 2-ARM SKELETON BASELINE SWEEP (20 RUNS) ===");
+        println!("=== 6. TARGET-1 PHASE A: 3-ARM SKELETON BASELINE SWEEP (20 RUNS) ===");
         let phase_a_runs = 20;
         let mut empty_p50s = Vec::with_capacity(phase_a_runs);
+        let mut loop_p50s = Vec::with_capacity(phase_a_runs);
         let mut full_p50s = Vec::with_capacity(phase_a_runs);
 
         for _ in 0..phase_a_runs {
             let empty_run = run_single_arm(&gt, Arm::Empty, 1, &sample_path, &cal);
+            let loop_run = run_single_arm(&gt, Arm::Loop, 1, &sample_path, &cal);
             let cold_run = run_single_arm(&gt, Arm::Cold, 1, &sample_path, &cal);
             empty_p50s.push((empty_run.1).0);
+            loop_p50s.push((loop_run.1).0);
             full_p50s.push((cold_run.1).0);
         }
 
         empty_p50s.sort_unstable();
+        loop_p50s.sort_unstable();
         full_p50s.sort_unstable();
 
         let empty_p50_median = empty_p50s[phase_a_runs / 2];
         let empty_p50_spread = empty_p50s[phase_a_runs - 1].saturating_sub(empty_p50s[0]);
 
+        let loop_p50_median = loop_p50s[phase_a_runs / 2];
+        let loop_p50_spread = loop_p50s[phase_a_runs - 1].saturating_sub(loop_p50s[0]);
+
         let full_p50_median = full_p50s[phase_a_runs / 2];
         let full_p50_spread = full_p50s[phase_a_runs - 1].saturating_sub(full_p50s[0]);
 
-        let residual_median = full_p50_median.saturating_sub(empty_p50_median);
+        let loop_cost = loop_p50_median.saturating_sub(empty_p50_median);
+        let work_residual = full_p50_median.saturating_sub(loop_p50_median);
 
         println!(
-            "TARGET1_PHASE_A empty_p50={} cyc (spread={} cyc) full_p50={} cyc (spread={} cyc) residual_A={} cyc VERDICT=PASS",
-            empty_p50_median, empty_p50_spread, full_p50_median, full_p50_spread, residual_median
+            "TARGET1_PHASE_A empty_p50={} cyc (spread={} cyc) loop_p50={} cyc (spread={} cyc) full_p50={} cyc (spread={} cyc) loop_cost={} cyc work_residual={} cyc VERDICT=PASS",
+            empty_p50_median, empty_p50_spread, loop_p50_median, loop_p50_spread, full_p50_median, full_p50_spread, loop_cost, work_residual
         );
     } else {
         let (rate, raw, adj, _unknown_pct, _) =
