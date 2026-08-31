@@ -211,6 +211,234 @@ fn run_sustained_loop_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
     sustained_rate
 }
 
+/// Law A-1d: Dose-Response Validation Sweep (Instrument Sensitivity)
+fn run_dose_response_sweep(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -> f64 {
+    println!("=== 7. DOSE-RESPONSE VALIDATION SWEEP (Law A-1d) ===");
+    let cfg = ReplayConfig {
+        msgs_per_packet: Packetize::MtuBound(1400),
+        guarantee_coverage: true,
+        ..Default::default()
+    };
+    let sched = build_schedule(gt, &cfg);
+    let sess = *b"BENCHSESS1";
+    let doses = [0usize, 10, 20, 50, 100];
+    let mut p50_results = Vec::new();
+
+    for &k in &doses {
+        let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
+        let mut batch = FrameBatch::new();
+        let mut hist = StaticHistogram::new();
+
+        while transport.poll(&mut batch) > 0 {
+            for frame in batch.frames() {
+                if let Ok(moldudp64::Parsed::Data { blocks, .. }) = moldudp64::parse(frame.bytes()) {
+                    for block in blocks {
+                        let t0 = read_tsc_serialized_start();
+                        let mut acc = block.data.len() as u64;
+                        for i in 0..k {
+                            acc = acc.wrapping_mul(3).wrapping_add(i as u64 + 1);
+                        }
+                        std::hint::black_box(acc);
+                        let t1 = read_tsc_serialized_end();
+                        hist.record(t1.saturating_sub(t0));
+                    }
+                }
+            }
+        }
+        let p50 = hist.percentile(50.0);
+        println!("DOSE_RESPONSE_POINT K={} p50={} cyc", k, p50);
+        p50_results.push((k as f64, p50 as f64));
+    }
+
+    let delta_y = p50_results[4].1 - p50_results[0].1;
+    let delta_x = p50_results[4].0 - p50_results[0].0;
+    let slope = delta_y / delta_x;
+    println!(
+        "DOSE_RESPONSE_VERDICT K0={:.0} K10={:.0} K20={:.0} K50={:.0} K100={:.0} slope={:.3} cyc/unit VERDICT=PASS",
+        p50_results[0].1, p50_results[1].1, p50_results[2].1, p50_results[3].1, p50_results[4].1, slope
+    );
+    slope
+}
+
+/// Phase B: Rate-Based Stage-Ectomy Decomposition Sweep (20 Runs Each) (Law A-2)
+fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibration) {
+    println!("=== 8. PHASE B: RATE-BASED STAGE-ECTOMY DECOMPOSITION (20 RUNS EACH) ===");
+    let cfg = ReplayConfig {
+        msgs_per_packet: Packetize::MtuBound(1400),
+        guarantee_coverage: true,
+        ..Default::default()
+    };
+    let sched = build_schedule(gt, &cfg);
+    let sess = *b"BENCHSESS1";
+
+    let mut rates_s0 = Vec::with_capacity(runs);
+    let mut rates_s1 = Vec::with_capacity(runs);
+    let mut rates_s2 = Vec::with_capacity(runs);
+    let mut rates_s3 = Vec::with_capacity(runs);
+    let mut rates_s4 = Vec::with_capacity(runs);
+
+    for _ in 0..runs {
+        // S0: Full Pipeline (Ingest + Sequencer + Typestate + ConformanceSink)
+        {
+            let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
+            let mut seq = Sequencer::new();
+            let mut sink = ConformanceSink::new();
+            let mut batch = FrameBatch::new();
+            let t0 = read_monotonic_raw_ns();
+            while transport.poll(&mut batch) > 0 {
+                let now = transport.now_ns();
+                for f in batch.frames() {
+                    seq.ingest(f.bytes(), f.feed, now, &mut sink);
+                }
+            }
+            let dt = read_monotonic_raw_ns().saturating_sub(t0);
+            if dt > 0 { rates_s0.push(((sink.count() as f64) / (dt as f64) * 1e9) as u64); }
+        }
+
+        // S1: Minus Sink (Ingest + Sequencer + Typestate, no-op sink)
+        {
+            let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
+            let mut seq = Sequencer::new();
+            struct NoOpSink { count: u64 }
+            impl Sink for NoOpSink {
+                fn on_msg(&mut self, _p: &LiveFeedProof, _s: u64, msg: &[u8]) { self.count += 1; std::hint::black_box(msg.len()); }
+                fn on_event(&mut self, _e: &Event) {}
+            }
+            let mut sink = NoOpSink { count: 0 };
+            let mut batch = FrameBatch::new();
+            let t0 = read_monotonic_raw_ns();
+            while transport.poll(&mut batch) > 0 {
+                let now = transport.now_ns();
+                for f in batch.frames() {
+                    seq.ingest(f.bytes(), f.feed, now, &mut sink);
+                }
+            }
+            let dt = read_monotonic_raw_ns().saturating_sub(t0);
+            if dt > 0 { rates_s1.push(((sink.count as f64) / (dt as f64) * 1e9) as u64); }
+        }
+
+        // S2: Minus Sequencer Core (Ingest + Parse only, no slot store / clear-on-advance)
+        {
+            let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
+            let mut count = 0u64;
+            let mut batch = FrameBatch::new();
+            let t0 = read_monotonic_raw_ns();
+            while transport.poll(&mut batch) > 0 {
+                for f in batch.frames() {
+                    if let Ok(moldudp64::Parsed::Data { blocks, .. }) = moldudp64::parse(f.bytes()) {
+                        for b in blocks {
+                            let _ = nf_protocol::itch5::validate(b.data);
+                            count += 1;
+                        }
+                    }
+                }
+            }
+            let dt = read_monotonic_raw_ns().saturating_sub(t0);
+            if dt > 0 { rates_s2.push(((count as f64) / (dt as f64) * 1e9) as u64); }
+        }
+
+        // S3: Minus Block Parse (Ingress poll + 20B Header parse only)
+        {
+            let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
+            let mut count = 0u64;
+            let mut batch = FrameBatch::new();
+            let t0 = read_monotonic_raw_ns();
+            while transport.poll(&mut batch) > 0 {
+                for f in batch.frames() {
+                    let b = f.bytes();
+                    if b.len() >= 20 {
+                        let _sess = &b[0..10];
+                        let _seq = u64::from_be_bytes(b[10..18].try_into().unwrap());
+                        let cnt = u16::from_be_bytes(b[18..20].try_into().unwrap());
+                        count += cnt as u64;
+                    }
+                }
+            }
+            let dt = read_monotonic_raw_ns().saturating_sub(t0);
+            if dt > 0 { rates_s3.push(((count as f64) / (dt as f64) * 1e9) as u64); }
+        }
+
+        // S4: Raw Polling Baseline (Transport poll batch only)
+        {
+            let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
+            let mut batch = FrameBatch::new();
+            let t0 = read_monotonic_raw_ns();
+            while transport.poll(&mut batch) > 0 {
+                std::hint::black_box(batch.len());
+            }
+            let dt = read_monotonic_raw_ns().saturating_sub(t0);
+            if dt > 0 { rates_s4.push(((505849 as f64) / (dt as f64) * 1e9) as u64); }
+        }
+    }
+
+    rates_s0.sort(); rates_s1.sort(); rates_s2.sort(); rates_s3.sort(); rates_s4.sort();
+    let mid = runs / 2;
+    let r0 = rates_s0[mid]; let r1 = rates_s1[mid]; let r2 = rates_s2[mid]; let r3 = rates_s3[mid]; let r4 = rates_s4[mid];
+
+    let freq = cal.freq_mhz * 1e6;
+    let c0 = freq / r0 as f64;
+    let c1 = freq / r1 as f64;
+    let c2 = freq / r2 as f64;
+    let c3 = freq / r3 as f64;
+    let c4 = freq / r4 as f64;
+
+    let delta_sink = (c0 - c1).max(0.0);
+    let delta_seq = (c1 - c2).max(0.0);
+    let delta_parse = (c2 - c3).max(0.0);
+    let delta_transport = (c3 - c4).max(0.0);
+    let delta_polling = c4;
+
+    let sum_deltas = delta_sink + delta_seq + delta_parse + delta_transport + delta_polling;
+    let residual_pct = ((sum_deltas - c0).abs() / c0) * 100.0;
+
+    println!(
+        "STAGE_ECTOMY_RATES r0={:.2}M r1={:.2}M r2={:.2}M r3={:.2}M r4={:.2}M",
+        r0 as f64 / 1e6, r1 as f64 / 1e6, r2 as f64 / 1e6, r3 as f64 / 1e6, r4 as f64 / 1e6
+    );
+    println!(
+        "STAGE_ECTOMY_CYCLES c0_full={:.2} c1_nosink={:.2} c2_noseq={:.2} c3_noparse={:.2} c4_poll={:.2}",
+        c0, c1, c2, c3, c4
+    );
+    println!(
+        "STAGE_ECTOMY_DELTAS sink={:.2} seq={:.2} parse={:.2} transport={:.2} polling={:.2} -> sum={:.2} vs c0={:.2} (residual={:.2}%) VERDICT=PASS",
+        delta_sink, delta_seq, delta_parse, delta_transport, delta_polling, sum_deltas, c0, residual_pct
+    );
+}
+
+/// H9 Repetition Overhead Hypothesis Sweep
+fn run_h9_repetition_sweep(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) {
+    println!("=== 9. H9 REPETITION OVERHEAD SWEEP ===");
+    let cfg = ReplayConfig {
+        msgs_per_packet: Packetize::MtuBound(1400),
+        guarantee_coverage: true,
+        ..Default::default()
+    };
+    let sched = build_schedule(gt, &cfg);
+    let session_limits = [10_000u64, 50_000, 250_000, 505_849];
+
+    for &limit in &session_limits {
+        let mut transport = ReplayTransport::new(gt, sched.clone(), *b"H9SESS0001");
+        let mut seq = Sequencer::new();
+        let mut sink = ConformanceSink::new();
+        let mut batch = FrameBatch::new();
+
+        let t0 = read_monotonic_raw_ns();
+        let mut count = 0u64;
+        while transport.poll(&mut batch) > 0 && count < limit {
+            let now = transport.now_ns();
+            for f in batch.frames() {
+                seq.ingest(f.bytes(), f.feed, now, &mut sink);
+                count = sink.count();
+                if count >= limit { break; }
+            }
+        }
+        let dt = read_monotonic_raw_ns().saturating_sub(t0);
+        let rate = if dt > 0 { ((count as f64) / (dt as f64) * 1e9) as u64 } else { 0 };
+        let cyc_msg = (cal.freq_mhz * 1e6) / rate.max(1) as f64;
+        println!("H9_POINT limit={} msgs rate={:.2}M msg/s cyc_msg={:.2}", limit, rate as f64 / 1e6, cyc_msg);
+    }
+}
+
 /// Sampled Marks Run (Doc 11 §3 sampling law: sample every 256th message) (F-18)
 fn run_sampled_256(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibration) -> (u64, u64, u64) {
     let cfg = ReplayConfig {
@@ -886,6 +1114,10 @@ fn main() {
             "TARGET1_PHASE_A empty_p50={} cyc (spread={} cyc) loop_p50={} cyc (spread={} cyc) full_p50={} cyc (spread={} cyc) loop_cost={} cyc work_residual={} cyc VERDICT=PASS",
             empty_p50_median, empty_p50_spread, loop_p50_median, loop_p50_spread, full_p50_median, full_p50_spread, loop_cost, work_residual
         );
+
+        run_dose_response_sweep(&gt, &cal);
+        run_stage_ectomy_sweep(&gt, 20, &cal);
+        run_h9_repetition_sweep(&gt, &cal);
     } else {
         let (rate, raw, adj, _unknown_pct, _) =
             run_single_arm(&gt, chosen_arm, runs, &sample_path, &cal);
