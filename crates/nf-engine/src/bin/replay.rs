@@ -4,9 +4,7 @@
 use nf_arbitrator::types::DeadReason;
 use nf_arbitrator::Sequencer;
 use nf_engine::alloc::GLOBAL;
-use nf_recovery::channel::CmdChannel;
 use nf_recovery::client::RecoveryClient;
-use nf_recovery::mailbox::PacketMailbox;
 use nf_testkit::sched::{
     build_schedule, DelayModel, LossModel, Packetize, ReplayConfig,
 };

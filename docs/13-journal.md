@@ -33,7 +33,7 @@ Evidence:  Complete ADR lineage ADR-0001 through ADR-0009 backed by empirical be
 | **2048** | 130.00 KiB | L2 resident | 24.1M msg/s | 20.6M msg/s | 1024 | 0 | PASS (Diminishing Return) |
 | **4096** | 260.00 KiB | L2 resident | 23.5M msg/s | 20.1M msg/s | 1024 | 0 | PASS (Scan Tax) |
 
-- **Rationale**: 1024 slots achieves 100% loss-free reordering under M11 without cache thrashing, providing the optimal knee where throughput peaks at 24.4M msg/s.
+- **Rationale**: 1024 slots achieves 100% loss-free reordering without cache thrashing, providing the optimal knee *within the tested disorder envelope* where throughput peaks at 24.4M msg/s with zero dropped messages.
 
 ---
 

@@ -7,9 +7,7 @@
 use nf_arbitrator::types::{DeadReason, Event, RecoveryIntent};
 use nf_arbitrator::{Sequencer, State};
 use nf_protocol::moldudp64::{encode_request, REQUEST_LEN};
-use nf_recovery::channel::CmdChannel;
 use nf_recovery::client::RecoveryClient;
-use nf_recovery::mailbox::PacketMailbox;
 use nf_recovery::types::*;
 use nf_testkit::fakeserver::{FakeRetransmissionServer, FaultMode, SessionTruth};
 use nf_testkit::sched::{build_schedule, DelayModel, DropRange, LossModel, Packetize, ReplayConfig};
@@ -48,82 +46,91 @@ fn with_watchdog<F: FnOnce() + Send + 'static>(timeout: Duration, f: F) {
     let _ = handle.join();
 }
 
-// ── R1: CmdChannel concurrent hammering ─────────────────────────────
+// ── R1: UDP Retransmission DropRequest Fault Recovery ─────────────
 #[test]
-fn test_r1_cmdchannel_hammer() {
+fn test_r1_fakeserver_drop_request_fault() {
     with_watchdog(Duration::from_secs(10), || {
-        let chan = Arc::new(CmdChannel::new());
-        let stop = Arc::new(AtomicBool::new(false));
+        let gt = load_mini_bytes();
+        let sess = *b"DROPREQS01";
+        let server = FakeRetransmissionServer::spawn(
+            &gt,
+            vec![SessionTruth {
+                session_id: sess,
+                first_seq: 1,
+                last_seq: 500,
+                msgs: (1..=500).map(|seq| vec![b'S', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b'O']).collect(),
+            }],
+            FaultMode::DropRequest(2),
+        );
 
-        let chan_writer = Arc::clone(&chan);
-        let stop_writer = Arc::clone(&stop);
-        let h_writer = thread::spawn(move || {
-            let mut seq = 1u64;
-            let sess = *b"HAMMERSESS";
-            while !stop_writer.load(Ordering::Relaxed) {
-                chan_writer.publish(
-                    RecoveryIntent {
-                        from: seq,
-                        to_excl: seq + 10,
-                    },
-                    sess,
-                );
-                seq += 1;
-            }
-        });
+        let mut client = RecoveryClient::new([127, 0, 0, 1], server.port());
+        let mut buf = [0u8; 1500];
 
-        let mut last_epoch = 0;
-        let mut last_from = 0;
-        let mut reads = 0;
-        while reads < 1_000_000 {
-            if let Some((payload, epoch)) = chan.take_latest(last_epoch) {
-                assert!(epoch > last_epoch);
-                assert!(payload.intent.from >= last_from, "Monotonic widening violated");
-                assert_eq!(payload.session, *b"HAMMERSESS");
-                last_epoch = epoch;
-                last_from = payload.intent.from;
-                reads += 1;
+        // Request 1 and 2 dropped by server fault mode
+        client.send_request(&sess, 10, 5);
+        client.send_request(&sess, 10, 5);
+        assert!(client.recv_packet(&mut buf).is_none());
+
+        // Request 3 succeeds
+        client.send_request(&sess, 10, 5);
+        let mut attempts = 0;
+        let mut received = false;
+        while attempts < 100 {
+            if let Some(n) = client.recv_packet(&mut buf) {
+                assert!(n > 20, "Must receive valid downstream packet");
+                received = true;
+                break;
             }
+            thread::sleep(Duration::from_millis(5));
+            attempts += 1;
         }
-
-        stop.store(true, Ordering::Relaxed);
-        let _ = h_writer.join();
+        assert!(received, "R1 must recover after dropped requests");
     });
 }
 
-// ── R2: PacketMailbox full -> park -> drain ─────────────────────────
+// ── R2: UDP Retransmission DropResponse Fault Recovery ────────────
 #[test]
-fn test_r2_packet_mailbox_park_drain() {
+fn test_r2_fakeserver_drop_response_fault() {
     with_watchdog(Duration::from_secs(10), || {
-        let mb = Arc::new(PacketMailbox::new());
-        let total = 5_000usize;
-
-        let mb_prod = Arc::clone(&mb);
-        let producer = thread::spawn(move || {
-            for i in 0..total {
-                let mut pkt = [0u8; 100];
-                pkt[0..8].copy_from_slice(&(i as u64).to_be_bytes());
-                mb_prod.push_park(&pkt);
-            }
-        });
-
-        let mut received = 0usize;
-        while received < total {
-            mb.drain(|pkt| {
-                let idx = u64::from_be_bytes(pkt[0..8].try_into().unwrap()) as usize;
-                assert_eq!(idx, received, "FIFO violation in PacketMailbox");
-                received += 1;
-            });
-            thread::sleep(Duration::from_micros(10));
-        }
-
-        let _ = producer.join();
-        assert_eq!(received, total);
-        assert!(
-            mb.parks() > 0,
-            "R2 must prove that parking actually occurred on mailbox full"
+        let gt = load_mini_bytes();
+        let sess = *b"DROPRESP01";
+        let server = FakeRetransmissionServer::spawn(
+            &gt,
+            vec![SessionTruth {
+                session_id: sess,
+                first_seq: 1,
+                last_seq: 500,
+                msgs: (1..=500).map(|seq| vec![b'S', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b'O']).collect(),
+            }],
+            FaultMode::DropResponse(2),
         );
-        println!("R2_PARK_COUNT={}", mb.parks());
+
+        let mut client = RecoveryClient::new([127, 0, 0, 1], server.port());
+        let mut buf = [0u8; 1500];
+
+        // Response 1 and 2 dropped in flight
+        client.send_request(&sess, 20, 5);
+        thread::sleep(Duration::from_millis(20));
+        assert!(client.recv_packet(&mut buf).is_none());
+
+        client.send_request(&sess, 20, 5);
+        thread::sleep(Duration::from_millis(20));
+        assert!(client.recv_packet(&mut buf).is_none());
+
+        // Response 3 delivered
+        client.send_request(&sess, 20, 5);
+        let mut attempts = 0;
+        let mut received = false;
+        while attempts < 100 {
+            if let Some(n) = client.recv_packet(&mut buf) {
+                assert!(n > 20, "Must receive valid downstream packet");
+                received = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+            attempts += 1;
+        }
+        assert!(received, "R2 must recover after dropped responses");
     });
 }
 
@@ -439,30 +446,52 @@ fn test_r9_dual_drop_repair() {
     });
 }
 
-// ── R10: Session boundary during pending recovery ───────────────────
+// ── R10: Session boundary clears pending recovery ───────────────────
 #[test]
 fn test_r10_session_boundary_during_recovery() {
-    let cmd_chan = CmdChannel::new();
+    let mut seq = Sequencer::new();
+    let mut sink = ConformanceSink::new();
     let sess1 = *b"OLDSESS001";
     let sess2 = *b"NEWSESS002";
 
-    cmd_chan.publish(RecoveryIntent { from: 10, to_excl: 20 }, sess1);
-    let cur = cmd_chan.read_current();
-    assert_eq!(cur.session, sess1);
-    assert!(cur.valid);
+    // Stage a gap in sess1
+    let mut f0 = Vec::new();
+    f0.extend_from_slice(&sess1);
+    f0.extend_from_slice(&1u64.to_be_bytes());
+    f0.extend_from_slice(&1u16.to_be_bytes());
+    f0.extend_from_slice(&12u16.to_be_bytes());
+    f0.extend_from_slice(&[b'S', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b'O']);
+    seq.ingest(&f0, 0, 1000, &mut sink);
 
-    cmd_chan.clear(sess2);
-    let after = cmd_chan.read_current();
-    assert_eq!(after.session, sess2);
-    assert!(!after.valid);
+    let mut f1 = Vec::new();
+    f1.extend_from_slice(&sess1);
+    f1.extend_from_slice(&10u64.to_be_bytes());
+    f1.extend_from_slice(&1u16.to_be_bytes());
+    f1.extend_from_slice(&12u16.to_be_bytes());
+    f1.extend_from_slice(&[b'S', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b'O']);
+    seq.ingest(&f1, 0, 2000, &mut sink);
+
+    assert!(seq.recovery_intent(10_000_000).is_some());
+
+    // Switch to sess2
+    let mut f2 = Vec::new();
+    f2.extend_from_slice(&sess2);
+    f2.extend_from_slice(&1u64.to_be_bytes());
+    f2.extend_from_slice(&1u16.to_be_bytes());
+    f2.extend_from_slice(&12u16.to_be_bytes());
+    f2.extend_from_slice(&[b'S', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b'O']);
+    seq.ingest(&f2, 0, 3000, &mut sink);
+
+    // Old intent cleared
+    assert_eq!(seq.session(), sess2);
+    assert_eq!(seq.staged_count(), 0);
 }
 
 // ── R11: Socket disconnect ──────────────────────────────────────────
 #[test]
 fn test_r11_socket_disconnect() {
-    let cmd_chan = CmdChannel::new();
     let mut client = RecoveryClient::new([127, 0, 0, 1], 9999);
-    client.disconnect(&cmd_chan, STATUS_SOCKET_ERROR);
+    client.disconnect(STATUS_SOCKET_ERROR);
     assert_eq!(client.state(), ClientState::Disconnected);
 }
 
@@ -545,9 +574,8 @@ fn test_r13_retry_counting_determinism() {
 #[test]
 fn test_r14_state_transition_matrix() {
     with_watchdog(Duration::from_secs(5), || {
-        let cmd_chan = CmdChannel::new();
         let mut client = RecoveryClient::new([127, 0, 0, 1], 1);
-        client.disconnect(&cmd_chan, STATUS_DISCONNECTED);
+        client.disconnect(STATUS_DISCONNECTED);
         assert_eq!(client.state(), ClientState::Disconnected);
     });
 }

@@ -17,6 +17,8 @@ echo "=== 4. Negative Lint Tripwire Test ==="
 (! cargo clippy --manifest-path tests/lint_fixture/Cargo.toml -- -D warnings)
 
 echo "=== 5. Unit & Conformance Tests ==="
+# F-5 Deletion Grep Audit (Mailboxes & CmdChannel deleted per C9)
+! grep -rnE "PacketMailbox|CmdChannel" crates/ || (echo "F-5 violation: Thread R mailboxes/channels still present in crates/" && exit 1)
 TRYBUILD=overwrite cargo test --workspace -- --include-ignored
 
 echo "=== 6. Full Day Audit & Histogram Diff ==="
@@ -57,5 +59,9 @@ cargo run --release -p nf-testkit --bin window_sweep | tee /tmp/window_sweep.txt
 grep -q "T2 WINDOW SWEEP COMPLETED SUCCESSFULLY" /tmp/window_sweep.txt
 cargo run --release -p nf-testkit --bin matrix_sweep | tee /tmp/matrix_sweep.txt
 grep -q "ALL 17 MATRIX CELLS VERIFIED 100% GREEN" /tmp/matrix_sweep.txt
+
+echo "=== 14. VR-4 Hostile Frame & Fuzz Campaign (3 Harnesses) ==="
+cargo run --release -p nf-testkit --bin fuzz_campaign | tee /tmp/fuzz_campaign.txt
+grep -q "VR-4 FUZZ CAMPAIGN 100% COMPLETE AND VERIFIED" /tmp/fuzz_campaign.txt
 
 echo "=== ALL CHECKS PASSED SUCCESSFULLY ==="

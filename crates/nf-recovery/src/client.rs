@@ -1,8 +1,6 @@
 //! UDP MoldUDP64 Recovery Client (doc 08 v2.0, C9).
 //! Non-blocking raw libc UDP socket, IP literal only, zero heap allocation.
 
-use crate::channel::CmdChannel;
-use crate::mailbox::PacketMailbox;
 use crate::types::*;
 use nf_protocol::moldudp64::{encode_request, REQUEST_LEN};
 
@@ -120,10 +118,7 @@ impl RecoveryClient {
         None
     }
 
-    // Retained for testkit backward compatibility
-    pub fn poll(&mut self, _cmd_chan: &CmdChannel, _mailbox: &PacketMailbox) {}
-
-    pub fn disconnect(&mut self, _cmd_chan: &CmdChannel, _status: u32) {
+    pub fn disconnect(&mut self, _status: u32) {
         if let Some(fd) = self.fd.take() {
             unsafe {
                 libc::close(fd);
