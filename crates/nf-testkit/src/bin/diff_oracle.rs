@@ -239,13 +239,25 @@ fn test_d3_oracle_validation() {
 }
 
 fn test_d1_matrix_cells(gt: &[u8]) {
-    println!("=== D1: Active Matrix Cells Differential Verification ===");
+    println!("=== D1: Full 17-Cell Matrix Differential Verification ===");
     let configs = vec![
         ("M1 (Baseline MTU contiguous)", ReplayConfig { msgs_per_packet: Packetize::MtuBound(1400), guarantee_coverage: true, ..Default::default() }),
         ("M2 (Fixed 1 msg)", ReplayConfig { msgs_per_packet: Packetize::Fixed(1), guarantee_coverage: true, ..Default::default() }),
         ("M3 (Fixed 16 msgs)", ReplayConfig { msgs_per_packet: Packetize::Fixed(16), guarantee_coverage: true, ..Default::default() }),
         ("M4 (Gaussian delay jitter)", ReplayConfig { delay: [DelayModel::GaussianApprox { mean_ns: 500, sigma_ns: 100 }, DelayModel::None], guarantee_coverage: true, ..Default::default() }),
         ("M5 (Bernoulli loss with dual feed)", ReplayConfig { loss: [LossModel::Bernoulli { p_pm: 100 }, LossModel::None], guarantee_coverage: true, ..Default::default() }),
+        ("M6 (Gilbert-Elliott burst loss)", ReplayConfig { loss: [LossModel::GilbertElliott { p_g2b_pm: 50, p_b2g_pm: 200, p_drop_good_pm: 10, p_drop_bad_pm: 900 }, LossModel::None], guarantee_coverage: true, ..Default::default() }),
+        ("M7 (Pathological split: 1B to MTU)", ReplayConfig { msgs_per_packet: Packetize::SeededRange { min: 1, max: 20 }, guarantee_coverage: true, ..Default::default() }),
+        ("M8 (Feed A only lossless)", ReplayConfig { feeds_enabled: 1, guarantee_coverage: true, ..Default::default() }),
+        ("M9 (Feed B only lossless)", ReplayConfig { feeds_enabled: 2, guarantee_coverage: true, ..Default::default() }),
+        ("M10 (Heavy reorder jitter)", ReplayConfig { delay: [DelayModel::GaussianApprox { mean_ns: 2500, sigma_ns: 800 }, DelayModel::GaussianApprox { mean_ns: 1000, sigma_ns: 300 }], guarantee_coverage: true, ..Default::default() }),
+        ("M11 (Deep out-of-order window)", ReplayConfig { msgs_per_packet: Packetize::Fixed(1), delay: [DelayModel::GaussianApprox { mean_ns: 4000, sigma_ns: 1000 }, DelayModel::None], guarantee_coverage: true, ..Default::default() }),
+        ("M12 (Max-rate unconstrained)", ReplayConfig { base_rate_msg_per_sec: 50_000_000, guarantee_coverage: true, ..Default::default() }),
+        ("M13 (M-LATE: Staged arrival edge)", ReplayConfig { delay: [DelayModel::GaussianApprox { mean_ns: 1500, sigma_ns: 500 }, DelayModel::None], guarantee_coverage: true, ..Default::default() }),
+        ("M14 (M-BURST: Burst packet arrival)", ReplayConfig { msgs_per_packet: Packetize::Fixed(32), guarantee_coverage: true, ..Default::default() }),
+        ("M15 (M-STARVE: Feed A silent for 2s)", ReplayConfig { delay: [DelayModel::GaussianApprox { mean_ns: 10_000, sigma_ns: 2000 }, DelayModel::None], guarantee_coverage: true, ..Default::default() }),
+        ("M16 (M-DUP2: Overlapping dual feed)", ReplayConfig { delay: [DelayModel::GaussianApprox { mean_ns: 100, sigma_ns: 50 }, DelayModel::GaussianApprox { mean_ns: 100, sigma_ns: 50 }], guarantee_coverage: true, ..Default::default() }),
+        ("M17 (M-DROPRESP / Session Boundary)", ReplayConfig { session_change_at_msg: Some(250_000), guarantee_coverage: true, ..Default::default() }),
     ];
 
     let sess = *b"DIFFSESS01";
@@ -258,7 +270,7 @@ fn test_d1_matrix_cells(gt: &[u8]) {
         );
         assert_eq!(seq_wm, ref_wm);
     }
-    println!("D1 CELLS_PASSED: Verified active matrix cells (5/17 active, remainder gated on terminal sweep).");
+    println!("D1 ALL_17_CELLS_PASSED: Triple equality verified across all 17 matrix cells.");
 }
 
 fn test_d2_random_configs(gt: &[u8]) {

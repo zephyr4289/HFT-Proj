@@ -52,4 +52,10 @@ echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D8) ==="
 cargo run --release -p nf-testkit --bin diff_oracle | tee /tmp/diff_oracle.txt
 grep -q "ALL D1..D8 DIFFERENTIAL ORACLE CHECKS PASSED SUCCESSFULLY" /tmp/diff_oracle.txt
 
+echo "=== 13. T2 Window Sweep & Full 17-Cell Matrix Confluence Campaign ==="
+cargo run --release -p nf-testkit --bin window_sweep | tee /tmp/window_sweep.txt
+grep -q "T2 WINDOW SWEEP COMPLETED SUCCESSFULLY" /tmp/window_sweep.txt
+cargo run --release -p nf-testkit --bin matrix_sweep | tee /tmp/matrix_sweep.txt
+grep -q "ALL 17 MATRIX CELLS VERIFIED 100% GREEN" /tmp/matrix_sweep.txt
+
 echo "=== ALL CHECKS PASSED SUCCESSFULLY ==="
