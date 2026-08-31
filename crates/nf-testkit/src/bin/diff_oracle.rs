@@ -217,6 +217,12 @@ fn test_d3_oracle_validation() {
         seq.ingest(&eos_buf, 0, 3000, &mut sink);
         ref_arb.ingest_packet(&eos_buf);
 
+        // 4. Deliver gap fill [2..=9] during recovery
+        let msgs_8: Vec<&[u8]> = (0..8).map(|_| dummy_msg.as_slice()).collect();
+        let p_fill = make_moldudp64_packet(&sess, 2, &msgs_8);
+        seq.ingest(&p_fill, 0, 4000, &mut sink);
+        ref_arb.ingest_packet(&p_fill);
+
         let (_ref_a, ref_wm, ref_h, _ref_emitted) = ref_arb.evaluate_all_sessions();
         let seq_wm = seq.watermark();
         let seq_h = sink.hash();
