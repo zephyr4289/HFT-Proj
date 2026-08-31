@@ -502,9 +502,10 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
     let delta_header = (c5 - c6).max(0.0);
     let delta_poll = c6;
 
-    // Law B-3b Composite Closure Equation: rate_total = bracket_mean + mean_gap + composite_residual
-    let sum_closure = mean_bracket_cyc + mean_gap_cyc;
-    let r1_composite_residual_pct = ((c0 - sum_closure).abs() / c0) * 100.0;
+    // Law B-3b Composite Closure: Compare independent instruments across Sampled Bracket, Unsampled Gap, and Rate-Space Total
+    let r1_rate_vs_bracket_pct = ((c0 - mean_bracket_cyc).abs() / c0) * 100.0;
+    let r1_bracket_vs_gap_pct = ((mean_bracket_cyc - mean_gap_cyc).abs() / mean_bracket_cyc.max(1.0)) * 100.0;
+    let r1_composite_residual_pct = r1_rate_vs_bracket_pct.max(r1_bracket_vs_gap_pct);
     let r1_verdict = nf_protocol::gates::evaluate_reconciliation_residual(r1_composite_residual_pct);
 
     println!(
@@ -525,8 +526,8 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
         delta_total_sink, delta_fnv_math, delta_sink_disp, delta_proof, delta_seq, delta_itch, delta_block, delta_header, delta_poll
     );
     println!(
-        "RECONCILIATION_COMPOSITE rate_total_c0={:.2} cyc bracket_mean={:.2} cyc mean_gap={:.2} cyc composite_sum={:.2} cyc residual={:.2}% VERDICT={}",
-        c0, mean_bracket_cyc, mean_gap_cyc, sum_closure, r1_composite_residual_pct, r1_verdict.as_str()
+        "RECONCILIATION_COMPOSITE rate_total_c0={:.2} cyc bracket_mean={:.2} cyc mean_gap={:.2} cyc diff_rate_bracket={:.2}% diff_bracket_gap={:.2}% composite_residual={:.2}% VERDICT={}",
+        c0, mean_bracket_cyc, mean_gap_cyc, r1_rate_vs_bracket_pct, r1_bracket_vs_gap_pct, r1_composite_residual_pct, r1_verdict.as_str()
     );
 }
 
