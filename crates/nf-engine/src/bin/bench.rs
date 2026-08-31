@@ -595,6 +595,7 @@ fn run_single_arm(
         Arm::Cold => "cold",
         Arm::Prefault => "prefault",
         Arm::Empty => "empty",
+        Arm::Loop => "loop",
     };
 
     let (_above_p90, above_p99) =
@@ -667,6 +668,7 @@ fn main() {
             chosen_arm = match args[i + 1].as_str() {
                 "prefault" => Arm::Prefault,
                 "empty" => Arm::Empty,
+                "loop" => Arm::Loop,
                 _ => Arm::Cold,
             };
             i += 1;
