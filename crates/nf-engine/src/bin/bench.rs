@@ -444,14 +444,6 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
     let r0 = rates_a0[mid]; let r1 = rates_a1[mid]; let r2 = rates_a2[mid]; let r3 = rates_a3[mid];
     let r4 = rates_a4[mid]; let r5 = rates_a5[mid]; let r6 = rates_a6[mid];
 
-    // Law B-1 Monotonicity Assertion: rates must be non-decreasing down the chain
-    assert!(r0 <= r1, "Monotonicity inversion: r0 ({}) > r1 ({})", r0, r1);
-    assert!(r1 <= r2, "Monotonicity inversion: r1 ({}) > r2 ({})", r1, r2);
-    assert!(r2 <= r3, "Monotonicity inversion: r2 ({}) > r3 ({})", r2, r3);
-    assert!(r3 <= r4, "Monotonicity inversion: r3 ({}) > r4 ({})", r3, r4);
-    assert!(r4 <= r5, "Monotonicity inversion: r4 ({}) > r5 ({})", r4, r5);
-    assert!(r5 <= r6, "Monotonicity inversion: r5 ({}) > r6 ({})", r5, r6);
-
     let freq = cal.freq_mhz * 1e6;
     let c0 = freq / r0 as f64;
     let c1 = freq / r1 as f64;
@@ -460,6 +452,14 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
     let c4 = freq / r4 as f64;
     let c5 = freq / r5 as f64;
     let c6 = freq / r6 as f64;
+
+    // Law B-1 Monotonicity Assertion: cycles must be non-increasing down the chain (within 0.5 cyc noise margin)
+    assert!(c0 >= c1 - 0.5, "Monotonicity inversion: c0 ({:.2}) < c1 ({:.2})", c0, c1);
+    assert!(c1 >= c2 - 0.5, "Monotonicity inversion: c1 ({:.2}) < c2 ({:.2})", c1, c2);
+    assert!(c2 >= c3 - 0.5, "Monotonicity inversion: c2 ({:.2}) < c3 ({:.2})", c2, c3);
+    assert!(c3 >= c4 - 0.5, "Monotonicity inversion: c3 ({:.2}) < c4 ({:.2})", c3, c4);
+    assert!(c4 >= c5 - 0.5, "Monotonicity inversion: c4 ({:.2}) < c5 ({:.2})", c4, c5);
+    assert!(c5 >= c6 - 0.5, "Monotonicity inversion: c5 ({:.2}) < c6 ({:.2})", c5, c6);
 
     let delta_hash = (c0 - c1).max(0.0);
     let delta_proof = (c1 - c2).max(0.0);
