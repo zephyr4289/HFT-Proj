@@ -106,18 +106,51 @@ impl ReferenceArbitrator {
         }
     }
 
-    /// Emits contiguous ordered stream for the latest session and returns (anchor, watermark, hash, emitted).
+    /// Emits contiguous ordered stream across all sessions and returns (final_anchor, final_watermark, total_hash, emitted).
+    pub fn evaluate_all_sessions(&self) -> (u64, u64, u64, Vec<(u64, Vec<u8>)>) {
+        let mut running_hash = 0xcbf29ce484222325u64; // FNV-1a basis
+        let mut all_emitted = Vec::new();
+        let mut final_anchor = 1u64;
+        let mut final_wm = 1u64;
+
+        for session in &self.sessions {
+            let anchor = session.anchor.unwrap_or(1);
+            final_anchor = anchor;
+            let mut cur = anchor;
+
+            while let Some(data) = session.messages.get(&cur) {
+                all_emitted.push((cur, data.clone()));
+
+                // Canonical golden hash fold: [u16 len le][bytes]
+                for &b in &(data.len() as u16).to_le_bytes() {
+                    running_hash ^= b as u64;
+                    running_hash = running_hash.wrapping_mul(0x100000001b3);
+                }
+                for &b in data {
+                    running_hash ^= b as u64;
+                    running_hash = running_hash.wrapping_mul(0x100000001b3);
+                }
+
+                cur += 1;
+            }
+
+            final_wm = cur;
+        }
+
+        (final_anchor, final_wm, running_hash, all_emitted)
+    }
+
+    /// Emits contiguous ordered stream for the latest session.
     pub fn evaluate_latest_session(&self) -> (u64, u64, u64, Vec<(u64, Vec<u8>)>) {
         if let Some(session) = self.sessions.last() {
             let anchor = session.anchor.unwrap_or(1);
             let mut cur = anchor;
             let mut emitted = Vec::new();
-            let mut running_hash = 0xcbf29ce484222325u64; // FNV-1a basis
+            let mut running_hash = 0xcbf29ce484222325u64;
 
             while let Some(data) = session.messages.get(&cur) {
                 emitted.push((cur, data.clone()));
 
-                // Canonical golden hash fold: [u16 len le][bytes]
                 for &b in &(data.len() as u16).to_le_bytes() {
                     running_hash ^= b as u64;
                     running_hash = running_hash.wrapping_mul(0x100000001b3);

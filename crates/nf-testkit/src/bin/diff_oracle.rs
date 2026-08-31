@@ -40,7 +40,7 @@ fn run_differential(
         }
     }
 
-    let (ref_anchor, ref_wm, ref_hash, ref_emitted) = ref_arb.evaluate_latest_session();
+    let (_ref_anchor, ref_wm, ref_hash, ref_emitted) = ref_arb.evaluate_all_sessions();
     let seq_wm = seq.watermark();
     let seq_count = sink.count();
     let seq_hash = sink.hash();
@@ -117,7 +117,7 @@ fn test_d3_oracle_validation(gt: &[u8]) {
             }
         }
 
-        let (_ref_a, _ref_w, ref_h, _ref_emitted) = ref_arb.evaluate_latest_session();
+        let (_ref_a, _ref_w, ref_h, _ref_emitted) = ref_arb.evaluate_all_sessions();
         let diff_detected = sink.hash() != ref_h;
         println!(
             "D3 Bug A (payload corruption): detected={}, sink_hash={:#X} ref_hash={:#X}",
@@ -145,7 +145,7 @@ fn test_d3_oracle_validation(gt: &[u8]) {
         let mut ref_arb = ReferenceArbitrator::new();
         let bad_frame = [0u8; 15]; // shorter than HEADER_LEN
         ref_arb.ingest_packet(&bad_frame);
-        let (_a, _w, _h, em) = ref_arb.evaluate_latest_session();
+        let (_a, _w, _h, em) = ref_arb.evaluate_all_sessions();
         assert_eq!(em.len(), 0, "D3 Bug C: reference must ignore truncated frame");
         println!("D3 Bug C (truncated frame): reference safely ignored malformed packet");
     }
