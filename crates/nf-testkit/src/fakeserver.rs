@@ -62,6 +62,7 @@ impl FakeRetransmissionServer {
 
         let handle = thread::spawn(move || {
             let mut req_counter = 0usize;
+            let mut resp_pkt_counter = 0usize;
             let mut buf = [0u8; 1500];
 
             while !stop_clone.load(Ordering::Relaxed) {
@@ -125,11 +126,10 @@ impl FakeRetransmissionServer {
                     );
 
                     let mut is_first = true;
-                    let mut pkt_idx = 0usize;
                     for pkt in packets {
-                        pkt_idx += 1;
+                        resp_pkt_counter += 1;
                         if let FaultMode::DropResponse(n) = fault_mode {
-                            if pkt_idx == n {
+                            if resp_pkt_counter == n {
                                 counters_clone.faults_injected.fetch_add(1, Ordering::Relaxed);
                                 continue;
                             }
