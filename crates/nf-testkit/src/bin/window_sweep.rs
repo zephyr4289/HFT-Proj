@@ -119,7 +119,7 @@ fn main() {
             .unwrap_or_else(|_| fs::read("../data/tests/sample-mini.itch").expect("Failed to load sample"))
     });
 
-    println!("=== RUNNING T2 WINDOW SIZE SWEEP ({256..4096} x {M1, M11}) ===");
+    println!("=== RUNNING T2 WINDOW SIZE SWEEP (256..4096 x M1, M11) ===");
     let window_sizes = vec![256, 512, 1024, 2048, 4096];
     let mut results = Vec::new();
 
