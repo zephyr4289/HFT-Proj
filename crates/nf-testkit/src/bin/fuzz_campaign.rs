@@ -8,21 +8,31 @@
 #![allow(clippy::all)]
 
 use nf_protocol::itch5;
-use nf_protocol::moldudp64::{self, Header, PacketView, EOS_COUNT, HEADER_LEN};
+use nf_protocol::moldudp64::{self, Header, Parsed, EOS_COUNT, HEADER_LEN};
 use nf_testkit::sched::SplitMix64;
 use std::fs;
 use std::time::Instant;
 
 /// Harness 1: MoldUDP64 arbitrary byte stream parser
 fn fuzz_frame_harness(data: &[u8]) {
-    // Attempt parse
-    if let Ok((header, view)) = PacketView::parse(data) {
-        let _ = header.session();
-        let _ = header.sequence_number();
-        let _ = header.message_count();
-        let _ = view.is_heartbeat();
-        let _ = view.is_end_of_session();
-        let _ = view.payload();
+    if let Ok(parsed) = moldudp64::parse(data) {
+        match parsed {
+            Parsed::Data { header, mut blocks } => {
+                let _ = header.session;
+                let _ = header.seq;
+                let _ = header.count;
+                while let Some(blk) = blocks.next() {
+                    let _ = blk.seq;
+                    let _ = blk.data;
+                }
+            }
+            Parsed::Heartbeat { header } => {
+                let _ = header.session;
+            }
+            Parsed::EndOfSession { header } => {
+                let _ = header.session;
+            }
+        }
     }
 }
 
@@ -77,7 +87,8 @@ fn main() {
             }
             1 => {
                 // Real bytes seed + bitflips
-                let start = (rng.next_u64() % (real_bytes.len().saturating_sub(len).max(1))) as usize;
+                let max_start = (real_bytes.len().saturating_sub(len).max(1)) as u64;
+                let start = (rng.next_u64() % max_start) as usize;
                 mut_buf[..len].copy_from_slice(&real_bytes[start..start + len]);
                 let flip_idx = (rng.next_u64() % len.max(1) as u64) as usize;
                 if flip_idx < len {
