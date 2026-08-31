@@ -7,7 +7,7 @@
 use nf_arbitrator::types::{Event, LiveFeedProof};
 use nf_arbitrator::{Counters, FeedId, Sequencer, Sink};
 use nf_engine::alloc::GLOBAL;
-use nf_engine::clock::{calibrate_clock, read_monotonic_raw_ns, read_tsc, read_tsc_serialized_end, read_tsc_serialized_start};
+use nf_engine::clock::{calibrate_clock, read_monotonic_raw_ns, read_tsc_serialized_end, read_tsc_serialized_start};
 use nf_engine::histogram::StaticHistogram;
 use nf_engine::tail_study::{
     prefault_buffer, TailRecord, TailStudyContext, TaxonomyBreakdown,
@@ -810,7 +810,7 @@ fn main() {
             cold_p99.inter_msg_gap, (cold_p99.inter_msg_gap as u64) * 2500, ((cold_p99.inter_msg_gap as f64 * 2500.0) / 13_000_000.0) * 100.0,
             cold_p99.batch_boundary, (cold_p99.batch_boundary as u64) * 80, ((cold_p99.batch_boundary as f64 * 80.0) / 13_000_000.0) * 100.0,
             // Findings
-            sampled_p50, sampled_p99, (sustained_rate as f64) / 1e6,
+            (sustained_rate as f64) / 1e6, sampled_p50, sampled_p99, evaluate_pr2_p50(sampled_p50).as_str(), evaluate_pr2_p99(sampled_p99).as_str(),
             h5_results[0].1, h5_results[2].1,
             empty.0, cold.0
         );
