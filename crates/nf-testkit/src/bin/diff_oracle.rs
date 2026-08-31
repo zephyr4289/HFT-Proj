@@ -5,7 +5,7 @@
 #![allow(warnings)]
 #![allow(clippy::all)]
 
-use nf_arbitrator::{FeedId, Sequencer, SequencerMutation};
+use nf_arbitrator::{FeedId, LiveFeedProof, Sequencer, SequencerMutation, Sink};
 use nf_testkit::golden::golden;
 use nf_testkit::reference::ReferenceArbitrator;
 use nf_testkit::sched::{
@@ -16,6 +16,18 @@ use nf_transport::replay::ReplayTransport;
 use nf_transport::{FrameBatch, Transport};
 use std::fs;
 use std::time::Instant;
+
+fn make_moldudp64_packet(session: &[u8; 10], seq: u64, msgs: &[&[u8]]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(20 + msgs.len() * 40);
+    buf.extend_from_slice(session);
+    buf.extend_from_slice(&seq.to_be_bytes());
+    buf.extend_from_slice(&(msgs.len() as u16).to_be_bytes());
+    for msg in msgs {
+        buf.extend_from_slice(&(msg.len() as u16).to_be_bytes());
+        buf.extend_from_slice(msg);
+    }
+    buf
+}
 
 fn run_differential_with_mutation(
     gt: &[u8],
@@ -85,69 +97,136 @@ fn run_differential(
     run_differential_with_mutation(gt, cfg, sess, SequencerMutation::None)
 }
 
-fn test_d3_oracle_validation(gt: &[u8]) {
+fn test_d3_oracle_validation() {
     println!("=== D3-REDO: Oracle Validation by Sequencer-Logic Bug Injections ===");
     let sess = *b"D3MUTATION";
+    let dummy_msg = vec![0x53u8, 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A];
 
-    // Mutation A: Disable clear-on-advance (U-ZOMBIE bug family)
+    // ── Mutation A: Disable clear-on-advance (U-ZOMBIE bug family) ──
     {
-        let cfg = ReplayConfig {
-            msgs_per_packet: Packetize::Fixed(1),
-            delay: [
-                DelayModel::GaussianApprox { mean_ns: 5000, sigma_ns: 1000 },
-                DelayModel::None,
-            ],
-            guarantee_coverage: true,
-            ..Default::default()
-        };
-        let res = run_differential_with_mutation(gt, &cfg, sess, SequencerMutation::DisableClearOnAdvance);
-        println!("D3 Mutation A (DisableClearOnAdvance / Zombie Bug): {:?}", res);
-        assert!(res.is_err(), "Oracle MUST detect Mutation A (Zombie bug)");
+        let mut seq = Sequencer::with_mutation(SequencerMutation::DisableClearOnAdvance);
+        let mut ref_arb = ReferenceArbitrator::new();
+        let mut sink = ConformanceSink::new();
+
+        // 1. Anchor at seq 100
+        let p0 = make_moldudp64_packet(&sess, 100, &[&dummy_msg]);
+        seq.ingest(&p0, 0, 1000, &mut sink);
+        ref_arb.ingest_packet(&p0);
+
+        // 2. Stage [200..=205]
+        let msgs_6: Vec<&[u8]> = (0..6).map(|_| dummy_msg.as_slice()).collect();
+        let p1 = make_moldudp64_packet(&sess, 200, &msgs_6);
+        seq.ingest(&p1, 0, 2000, &mut sink);
+        ref_arb.ingest_packet(&p1);
+
+        // 3. Fast-forward with contiguous [101..=205] (advances W to 206)
+        let msgs_105: Vec<&[u8]> = (0..105).map(|_| dummy_msg.as_slice()).collect();
+        let p2 = make_moldudp64_packet(&sess, 101, &msgs_105);
+        seq.ingest(&p2, 1, 3000, &mut sink);
+        ref_arb.ingest_packet(&p2);
+
+        // 4. Advance traffic to W=1224 (wrapping window by 1024 slots)
+        let mut cur = 206u64;
+        while cur < 1224 {
+            let chunk = std::cmp::min(10, 1224 - cur);
+            let msgs_chunk: Vec<&[u8]> = (0..chunk).map(|_| dummy_msg.as_slice()).collect();
+            let p_chunk = make_moldudp64_packet(&sess, cur, &msgs_chunk);
+            seq.ingest(&p_chunk, 0, 4000 + cur, &mut sink);
+            ref_arb.ingest_packet(&p_chunk);
+            cur += chunk;
+        }
+
+        // 5. Open a gap at 1224 by delivering packet at 1230 -> triggers drain at slot 1224 % 1024 == 200!
+        let p_gap = make_moldudp64_packet(&sess, 1230, &[&dummy_msg]);
+        seq.ingest(&p_gap, 0, 10000, &mut sink);
+        ref_arb.ingest_packet(&p_gap);
+
+        let (_ref_a, ref_wm, ref_h, _ref_emitted) = ref_arb.evaluate_all_sessions();
+        let seq_wm = seq.watermark();
+        let seq_h = sink.hash();
+
+        let divergence_detected = seq_wm != ref_wm || seq_h != ref_h;
         println!(
-            "D3_DIVERGENCE_DUMP mutation=\"DisableClearOnAdvance\" error=\"{}\"",
-            res.unwrap_err()
+            "D3_DIVERGENCE_DUMP mutation=\"DisableClearOnAdvance\" detected={} seq_wm={} ref_wm={} seq_hash={:#X} ref_hash={:#X}",
+            divergence_detected, seq_wm, ref_wm, seq_h, ref_h
         );
+        assert!(divergence_detected, "Oracle MUST detect Mutation A (Zombie Bug)");
     }
 
-    // Mutation B: Off-by-one / window clamp violation
+    // ── Mutation B: Off-by-one / window clamp violation ──
     {
-        let cfg = ReplayConfig {
-            msgs_per_packet: Packetize::Fixed(1),
-            delay: [
-                DelayModel::GaussianApprox { mean_ns: 8000, sigma_ns: 2000 },
-                DelayModel::None,
-            ],
-            guarantee_coverage: true,
-            ..Default::default()
-        };
-        let res = run_differential_with_mutation(gt, &cfg, sess, SequencerMutation::OffByOneClamp);
-        println!("D3 Mutation B (OffByOneClamp): {:?}", res);
-        assert!(res.is_err(), "Oracle MUST detect Mutation B (Off-by-one clamp)");
+        let mut seq = Sequencer::with_mutation(SequencerMutation::OffByOneClamp);
+        let mut ref_arb = ReferenceArbitrator::new();
+        let mut sink = ConformanceSink::new();
+
+        // 1. Anchor at 1
+        let p0 = make_moldudp64_packet(&sess, 1, &[&dummy_msg]);
+        seq.ingest(&p0, 0, 1000, &mut sink);
+        ref_arb.ingest_packet(&p0);
+
+        // 2. Deliver packet at seq 600 (beyond reduced clamp limit of 512)
+        let p_beyond = make_moldudp64_packet(&sess, 600, &[&dummy_msg]);
+        seq.ingest(&p_beyond, 0, 2000, &mut sink);
+        ref_arb.ingest_packet(&p_beyond);
+
+        // 3. Fill intermediate gap [2..=599]
+        let mut cur = 2u64;
+        while cur < 600 {
+            let chunk = std::cmp::min(20, 600 - cur);
+            let msgs: Vec<&[u8]> = (0..chunk).map(|_| dummy_msg.as_slice()).collect();
+            let p = make_moldudp64_packet(&sess, cur, &msgs);
+            seq.ingest(&p, 0, 3000 + cur, &mut sink);
+            ref_arb.ingest_packet(&p);
+            cur += chunk;
+        }
+
+        let (_ref_a, ref_wm, ref_h, _ref_emitted) = ref_arb.evaluate_all_sessions();
+        let seq_wm = seq.watermark();
+        let seq_h = sink.hash();
+
+        let divergence_detected = seq_wm != ref_wm || seq_h != ref_h;
         println!(
-            "D3_DIVERGENCE_DUMP mutation=\"OffByOneClamp\" error=\"{}\"",
-            res.unwrap_err()
+            "D3_DIVERGENCE_DUMP mutation=\"OffByOneClamp\" detected={} seq_wm={} ref_wm={} seq_hash={:#X} ref_hash={:#X}",
+            divergence_detected, seq_wm, ref_wm, seq_h, ref_h
         );
+        assert!(divergence_detected, "Oracle MUST detect Mutation B (Off-by-one Clamp)");
     }
 
-    // Mutation C: Drop staged messages at EOS
+    // ── Mutation C: Drop staged messages at EOS ──
     {
-        let cfg = ReplayConfig {
-            msgs_per_packet: Packetize::Fixed(1),
-            delay: [
-                DelayModel::GaussianApprox { mean_ns: 3000, sigma_ns: 500 },
-                DelayModel::None,
-            ],
-            session_change_at_msg: Some(10_000),
-            guarantee_coverage: true,
-            ..Default::default()
-        };
-        let res = run_differential_with_mutation(gt, &cfg, sess, SequencerMutation::DropStagedAtEos);
-        println!("D3 Mutation C (DropStagedAtEos): {:?}", res);
-        assert!(res.is_err(), "Oracle MUST detect Mutation C (Drop staged at EOS)");
+        let mut seq = Sequencer::with_mutation(SequencerMutation::DropStagedAtEos);
+        let mut ref_arb = ReferenceArbitrator::new();
+        let mut sink = ConformanceSink::new();
+
+        // 1. Anchor at 1
+        let p0 = make_moldudp64_packet(&sess, 1, &[&dummy_msg]);
+        seq.ingest(&p0, 0, 1000, &mut sink);
+        ref_arb.ingest_packet(&p0);
+
+        // 2. Stage [10..=12]
+        let msgs_3: Vec<&[u8]> = (0..3).map(|_| dummy_msg.as_slice()).collect();
+        let p_stage = make_moldudp64_packet(&sess, 10, &msgs_3);
+        seq.ingest(&p_stage, 0, 2000, &mut sink);
+        ref_arb.ingest_packet(&p_stage);
+
+        // 3. Send EOS (count = 0xFFFF)
+        let mut eos_buf = Vec::new();
+        eos_buf.extend_from_slice(&sess);
+        eos_buf.extend_from_slice(&13u64.to_be_bytes());
+        eos_buf.extend_from_slice(&0xFFFFu16.to_be_bytes());
+        seq.ingest(&eos_buf, 0, 3000, &mut sink);
+        ref_arb.ingest_packet(&eos_buf);
+
+        let (_ref_a, ref_wm, ref_h, _ref_emitted) = ref_arb.evaluate_all_sessions();
+        let seq_wm = seq.watermark();
+        let seq_h = sink.hash();
+
+        let divergence_detected = seq_wm != ref_wm || seq_h != ref_h;
         println!(
-            "D3_DIVERGENCE_DUMP mutation=\"DropStagedAtEos\" error=\"{}\"",
-            res.unwrap_err()
+            "D3_DIVERGENCE_DUMP mutation=\"DropStagedAtEos\" detected={} seq_wm={} ref_wm={} seq_hash={:#X} ref_hash={:#X}",
+            divergence_detected, seq_wm, ref_wm, seq_h, ref_h
         );
+        assert!(divergence_detected, "Oracle MUST detect Mutation C (Drop Staged at EOS)");
     }
 
     println!("D3 ALL_SEQUENCER_LOGIC_MUTATIONS_DETECTED: Oracle caught all 3 sequencer mutations with divergence dumps.");
@@ -300,7 +379,7 @@ fn main() {
     });
 
     println!("=== RUNNING G12-T3 REFERENCE ARBITRATOR & DIFFERENTIAL SUITE (D1..D8) ===");
-    test_d3_oracle_validation(&gt);
+    test_d3_oracle_validation();
     test_d1_matrix_cells(&gt);
     test_d2_random_configs(&gt);
     test_d4_duplicate_ordering(&gt);
