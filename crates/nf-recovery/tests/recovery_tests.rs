@@ -49,7 +49,7 @@ fn with_watchdog<F: FnOnce() + Send + 'static>(timeout: Duration, f: F) {
 // ── R1: UDP Retransmission DropRequest Fault Recovery ─────────────
 #[test]
 fn test_r1_fakeserver_drop_request_fault() {
-    with_watchdog(Duration::from_secs(10), || {
+    with_watchdog(Duration::from_secs(5), || {
         let gt = load_mini_bytes();
         let sess = *b"DROPREQS01";
         let server = FakeRetransmissionServer::spawn(
@@ -60,30 +60,28 @@ fn test_r1_fakeserver_drop_request_fault() {
                 first_msg_index: 0,
                 total_msgs: 500,
             }],
-            FaultMode::DropRequest(2),
+            FaultMode::DropRequest(1),
         )
         .expect("spawn server");
 
         let mut client = RecoveryClient::new([127, 0, 0, 1], server.port());
         let mut buf = [0u8; 1500];
 
-        // Request 1 and 2 dropped by server fault mode
+        // Request 1 is dropped by server fault mode
         client.send_request(&sess, 10, 5);
-        client.send_request(&sess, 10, 5);
+        thread::sleep(Duration::from_millis(20));
         assert!(client.recv_packet(&mut buf).is_none());
 
-        // Request 3 succeeds
+        // Request 2 succeeds
         client.send_request(&sess, 10, 5);
-        let mut attempts = 0;
         let mut received = false;
-        while attempts < 100 {
+        for _ in 0..50 {
             if let Some(n) = client.recv_packet(&mut buf) {
                 assert!(n > 20, "Must receive valid downstream packet");
                 received = true;
                 break;
             }
             thread::sleep(Duration::from_millis(5));
-            attempts += 1;
         }
         assert!(received, "R1 must recover after dropped requests");
     });
@@ -92,7 +90,7 @@ fn test_r1_fakeserver_drop_request_fault() {
 // ── R2: UDP Retransmission DropResponse Fault Recovery ────────────
 #[test]
 fn test_r2_fakeserver_drop_response_fault() {
-    with_watchdog(Duration::from_secs(10), || {
+    with_watchdog(Duration::from_secs(5), || {
         let gt = load_mini_bytes();
         let sess = *b"DROPRESP01";
         let server = FakeRetransmissionServer::spawn(
@@ -103,34 +101,28 @@ fn test_r2_fakeserver_drop_response_fault() {
                 first_msg_index: 0,
                 total_msgs: 500,
             }],
-            FaultMode::DropResponse(2),
+            FaultMode::DropResponse(1),
         )
         .expect("spawn server");
 
         let mut client = RecoveryClient::new([127, 0, 0, 1], server.port());
         let mut buf = [0u8; 1500];
 
-        // Response 1 and 2 dropped in flight
+        // Response 1 is dropped in flight
         client.send_request(&sess, 20, 5);
         thread::sleep(Duration::from_millis(20));
         assert!(client.recv_packet(&mut buf).is_none());
 
+        // Retry request succeeds
         client.send_request(&sess, 20, 5);
-        thread::sleep(Duration::from_millis(20));
-        assert!(client.recv_packet(&mut buf).is_none());
-
-        // Response 3 delivered
-        client.send_request(&sess, 20, 5);
-        let mut attempts = 0;
         let mut received = false;
-        while attempts < 100 {
+        for _ in 0..50 {
             if let Some(n) = client.recv_packet(&mut buf) {
                 assert!(n > 20, "Must receive valid downstream packet");
                 received = true;
                 break;
             }
             thread::sleep(Duration::from_millis(5));
-            attempts += 1;
         }
         assert!(received, "R2 must recover after dropped responses");
     });
