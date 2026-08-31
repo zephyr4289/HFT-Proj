@@ -1,11 +1,11 @@
-//! Differential Oracle & Reference Arbitrator Harness (doc 16 / G12-T3).
+//! Differential Oracle & Reference Arbitrator Harness (doc 16 / G12-T3 / Wave 1.5 D3-redo).
 //! Asserts triple equality: HashSink(sequencer) == HashSink(reference) == range_fold(gt)
-//! Executes tests D1..D8 including D3 oracle validation by bug injection.
+//! Executes tests D1..D8 including D3 oracle validation by injected sequencer-logic mutations.
 
 #![allow(warnings)]
 #![allow(clippy::all)]
 
-use nf_arbitrator::{FeedId, Sequencer};
+use nf_arbitrator::{FeedId, Sequencer, SequencerMutation};
 use nf_testkit::golden::golden;
 use nf_testkit::reference::ReferenceArbitrator;
 use nf_testkit::sched::{
@@ -17,14 +17,15 @@ use nf_transport::{FrameBatch, Transport};
 use std::fs;
 use std::time::Instant;
 
-fn run_differential(
+fn run_differential_with_mutation(
     gt: &[u8],
     cfg: &ReplayConfig,
     sess: [u8; 10],
+    mutation: SequencerMutation,
 ) -> Result<(u64, u64, u64, u64), String> {
     let sched = build_schedule(gt, cfg);
     let mut transport = ReplayTransport::new(gt, sched, sess);
-    let mut seq = Sequencer::new();
+    let mut seq = Sequencer::with_mutation(mutation);
     let mut ref_arb = ReferenceArbitrator::new();
     let mut sink = ConformanceSink::new();
     let mut batch = FrameBatch::new();
@@ -33,9 +34,7 @@ fn run_differential(
         let now = transport.now_ns();
         for frame in batch.frames() {
             let bytes = frame.bytes();
-            // Ingest into production sequencer
             seq.ingest(bytes, frame.feed, now, &mut sink);
-            // Ingest into independent reference arbitrator (R-1, R-2)
             ref_arb.ingest_packet(bytes);
         }
     }
@@ -45,7 +44,6 @@ fn run_differential(
     let seq_count = sink.count();
     let seq_hash = sink.hash();
 
-    // Verify against Reference Arbitrator output
     if seq_wm != ref_wm {
         return Err(format!(
             "Watermark divergence: seq_wm={} ref_wm={}",
@@ -63,12 +61,11 @@ fn run_differential(
 
     if seq_hash != ref_hash {
         return Err(format!(
-            "Hash divergence between sequencer and reference: seq_hash={:#X} ref_hash={:#X}",
+            "Hash divergence: seq_hash={:#X} ref_hash={:#X}",
             seq_hash, ref_hash
         ));
     }
 
-    // Verify Triple Equality against ground truth range fold (L-FOLD)
     let (gt_count, gt_hash) = golden(gt);
     if seq_count == gt_count && seq_hash != gt_hash {
         return Err(format!(
@@ -80,81 +77,84 @@ fn run_differential(
     Ok((seq_wm, ref_wm, seq_count, seq_hash))
 }
 
+fn run_differential(
+    gt: &[u8],
+    cfg: &ReplayConfig,
+    sess: [u8; 10],
+) -> Result<(u64, u64, u64, u64), String> {
+    run_differential_with_mutation(gt, cfg, sess, SequencerMutation::None)
+}
+
 fn test_d3_oracle_validation(gt: &[u8]) {
-    println!("=== D3: Oracle Validation by Bug Injection ===");
-    let sess = *b"BUGTESTSES";
+    println!("=== D3-REDO: Oracle Validation by Sequencer-Logic Bug Injections ===");
+    let sess = *b"D3MUTATION";
 
-    // Bug A: Stale/Corrupt message injection into sequencer stream
-    {
-        let cfg = ReplayConfig {
-            msgs_per_packet: Packetize::MtuBound(1400),
-            guarantee_coverage: true,
-            ..Default::default()
-        };
-        let sched = build_schedule(gt, &cfg);
-        let mut transport = ReplayTransport::new(gt, sched, sess);
-        let mut seq = Sequencer::new();
-        let mut ref_arb = ReferenceArbitrator::new();
-        let mut sink = ConformanceSink::new();
-        let mut batch = FrameBatch::new();
-
-        let mut injected = false;
-        while transport.poll(&mut batch) > 0 {
-            let now = transport.now_ns();
-            for frame in batch.frames() {
-                let bytes = frame.bytes();
-                ref_arb.ingest_packet(bytes);
-
-                // Inject Bug A: Corrupt payload byte for message seq 100
-                if !injected && bytes.len() > 30 {
-                    let mut corrupt = bytes.to_vec();
-                    corrupt[25] ^= 0xFF; // corrupt body
-                    seq.ingest(&corrupt, frame.feed, now, &mut sink);
-                    injected = true;
-                } else {
-                    seq.ingest(bytes, frame.feed, now, &mut sink);
-                }
-            }
-        }
-
-        let (_ref_a, _ref_w, ref_h, _ref_emitted) = ref_arb.evaluate_all_sessions();
-        let diff_detected = sink.hash() != ref_h;
-        println!(
-            "D3 Bug A (payload corruption): detected={}, sink_hash={:#X} ref_hash={:#X}",
-            diff_detected,
-            sink.hash(),
-            ref_h
-        );
-        assert!(diff_detected, "Oracle harness must catch Bug A");
-    }
-
-    // Bug B: Loss without coverage guarantee (drops messages)
+    // Mutation A: Disable clear-on-advance (U-ZOMBIE bug family)
     {
         let cfg = ReplayConfig {
             msgs_per_packet: Packetize::Fixed(1),
-            loss: [LossModel::Bernoulli { p_pm: 50 }, LossModel::Bernoulli { p_pm: 50 }],
-            guarantee_coverage: false,
+            delay: [
+                DelayModel::GaussianApprox { mean_ns: 5000, sigma_ns: 1000 },
+                DelayModel::None,
+            ],
+            guarantee_coverage: true,
             ..Default::default()
         };
-        let res = run_differential(gt, &cfg, sess);
-        println!("D3 Bug B (uncovered drop detection): {:?}", res);
+        let res = run_differential_with_mutation(gt, &cfg, sess, SequencerMutation::DisableClearOnAdvance);
+        println!("D3 Mutation A (DisableClearOnAdvance / Zombie Bug): {:?}", res);
+        assert!(res.is_err(), "Oracle MUST detect Mutation A (Zombie bug)");
+        println!(
+            "D3_DIVERGENCE_DUMP mutation=\"DisableClearOnAdvance\" error=\"{}\"",
+            res.unwrap_err()
+        );
     }
 
-    // Bug C: Truncated frame injection
+    // Mutation B: Off-by-one / window clamp violation
     {
-        let mut ref_arb = ReferenceArbitrator::new();
-        let bad_frame = [0u8; 15]; // shorter than HEADER_LEN
-        ref_arb.ingest_packet(&bad_frame);
-        let (_a, _w, _h, em) = ref_arb.evaluate_all_sessions();
-        assert_eq!(em.len(), 0, "D3 Bug C: reference must ignore truncated frame");
-        println!("D3 Bug C (truncated frame): reference safely ignored malformed packet");
+        let cfg = ReplayConfig {
+            msgs_per_packet: Packetize::Fixed(1),
+            delay: [
+                DelayModel::GaussianApprox { mean_ns: 8000, sigma_ns: 2000 },
+                DelayModel::None,
+            ],
+            guarantee_coverage: true,
+            ..Default::default()
+        };
+        let res = run_differential_with_mutation(gt, &cfg, sess, SequencerMutation::OffByOneClamp);
+        println!("D3 Mutation B (OffByOneClamp): {:?}", res);
+        assert!(res.is_err(), "Oracle MUST detect Mutation B (Off-by-one clamp)");
+        println!(
+            "D3_DIVERGENCE_DUMP mutation=\"OffByOneClamp\" error=\"{}\"",
+            res.unwrap_err()
+        );
     }
 
-    println!("D3 ORACLE_VALIDATION_PASSED: All injected bugs detected by oracle harness.");
+    // Mutation C: Drop staged messages at EOS
+    {
+        let cfg = ReplayConfig {
+            msgs_per_packet: Packetize::Fixed(1),
+            delay: [
+                DelayModel::GaussianApprox { mean_ns: 3000, sigma_ns: 500 },
+                DelayModel::None,
+            ],
+            session_change_at_msg: Some(10_000),
+            guarantee_coverage: true,
+            ..Default::default()
+        };
+        let res = run_differential_with_mutation(gt, &cfg, sess, SequencerMutation::DropStagedAtEos);
+        println!("D3 Mutation C (DropStagedAtEos): {:?}", res);
+        assert!(res.is_err(), "Oracle MUST detect Mutation C (Drop staged at EOS)");
+        println!(
+            "D3_DIVERGENCE_DUMP mutation=\"DropStagedAtEos\" error=\"{}\"",
+            res.unwrap_err()
+        );
+    }
+
+    println!("D3 ALL_SEQUENCER_LOGIC_MUTATIONS_DETECTED: Oracle caught all 3 sequencer mutations with divergence dumps.");
 }
 
 fn test_d1_matrix_cells(gt: &[u8]) {
-    println!("=== D1: All Matrix Cells Differential Verification ===");
+    println!("=== D1: Active Matrix Cells Differential Verification ===");
     let configs = vec![
         ("M1 (Baseline MTU contiguous)", ReplayConfig { msgs_per_packet: Packetize::MtuBound(1400), guarantee_coverage: true, ..Default::default() }),
         ("M2 (Fixed 1 msg)", ReplayConfig { msgs_per_packet: Packetize::Fixed(1), guarantee_coverage: true, ..Default::default() }),
@@ -173,7 +173,7 @@ fn test_d1_matrix_cells(gt: &[u8]) {
         );
         assert_eq!(seq_wm, ref_wm);
     }
-    println!("D1 ALL_CELLS_PASSED: Triple equality verified across matrix cells.");
+    println!("D1 CELLS_PASSED: Verified active matrix cells (5/17 active, remainder gated on terminal sweep).");
 }
 
 fn test_d2_random_configs(gt: &[u8]) {

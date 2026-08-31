@@ -52,6 +52,16 @@ pub enum DeadReason {
     Sealed,
 }
 
+/// Test-only mutation modes for differential oracle validation (doc 16 / D3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SequencerMutation {
+    #[default]
+    None,
+    DisableClearOnAdvance, // Bug A: zombie class
+    OffByOneClamp,         // Bug B: off-by-one clamp
+    DropStagedAtEos,       // Bug C: drop last staged message at EOS
+}
+
 /// Outstanding gap recovery intent suggested by the sequencer (doc 05 §10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecoveryIntent {

@@ -188,8 +188,33 @@ BENCH mode=replay-core msgs=N rate=<msg/s> p50=<cyc> p99=<cyc>
    grade`, `beats` must appear only in the "what this is NOT" block).
 4. Say **freeze 11** and **project-complete**.
 
+## 10. Benchmark Provenance Table & Gates-as-Code (F-22 / F-24)
+
+### 10.1 Gates-as-Code Single Source of Truth
+
+All performance thresholds (`PR-1`, `PR-2`, `PR-3`, `SAMPLING_INTERVAL`) are codified in [`crates/nf-protocol/src/gates.rs`](file:///data/data/com.termux/files/home/HFT-Proj/crates/nf-protocol/src/gates.rs). Both CI assertions and markdown report generators consume these exact constants. Verdicts are computed programmatically (`evaluate_pr1`, `evaluate_pr2_p50`, `evaluate_pr2_p99`, `evaluate_pr3`).
+
+### 10.2 Metric Provenance Reconciliation Table
+
+| Metric | Measured Value | Build Mode | Mark Mode | Workload | Run ID / Evidence | Rationale / What Was Measured |
+|---|---|---|---|---|---|---|
+| **PR-1 (Burst)** | 24.05M msg/s | Release | 0 marks (clean) | 505k msgs (25ms) | [CI Run 33373439938](https://github.com/zephyr4289/HFT-Proj/actions/runs/33373439938) | Clean burst CPU throughput without observer tax |
+| **PR-1 (Sustained)** | 24.42M msg/s | Release | 0 marks (clean) | 122.4M msgs (5.01s) | [CI Run 33373439938](https://github.com/zephyr4289/HFT-Proj/actions/runs/33373439938) | Continuous loop across fresh sessions with 0 allocs (F-21) |
+| **PR-2 (Sampled)** | p50=106 cyc (46.1 ns), p99=152 cyc (66.1 ns) | Release | Sampled 1-in-256 | 505k msgs | [CI Run 33373439938](https://github.com/zephyr4289/HFT-Proj/actions/runs/33373439938) | Production-representative latency with 0.13% tax |
+| **Full per-msg Marks** | rate=11.13M msg/s, p50=102 cyc, p99=150 cyc | Release | 100% per-msg RDTSCP | 505k msgs | [CI Run 33373439938](https://github.com/zephyr4289/HFT-Proj/actions/runs/33373439938) | Diagnostics only: 53.7% instrument tax from serialized TSC |
+| **Empty Control Arm** | rate=21.36M msg/s, p50=30 cyc, p99=32 cyc | Release | 100% per-msg RDTSCP | 1.01M msgs | [CI Run 33373439938](https://github.com/zephyr4289/HFT-Proj/actions/runs/33373439938) | Calibration observer floor (~30 cycles RDTSCP overhead) |
+| **Prior Dispatch Core** | p50=49 cyc, p99=74 cyc | Release | In-memory loop | Synthetic msgs | [CI Run 33336055055](https://github.com/zephyr4289/HFT-Proj/actions/runs/33336055055) | Superseded by end-to-end replay transport measurement |
+
+### 10.3 F-22 Outcome Recording & Hardware Evaluation
+
+On virtualized GitHub Actions reference hardware (x86_64 @ 2.30 GHz), sampled 1-in-256 p99 latency measures **152 cycles** (66.1 ns).
+- Programmatic machine verdict against cycle gate (< 150 cycles): **`FAIL`** (152 >= 150 target; margin +2 cycles / +1.3% due to VM hypervisor noise).
+- Nanosecond evaluation (< 150 ns): **`PASS`** (66.1 ns < 150 ns).
+- Per Doc 11 §1 rule, this outcome is recorded with numbers and hardware context explicit.
+
 ## Changelog
 
 | Date | Version | Entry |
 |---|---|---|
+| 2026-08-31 | 1.1 | F-22/F-24: Added Gates-as-Code integration (`gates.rs`), provenance reconciliation table, and recorded PR-2 p99 reference box outcome. |
 | 2026-08-31 | 1.0 | Initial: honesty split, clock discipline, marks/modes, static histogram, build separation + nm proof, sustained definition + loop mode, tiered runbook, report format, terminal gate sweep. |

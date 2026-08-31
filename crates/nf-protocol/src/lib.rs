@@ -1,6 +1,7 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(not(test), deny(clippy::disallowed_types))]
 
+pub mod gates;
 pub mod itch5;
 pub mod moldudp64;
 pub mod packet;

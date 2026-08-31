@@ -11,7 +11,7 @@ pub mod window;
 
 pub use counters::{Counters, FeedCounters, ViolationCounters};
 pub use state::State;
-pub use types::{DeadReason, Event, FeedId, LiveFeedProof, RecoveryIntent, Sink};
+pub use types::{DeadReason, Event, FeedId, LiveFeedProof, RecoveryIntent, SequencerMutation, Sink};
 use window::{ARENA_SIZE, WINDOW_SLOTS};
 
 use nf_protocol::moldudp64;
@@ -39,6 +39,8 @@ pub struct Sequencer {
     // ── lines 2..3 ──
     counters: Counters,          // §11, Copy
 
+    pub mutation: SequencerMutation, // test-only mutation mode (D3)
+
     // ── lines 4..19 ── presence bitmap ────────────────────────
     lens: [u8; WINDOW_SLOTS],    // slot i: 0 = absent, else msg length
 
@@ -50,6 +52,13 @@ impl Sequencer {
     /// Creates a new Sequencer on heap (one startup allocation O-6).
     pub fn new() -> Box<Self> {
         Box::new(Self::new_unboxed())
+    }
+
+    /// Creates a new Sequencer with a specific test mutation mode (D3).
+    pub fn with_mutation(mutation: SequencerMutation) -> Box<Self> {
+        let mut s = Self::new();
+        s.mutation = mutation;
+        s
     }
 
     /// Creates an unboxed Sequencer instance.
@@ -69,6 +78,7 @@ impl Sequencer {
             pending_to: None,
             last_intent_vt: 0,
             counters: Counters::default(),
+            mutation: SequencerMutation::None,
             lens: [0u8; WINDOW_SLOTS],
             arena: [0u8; ARENA_SIZE],
         }
@@ -145,6 +155,10 @@ impl Sequencer {
         }
 
         if hdr.count == moldudp64::EOS_COUNT {
+            if self.mutation == SequencerMutation::DropStagedAtEos {
+                self.lens.fill(0);
+                self.staged_count = 0;
+            }
             session::handle_eos(
                 &hdr,
                 self.w,
@@ -215,7 +229,7 @@ impl Sequencer {
             self.w = last + 1;
 
             // §4.2 Clear-on-Advance Law
-            if self.staged_count != 0 {
+            if self.staged_count != 0 && self.mutation != SequencerMutation::DisableClearOnAdvance {
                 window::clear_slots(
                     &mut self.lens,
                     &mut self.staged_count,
@@ -261,15 +275,25 @@ impl Sequencer {
                 sink,
             );
 
+            let max_clamp = if self.mutation == SequencerMutation::OffByOneClamp {
+                self.w + (WINDOW_SLOTS as u64 / 2)
+            } else {
+                self.w + (WINDOW_SLOTS as u64)
+            };
+
             for block in blocks {
-                let staged = window::stage_msg(
-                    &mut self.lens,
-                    &mut self.arena,
-                    &mut self.staged_count,
-                    self.w,
-                    block.seq,
-                    block.data,
-                );
+                let staged = if block.seq < max_clamp {
+                    window::stage_msg(
+                        &mut self.lens,
+                        &mut self.arena,
+                        &mut self.staged_count,
+                        self.w,
+                        block.seq,
+                        block.data,
+                    )
+                } else {
+                    false
+                };
                 if staged {
                     self.counters.staged_msgs += 1;
                 } else {
