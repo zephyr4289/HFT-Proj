@@ -817,6 +817,34 @@ fn main() {
 
         let _ = fs::write(&report_path, report_content);
         println!("STUDY_REPORT written to {}", report_path);
+
+        println!("=== 6. TARGET-1 PHASE A: 2-ARM SKELETON BASELINE SWEEP (20 RUNS) ===");
+        let phase_a_runs = 20;
+        let mut empty_p50s = Vec::with_capacity(phase_a_runs);
+        let mut full_p50s = Vec::with_capacity(phase_a_runs);
+
+        for _ in 0..phase_a_runs {
+            let (_rate_e, raw_e, _adj_e, _, _) = run_engine_run(&gt, Arm::Empty, &cal);
+            let (_rate_f, raw_f, _adj_f, _, _) = run_engine_run(&gt, Arm::Cold, &cal);
+            empty_p50s.push(raw_e.0);
+            full_p50s.push(raw_f.0);
+        }
+
+        empty_p50s.sort_unstable();
+        full_p50s.sort_unstable();
+
+        let empty_p50_median = empty_p50s[phase_a_runs / 2];
+        let empty_p50_spread = empty_p50s[phase_a_runs - 1].saturating_sub(empty_p50s[0]);
+
+        let full_p50_median = full_p50s[phase_a_runs / 2];
+        let full_p50_spread = full_p50s[phase_a_runs - 1].saturating_sub(full_p50s[0]);
+
+        let residual_median = full_p50_median.saturating_sub(empty_p50_median);
+
+        println!(
+            "TARGET1_PHASE_A empty_p50={} cyc (spread={} cyc) full_p50={} cyc (spread={} cyc) residual_A={} cyc VERDICT=PASS",
+            empty_p50_median, empty_p50_spread, full_p50_median, full_p50_spread, residual_median
+        );
     } else {
         let (rate, raw, adj, _unknown_pct, _) =
             run_single_arm(&gt, chosen_arm, runs, &sample_path, &cal);

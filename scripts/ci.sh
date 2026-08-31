@@ -64,4 +64,8 @@ echo "=== 14. VR-4 Hostile Frame & Fuzz Campaign (3 Harnesses) ==="
 cargo run --release -p nf-testkit --bin fuzz_campaign | tee /tmp/fuzz_campaign.txt
 grep -q "VR-4 FUZZ CAMPAIGN 100% COMPLETE AND VERIFIED" /tmp/fuzz_campaign.txt
 
+echo "=== 15. Spec-Only Retransmission Server Clean-Room Validation (doc 14 §3.2 / F-31) ==="
+cargo run --release -p nf-testkit --bin spec_server | tee /tmp/spec_server.txt
+grep -q "SPEC-ONLY SERVER CLEAN-ROOM VALIDATION PASSED" /tmp/spec_server.txt
+
 echo "=== ALL CHECKS PASSED SUCCESSFULLY ==="

@@ -282,3 +282,4 @@ sha256sum data/sample-dev.itch data/tests/sample-mini.itch
 | 2026-08-30 | 1.3 | C8 added: Golden hash folds (len_u16_le, msg_bytes) only, dropping seq. Freeze reaffirmed at v1.3. |
 | 2026-08-30 | 1.4 | G8 release: PR-3 stage-2 zero-allocation fully discharged; AM-4 latest-wins register, AM-5 vt-grace clock clamp, ADR-0006/0007 recorded. |
 | 2026-08-30 | 1.5 | C9/C10/C11 from primary-source read. C1 lineage closed. Freeze reaffirmed at v1.5. |
+| 2026-08-31 | 1.6 | F-29 / PR-2 Tiered Envelope: Codified Tier 2 VM envelope (p50 < 130 cyc, p99 < 185 cyc) and Tier 3 Bare-metal Target (p50 < 60 cyc, p99 < 150 cyc) in gates.rs. F-30 VR-4 extended fuzzing to 1M execs. F-31 Spec-only server clean-room validation added. |

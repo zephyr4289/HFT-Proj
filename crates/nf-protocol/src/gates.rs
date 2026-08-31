@@ -1,9 +1,16 @@
 //! Canonical performance gate thresholds and criteria (doc 00, doc 11).
-//! Single source of truth for both documentation generation and machine assertion (F-22).
+//! Single source of truth for both documentation generation and machine assertion (F-22 / F-29).
 
 pub const PR1_MIN_SUSTAINED_MSG_PER_SEC: u64 = 10_000_000;
+
+// Strict Tier 3 Bare-Metal / Reference Target (doc 00)
 pub const PR2_TARGET_P50_CYCLES: u64 = 60;
 pub const PR2_TARGET_P99_CYCLES: u64 = 150;
+
+// Tier 2 Virtualized CI VM Margin Envelope (doc 11 §7 / F-29)
+pub const PR2_TIER2_VM_P50_CYCLES: u64 = 130;
+pub const PR2_TIER2_VM_P99_CYCLES: u64 = 185;
+
 pub const PR3_MAX_ALLOC_DELTA: u64 = 0;
 pub const SAMPLING_INTERVAL: usize = 256;
 
@@ -43,6 +50,24 @@ pub fn evaluate_pr2_p50(p50_cycles: u64) -> GateVerdict {
 #[inline]
 pub fn evaluate_pr2_p99(p99_cycles: u64) -> GateVerdict {
     if p99_cycles < PR2_TARGET_P99_CYCLES {
+        GateVerdict::Pass
+    } else {
+        GateVerdict::Fail
+    }
+}
+
+#[inline]
+pub fn evaluate_pr2_tier2_p50(p50_cycles: u64) -> GateVerdict {
+    if p50_cycles < PR2_TIER2_VM_P50_CYCLES {
+        GateVerdict::Pass
+    } else {
+        GateVerdict::Fail
+    }
+}
+
+#[inline]
+pub fn evaluate_pr2_tier2_p99(p99_cycles: u64) -> GateVerdict {
+    if p99_cycles < PR2_TIER2_VM_P99_CYCLES {
         GateVerdict::Pass
     } else {
         GateVerdict::Fail
