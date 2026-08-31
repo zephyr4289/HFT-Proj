@@ -175,6 +175,7 @@ fn run_sustained_loop_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
 
         transport.reset(sess);
         seq = Sequencer::new();
+        sink = ConformanceSink::new();
 
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
