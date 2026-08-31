@@ -260,9 +260,25 @@ fn run_dose_response_sweep(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) 
     slope
 }
 
-/// Phase B: Rate-Based Stage-Ectomy Decomposition Sweep (20 Runs Each) (Law A-2)
-fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibration) {
-    println!("=== 8. PHASE B: RATE-BASED STAGE-ECTOMY DECOMPOSITION (20 RUNS EACH) ===");
+fn get_cpu_model() -> String {
+    if let Ok(content) = fs::read_to_string("/proc/cpuinfo") {
+        for line in content.lines() {
+            if line.starts_with("model name") {
+                if let Some(pos) = line.find(':') {
+                    return line[pos + 1..].trim().to_string();
+                }
+            }
+        }
+    }
+    "Generic x86_64 CPU".to_string()
+}
+
+/// Phase B-Redo: Strict 7-Arm Rate-Based Stage-Ectomy Chain with Elimination Guards (Laws B-1..B-5)
+fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibration, mean_bracket_cyc: f64) {
+    let cpu_model = get_cpu_model();
+    println!("=== 8. PHASE B-REDO: STRICT 7-ARM STAGE-ECTOMY DECOMPOSITION (20 RUNS EACH) ===");
+    println!("RUNNER_IDENTITY cpu=\"{}\" freq_mhz={:.2}", cpu_model, cal.freq_mhz);
+
     let cfg = ReplayConfig {
         msgs_per_packet: Packetize::MtuBound(1400),
         guarantee_coverage: true,
@@ -271,14 +287,16 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
     let sched = build_schedule(gt, &cfg);
     let sess = *b"BENCHSESS1";
 
-    let mut rates_s0 = Vec::with_capacity(runs);
-    let mut rates_s1 = Vec::with_capacity(runs);
-    let mut rates_s2 = Vec::with_capacity(runs);
-    let mut rates_s3 = Vec::with_capacity(runs);
-    let mut rates_s4 = Vec::with_capacity(runs);
+    let mut rates_a0 = Vec::with_capacity(runs);
+    let mut rates_a1 = Vec::with_capacity(runs);
+    let mut rates_a2 = Vec::with_capacity(runs);
+    let mut rates_a3 = Vec::with_capacity(runs);
+    let mut rates_a4 = Vec::with_capacity(runs);
+    let mut rates_a5 = Vec::with_capacity(runs);
+    let mut rates_a6 = Vec::with_capacity(runs);
 
     for _ in 0..runs {
-        // S0: Full Pipeline (Ingest + Sequencer + Typestate + ConformanceSink)
+        // A0: Full Production Replay (HashSink FNV-1a conformance test harness)
         {
             let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
             let mut seq = Sequencer::new();
@@ -292,19 +310,24 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
                 }
             }
             let dt = read_monotonic_raw_ns().saturating_sub(t0);
-            if dt > 0 { rates_s0.push(((sink.count() as f64) / (dt as f64) * 1e9) as u64); }
+            if dt > 0 { rates_a0.push(((sink.count() as f64) / (dt as f64) * 1e9) as u64); }
         }
 
-        // S1: Minus Sink (Ingest + Sequencer + Typestate, no-op sink)
+        // A1: CountSink (Same emit path + proof pass, counter only, zero hash math)
         {
             let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
             let mut seq = Sequencer::new();
-            struct NoOpSink { count: u64 }
-            impl Sink for NoOpSink {
-                fn on_msg(&mut self, _p: &LiveFeedProof, _s: u64, msg: &[u8]) { self.count += 1; std::hint::black_box(msg.len()); }
+            struct FastCountSink { count: u64 }
+            impl Sink for FastCountSink {
+                #[inline(always)]
+                fn on_msg(&mut self, proof: &LiveFeedProof, _seq: u64, msg: &[u8]) {
+                    self.count += 1;
+                    std::hint::black_box(proof);
+                    std::hint::black_box(msg.as_ptr());
+                }
                 fn on_event(&mut self, _e: &Event) {}
             }
-            let mut sink = NoOpSink { count: 0 };
+            let mut sink = FastCountSink { count: 0 };
             let mut batch = FrameBatch::new();
             let t0 = read_monotonic_raw_ns();
             while transport.poll(&mut batch) > 0 {
@@ -314,10 +337,61 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
                 }
             }
             let dt = read_monotonic_raw_ns().saturating_sub(t0);
-            if dt > 0 { rates_s1.push(((sink.count as f64) / (dt as f64) * 1e9) as u64); }
+            if dt > 0 { rates_a1.push(((sink.count as f64) / (dt as f64) * 1e9) as u64); }
         }
 
-        // S2: Minus Sequencer Core (Ingest + Parse only, no slot store / clear-on-advance)
+        // A2: No Proof Mint (Watermark advance + arena write, no token instantiation)
+        {
+            let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
+            let mut seq = Sequencer::new();
+            let mut batch = FrameBatch::new();
+            let mut count = 0u64;
+            let t0 = read_monotonic_raw_ns();
+            while transport.poll(&mut batch) > 0 {
+                let now = transport.now_ns();
+                for f in batch.frames() {
+                    if let Ok(moldudp64::Parsed::Data { blocks, .. }) = moldudp64::parse(f.bytes()) {
+                        for b in blocks {
+                            let _ = nf_protocol::itch5::validate(b.data);
+                            if b.seq == seq.watermark() {
+                                seq.advance_watermark(b.seq + 1);
+                                count += 1;
+                                std::hint::black_box(b.data.as_ptr());
+                            }
+                        }
+                    }
+                }
+            }
+            let dt = read_monotonic_raw_ns().saturating_sub(t0);
+            if dt > 0 { rates_a2.push(((count as f64) / (dt as f64) * 1e9) as u64); }
+        }
+
+        // A3: No Sequencer Arena Apply (Parse + ITCH validate + watermark compare branch only)
+        {
+            let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
+            let mut wm = 1u64;
+            let mut count = 0u64;
+            let mut batch = FrameBatch::new();
+            let t0 = read_monotonic_raw_ns();
+            while transport.poll(&mut batch) > 0 {
+                for f in batch.frames() {
+                    if let Ok(moldudp64::Parsed::Data { blocks, .. }) = moldudp64::parse(f.bytes()) {
+                        for b in blocks {
+                            let _ = nf_protocol::itch5::validate(b.data);
+                            if b.seq == wm {
+                                wm += 1;
+                                count += 1;
+                                std::hint::black_box(b.data.as_ptr());
+                            }
+                        }
+                    }
+                }
+            }
+            let dt = read_monotonic_raw_ns().saturating_sub(t0);
+            if dt > 0 { rates_a3.push(((count as f64) / (dt as f64) * 1e9) as u64); }
+        }
+
+        // A4: No ITCH Validation (MoldUDP64 block walk + length slice only)
         {
             let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
             let mut count = 0u64;
@@ -327,17 +401,17 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
                 for f in batch.frames() {
                     if let Ok(moldudp64::Parsed::Data { blocks, .. }) = moldudp64::parse(f.bytes()) {
                         for b in blocks {
-                            let _ = nf_protocol::itch5::validate(b.data);
                             count += 1;
+                            std::hint::black_box(b.data.as_ptr());
                         }
                     }
                 }
             }
             let dt = read_monotonic_raw_ns().saturating_sub(t0);
-            if dt > 0 { rates_s2.push(((count as f64) / (dt as f64) * 1e9) as u64); }
+            if dt > 0 { rates_a4.push(((count as f64) / (dt as f64) * 1e9) as u64); }
         }
 
-        // S3: Minus Block Parse (Ingress poll + 20B Header parse only)
+        // A5: No Message Block Walk (20-byte MoldUDP64 Header parse only)
         {
             let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
             let mut count = 0u64;
@@ -351,29 +425,42 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
                         let _seq = u64::from_be_bytes(b[10..18].try_into().unwrap());
                         let cnt = u16::from_be_bytes(b[18..20].try_into().unwrap());
                         count += cnt as u64;
+                        std::hint::black_box(cnt);
                     }
                 }
             }
             let dt = read_monotonic_raw_ns().saturating_sub(t0);
-            if dt > 0 { rates_s3.push(((count as f64) / (dt as f64) * 1e9) as u64); }
+            if dt > 0 { rates_a5.push(((count as f64) / (dt as f64) * 1e9) as u64); }
         }
 
-        // S4: Raw Polling Baseline (Transport poll batch only)
+        // A6: Transport Ingress Polling Baseline (UMEM Batch walk only)
         {
             let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
             let mut batch = FrameBatch::new();
             let t0 = read_monotonic_raw_ns();
             while transport.poll(&mut batch) > 0 {
-                std::hint::black_box(batch.len());
+                for f in batch.frames() {
+                    std::hint::black_box(f.bytes().len());
+                }
             }
             let dt = read_monotonic_raw_ns().saturating_sub(t0);
-            if dt > 0 { rates_s4.push(((505849 as f64) / (dt as f64) * 1e9) as u64); }
+            if dt > 0 { rates_a6.push(((505849 as f64) / (dt as f64) * 1e9) as u64); }
         }
     }
 
-    rates_s0.sort(); rates_s1.sort(); rates_s2.sort(); rates_s3.sort(); rates_s4.sort();
+    rates_a0.sort(); rates_a1.sort(); rates_a2.sort(); rates_a3.sort();
+    rates_a4.sort(); rates_a5.sort(); rates_a6.sort();
     let mid = runs / 2;
-    let r0 = rates_s0[mid]; let r1 = rates_s1[mid]; let r2 = rates_s2[mid]; let r3 = rates_s3[mid]; let r4 = rates_s4[mid];
+    let r0 = rates_a0[mid]; let r1 = rates_a1[mid]; let r2 = rates_a2[mid]; let r3 = rates_a3[mid];
+    let r4 = rates_a4[mid]; let r5 = rates_a5[mid]; let r6 = rates_a6[mid];
+
+    // Law B-1 Monotonicity Assertion: rates must be non-decreasing down the chain
+    assert!(r0 <= r1, "Monotonicity inversion: r0 ({}) > r1 ({})", r0, r1);
+    assert!(r1 <= r2, "Monotonicity inversion: r1 ({}) > r2 ({})", r1, r2);
+    assert!(r2 <= r3, "Monotonicity inversion: r2 ({}) > r3 ({})", r2, r3);
+    assert!(r3 <= r4, "Monotonicity inversion: r3 ({}) > r4 ({})", r3, r4);
+    assert!(r4 <= r5, "Monotonicity inversion: r4 ({}) > r5 ({})", r4, r5);
+    assert!(r5 <= r6, "Monotonicity inversion: r5 ({}) > r6 ({})", r5, r6);
 
     let freq = cal.freq_mhz * 1e6;
     let c0 = freq / r0 as f64;
@@ -381,27 +468,36 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
     let c2 = freq / r2 as f64;
     let c3 = freq / r3 as f64;
     let c4 = freq / r4 as f64;
+    let c5 = freq / r5 as f64;
+    let c6 = freq / r6 as f64;
 
-    let delta_sink = (c0 - c1).max(0.0);
-    let delta_seq = (c1 - c2).max(0.0);
-    let delta_parse = (c2 - c3).max(0.0);
-    let delta_transport = (c3 - c4).max(0.0);
-    let delta_polling = c4;
+    let delta_hash = (c0 - c1).max(0.0);
+    let delta_proof = (c1 - c2).max(0.0);
+    let delta_seq = (c2 - c3).max(0.0);
+    let delta_itch = (c3 - c4).max(0.0);
+    let delta_block = (c4 - c5).max(0.0);
+    let delta_header = (c5 - c6).max(0.0);
+    let delta_poll = c6;
 
-    let sum_deltas = delta_sink + delta_seq + delta_parse + delta_transport + delta_polling;
-    let residual_pct = ((sum_deltas - c0).abs() / c0) * 100.0;
+    // Law B-3 Non-Tautological Reconciliation (R1: Rate Total vs Bracket Mean)
+    let r1_residual_pct = ((c0 - mean_bracket_cyc).abs() / c0) * 100.0;
+    let r1_verdict = nf_protocol::gates::evaluate_reconciliation_residual(r1_residual_pct);
 
     println!(
-        "STAGE_ECTOMY_RATES r0={:.2}M r1={:.2}M r2={:.2}M r3={:.2}M r4={:.2}M",
-        r0 as f64 / 1e6, r1 as f64 / 1e6, r2 as f64 / 1e6, r3 as f64 / 1e6, r4 as f64 / 1e6
+        "STAGE_ECTOMY_RATES r0_hash={:.2}M r1_count={:.2}M r2_noproof={:.2}M r3_noseq={:.2}M r4_noitch={:.2}M r5_noblock={:.2}M r6_poll={:.2}M",
+        r0 as f64 / 1e6, r1 as f64 / 1e6, r2 as f64 / 1e6, r3 as f64 / 1e6, r4 as f64 / 1e6, r5 as f64 / 1e6, r6 as f64 / 1e6
     );
     println!(
-        "STAGE_ECTOMY_CYCLES c0_full={:.2} c1_nosink={:.2} c2_noseq={:.2} c3_noparse={:.2} c4_poll={:.2}",
-        c0, c1, c2, c3, c4
+        "STAGE_ECTOMY_CYCLES c0={:.2} c1={:.2} c2={:.2} c3={:.2} c4={:.2} c5={:.2} c6={:.2}",
+        c0, c1, c2, c3, c4, c5, c6
     );
     println!(
-        "STAGE_ECTOMY_DELTAS sink={:.2} seq={:.2} parse={:.2} transport={:.2} polling={:.2} -> sum={:.2} vs c0={:.2} (residual={:.2}%) VERDICT=PASS",
-        delta_sink, delta_seq, delta_parse, delta_transport, delta_polling, sum_deltas, c0, residual_pct
+        "STAGE_ECTOMY_DECOMPOSITION delta_hash={:.2} delta_proof={:.2} delta_seq={:.2} delta_itch={:.2} delta_block={:.2} delta_header={:.2} poll_base={:.2}",
+        delta_hash, delta_proof, delta_seq, delta_itch, delta_block, delta_header, delta_poll
+    );
+    println!(
+        "RECONCILIATION_R1 rate_total_c0={:.2} cyc bracket_mean={:.2} cyc residual={:.2}% VERDICT={}",
+        c0, mean_bracket_cyc, r1_residual_pct, r1_verdict.as_str()
     );
 }
 
@@ -440,7 +536,7 @@ fn run_h9_repetition_sweep(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) 
 }
 
 /// Sampled Marks Run (Doc 11 §3 sampling law: sample every 256th message) (F-18)
-fn run_sampled_256(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibration) -> (u64, u64, u64) {
+fn run_sampled_256(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibration) -> (u64, u64, u64, f64) {
     let cfg = ReplayConfig {
         msgs_per_packet: Packetize::MtuBound(1400),
         guarantee_coverage: true,
@@ -451,6 +547,7 @@ fn run_sampled_256(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
     let mut rates = Vec::with_capacity(runs);
     let mut p50s = Vec::with_capacity(runs);
     let mut p99s = Vec::with_capacity(runs);
+    let mut means = Vec::with_capacity(runs);
 
     for run_id in 1..=runs {
         let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
@@ -502,20 +599,23 @@ fn run_sampled_256(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
 
         let p50 = hist_raw.percentile(50.0);
         let p99 = hist_raw.percentile(99.0);
+        let mean = hist_raw.mean();
         println!(
-            "BENCH mode=replay-core-sampled-256 msgs={} rate={} p50={} p99={} allocs={} freq={:.2}MHz run={}",
-            msg_count, rate, p50, p99, alloc_delta, cal.freq_mhz, run_id
+            "BENCH mode=replay-core-sampled-256 msgs={} rate={} p50={} p99={} mean={:.2} allocs={} freq={:.2}MHz run={}",
+            msg_count, rate, p50, p99, mean, alloc_delta, cal.freq_mhz, run_id
         );
         rates.push(rate);
         p50s.push(p50);
         p99s.push(p99);
+        means.push(mean);
     }
 
     rates.sort();
     p50s.sort();
     p99s.sort();
+    means.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let mid = runs / 2;
-    (rates[mid], p50s[mid], p99s[mid])
+    (rates[mid], p50s[mid], p99s[mid], means[mid])
 }
 
 /// H5 Packet-Size Sweep with Double Runs and Packet Counts (F-19)
@@ -925,7 +1025,7 @@ fn main() {
         let sustained_rate = run_sustained_loop_5s(&gt, &cal);
 
         println!("=== 3. SAMPLED MARKS EVALUATION (1-in-256) & PR-2 VERDICT ===");
-        let (sampled_rate, sampled_p50, sampled_p99) = run_sampled_256(&gt, runs, &cal);
+        let (sampled_rate, sampled_p50, sampled_p99, sampled_mean) = run_sampled_256(&gt, runs, &cal);
         let instrument_tax_pct = if burst_rate > 0 {
             ((burst_rate.saturating_sub(sampled_rate)) as f64 / burst_rate as f64) * 100.0
         } else {
@@ -1116,7 +1216,7 @@ fn main() {
         );
 
         run_dose_response_sweep(&gt, &cal);
-        run_stage_ectomy_sweep(&gt, 20, &cal);
+        run_stage_ectomy_sweep(&gt, 20, &cal, sampled_mean);
         run_h9_repetition_sweep(&gt, &cal);
     } else {
         let (rate, raw, adj, _unknown_pct, _) =
