@@ -824,10 +824,10 @@ fn main() {
         let mut full_p50s = Vec::with_capacity(phase_a_runs);
 
         for _ in 0..phase_a_runs {
-            let (_rate_e, raw_e, _adj_e, _, _) = run_engine_run(&gt, Arm::Empty, &cal);
-            let (_rate_f, raw_f, _adj_f, _, _) = run_engine_run(&gt, Arm::Cold, &cal);
-            empty_p50s.push(raw_e.0);
-            full_p50s.push(raw_f.0);
+            let empty_run = run_single_arm(&gt, Arm::Empty, 1, &sample_path, &cal);
+            let cold_run = run_single_arm(&gt, Arm::Cold, 1, &sample_path, &cal);
+            empty_p50s.push((empty_run.1).0);
+            full_p50s.push((cold_run.1).0);
         }
 
         empty_p50s.sort_unstable();
