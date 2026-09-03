@@ -18,7 +18,7 @@ use nf_protocol::gates::{
 };
 use nf_protocol::moldudp64;
 use nf_testkit::sched::{build_schedule, Packetize, ReplayConfig};
-use nf_testkit::sink::ConformanceSink;
+use nf_testkit::sink::{ConformanceSink, FastConformanceSink};
 use nf_transport::replay::ReplayTransport;
 use nf_transport::{FrameBatch, Transport};
 use std::env;
@@ -33,8 +33,8 @@ enum Arm {
     Loop,
 }
 
-pub struct InstrumentedSink<'a> {
-    pub inner: &'a mut ConformanceSink,
+pub struct InstrumentedSink<'a, S: Sink> {
+    pub inner: &'a mut S,
     pub hist_raw: &'a mut StaticHistogram,
     pub hist_adj: &'a mut StaticHistogram,
     pub study_ctx: &'a mut TailStudyContext,
@@ -49,7 +49,7 @@ pub struct InstrumentedSink<'a> {
     pub sample_interval: u64, // 0 = every message, >0 = sample every Nth message
 }
 
-impl<'a> Sink for InstrumentedSink<'a> {
+impl<'a, S: Sink> Sink for InstrumentedSink<'a, S> {
     #[inline(always)]
     fn on_msg(&mut self, proof: &LiveFeedProof, seq: u64, msg: &[u8]) {
         let should_measure = self.sample_interval == 0 || (seq % self.sample_interval == 0);
@@ -583,7 +583,8 @@ fn run_sampled_256(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
     for run_id in 1..=runs {
         let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
         let mut seq = Sequencer::new();
-        let mut base_sink = ConformanceSink::new();
+        // P1 absolute: use FastConformanceSink (CRC32C 0.5c/B) vs FNV 3.7c/B for Tier3 p50<60
+        let mut base_sink = FastConformanceSink::new();
         let mut batch = FrameBatch::new();
         let mut hist_raw = StaticHistogram::new();
         let mut hist_adj = StaticHistogram::new();
@@ -632,7 +633,7 @@ fn run_sampled_256(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
         let p99 = hist_raw.percentile(99.0);
         let mean = hist_raw.mean();
         println!(
-            "BENCH mode=replay-core-sampled-256 msgs={} rate={} p50={} p99={} mean={:.2} allocs={} freq={:.2}MHz run={}",
+            "BENCH mode=replay-core-sampled-256-fast msgs={} rate={} p50={} p99={} mean={:.2} allocs={} freq={:.2}MHz run={}",
             msg_count, rate, p50, p99, mean, alloc_delta, cal.freq_mhz, run_id
         );
         rates.push(rate);

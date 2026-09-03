@@ -16,8 +16,9 @@ jobs:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: 0
       CARGO_NET_RETRY: 3
-      # GH-tuned: znver3 == EPYC 7763. Profile (Cargo.toml) already controls lto/codegen/opt/strip.
-      RUSTFLAGS: "-C target-cpu=znver3 -C target-feature=+avx2,+bmi1,+bmi2,+fma,+movbe"
+      # P0-fixed: conservative x86-64-v3 (Haswell) baseline 20.16M proven.
+      # P1 will replace hash (CRC32C hw), not CPU flags. Keep lto fat via profile.
+      RUSTFLAGS: "-C target-cpu=x86-64-v3"
       CARGO_PROFILE_RELEASE_LTO: fat
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
       CARGO_PROFILE_RELEASE_OPT_LEVEL: 3
@@ -29,7 +30,7 @@ jobs:
       - name: Cache Cargo Registry & Build
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "ci-znver3-v0.1"
+          shared-key: "ci-v3-v0.1"
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v0.1' }}
 
       - name: Run CI Suite with Full Log Capture
