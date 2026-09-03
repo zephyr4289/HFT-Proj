@@ -47,16 +47,20 @@ pub enum ItchError {
 
 /// O(1): one load, two compares. The ONLY ITCH call on the hot path.
 /// P2: always-inline — 500k calls/run, 2 compares must fuse into caller.
+/// P3: cold_path on error returns (never taken in valid replay).
 #[inline(always)]
 pub fn validate(msg: &[u8]) -> Result<(), ItchError> {
     if msg.is_empty() {
+        std::hint::cold_path();
         return Err(ItchError::Empty);
     }
     let expected = LENGTH[msg[0] as usize];
     if expected == 0 {
+        std::hint::cold_path();
         return Err(ItchError::UnknownType { t: msg[0] });
     }
     if msg.len() != expected as usize {
+        std::hint::cold_path();
         return Err(ItchError::LengthMismatch {
             expected,
             got: msg.len(),

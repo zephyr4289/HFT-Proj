@@ -163,8 +163,10 @@ pub fn parse_header(buf: &[u8]) -> Result<Header, FrameError> {
 /// Full eager validation (P-1, P-2, P-5) per doc 02 §6.1 — normative
 /// pseudocode there. First-match-wins error order: V-1, V-6, V-2/V-3/V-4/V-5.
 /// Never panics, never allocates, never reads OOB on ANY input slice.
+/// P3: cold_path hints on all error returns (never taken in valid replay).
 pub fn parse(buf: &[u8]) -> Result<Parsed<'_>, FrameError> {
     if buf.len() < HEADER_LEN {
+        std::hint::cold_path();
         return Err(FrameError::Truncated {
             need: HEADER_LEN,
             got: buf.len(),
@@ -177,12 +179,14 @@ pub fn parse(buf: &[u8]) -> Result<Parsed<'_>, FrameError> {
         && hdr.count != EOS_COUNT
         && hdr.seq.checked_add((hdr.count as u64) - 1).is_none()
     {
+        std::hint::cold_path();
         return Err(FrameError::SeqOverflow);
     }
 
     match hdr.count {
         HEARTBEAT_COUNT => {
             if buf.len() != HEADER_LEN {
+                std::hint::cold_path();
                 return Err(FrameError::TrailingBytes {
                     extra: buf.len() - HEADER_LEN,
                 });
@@ -191,6 +195,7 @@ pub fn parse(buf: &[u8]) -> Result<Parsed<'_>, FrameError> {
         }
         EOS_COUNT => {
             if buf.len() != HEADER_LEN {
+                std::hint::cold_path();
                 return Err(FrameError::TrailingBytes {
                     extra: buf.len() - HEADER_LEN,
                 });
@@ -201,15 +206,18 @@ pub fn parse(buf: &[u8]) -> Result<Parsed<'_>, FrameError> {
             let mut rest = &buf[HEADER_LEN..];
             for _ in 0..hdr.count {
                 if rest.len() < 2 {
+                    std::hint::cold_path();
                     return Err(FrameError::BlockOverrun);
                 }
                 let len = u16::from_be_bytes([rest[0], rest[1]]) as usize;
                 if rest.len() < 2 + len {
+                    std::hint::cold_path();
                     return Err(FrameError::BlockOverrun);
                 }
                 rest = &rest[2 + len..];
             }
             if !rest.is_empty() {
+                std::hint::cold_path();
                 return Err(FrameError::TrailingBytes {
                     extra: rest.len(),
                 });

@@ -13,6 +13,8 @@ pub struct Cursor {
 }
 
 impl Cursor {
+    /// P3: always-inline — steady-state is 1 compare + return (cursor in sync).
+    #[inline(always)]
     pub fn seek_msg(&mut self, gt: &[u8], target_msg_index: u64) -> Option<usize> {
         if self.msg_index > target_msg_index {
             self.byte_offset = 0;
@@ -88,28 +90,35 @@ impl<'a> ReplayTransport<'a> {
         self.clock_clamp = clamp;
     }
 
+    /// P3: always-inline + hoisted len/capacity, cold clamp path, single bounds check.
+    #[inline(always)]
     pub fn poll_clamped(&mut self, batch: &mut FrameBatch, max_vt: Option<u64>) -> usize {
         batch.clear();
 
-        if self.event_idx >= self.schedule.events.len() {
+        let events_len = self.schedule.events.len();
+        if self.event_idx >= events_len {
             return 0;
         }
 
         let next_vt = self.schedule.events[self.event_idx].release_vt;
+        // HOT: max_vt=None + clock_clamp=None (steady replay) — clamp is cold.
         let jump_to = match max_vt.or(self.clock_clamp) {
-            Some(clamp) => std::cmp::min(next_vt, clamp),
+            Some(clamp) => {
+                std::hint::cold_path();
+                std::cmp::min(next_vt, clamp)
+            }
             None => next_vt,
         };
 
         if jump_to > self.virtual_clock {
             self.virtual_clock = jump_to;
         }
+        let vclock = self.virtual_clock;
+        let cap = FrameBatch::capacity();
 
-        while self.event_idx < self.schedule.events.len()
-            && batch.len() < FrameBatch::capacity()
-        {
+        while self.event_idx < events_len && batch.len() < cap {
             let ev = self.schedule.events[self.event_idx];
-            if ev.release_vt > self.virtual_clock {
+            if ev.release_vt > vclock {
                 break;
             }
 
@@ -129,6 +138,8 @@ impl<'a> ReplayTransport<'a> {
     }
 }
 
+/// P3: always-inline — fuses session/header/payload copy into poll (saves call/frame).
+#[inline(always)]
 pub fn render_event_standalone(
     gt: &[u8],
     ev: &SchedEvent,
@@ -196,7 +207,7 @@ pub fn render_event_standalone(
 }
 
 impl<'a> ReplayTransport<'a> {
-    #[inline]
+    #[inline(always)]
     fn render_event(&mut self, ev: &SchedEvent, slot_idx: usize) -> Option<u16> {
         let feed_idx = (ev.feed as usize) & 1;
         let slot = &mut self.arena[slot_idx];
@@ -213,11 +224,12 @@ impl<'a> ReplayTransport<'a> {
 }
 
 impl<'a> Transport for ReplayTransport<'a> {
+    #[inline(always)]
     fn poll(&mut self, batch: &mut FrameBatch) -> usize {
         self.poll_clamped(batch, None)
     }
 
-    #[inline]
+    #[inline(always)]
     fn now_ns(&self) -> u64 {
         self.virtual_clock
     }

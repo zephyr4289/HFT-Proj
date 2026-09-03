@@ -14,7 +14,8 @@ pub struct FrameView {
 impl FrameView {
     /// SAFETY CONTRACT (doc 01 §5, O-2): valid until next poll() on the
     /// owning transport.
-    #[inline]
+    /// P3: always-inline — per-frame hot (22k calls/run).
+    #[inline(always)]
     pub fn bytes(&self) -> &[u8] {
         if self.ptr.is_null() || self.len == 0 {
             &[]
@@ -41,32 +42,32 @@ impl FrameBatch {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn clear(&mut self) {
         self.len = 0;
     }
 
-    #[inline]
+    #[inline(always)]
     pub const fn capacity() -> usize {
         256
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn frames(&self) -> &[FrameView] {
         &self.slots[..self.len]
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.len
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn push(&mut self, frame: FrameView) -> bool {
         if self.len < 256 {
             self.slots[self.len] = frame;
@@ -77,7 +78,7 @@ impl FrameBatch {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn push_raw(&mut self, ptr: *const u8, len: usize, feed: FeedId) -> bool {
         if self.len < 256 {
             self.slots[self.len] = FrameView {
