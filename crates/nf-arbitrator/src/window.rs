@@ -61,11 +61,11 @@ pub fn clear_slots(
     }
     let n = (limit - old_w) as usize;
     let start = (old_w & WINDOW_MASK_U64) as usize;
-    // First linear chunk until end of ring
+    // First linear chunk until end of ring (iter_mut form satisfies needless_range_loop, same codegen)
     let first_n = (WINDOW_SLOTS - start).min(n);
-    for slot in start..start + first_n {
-        if lens[slot] != 0 {
-            lens[slot] = 0;
+    for cell in lens.iter_mut().skip(start).take(first_n) {
+        if *cell != 0 {
+            *cell = 0;
             *staged_count -= 1;
             if *staged_count == 0 {
                 *max_staged = 0;
@@ -75,9 +75,9 @@ pub fn clear_slots(
     }
     // Wrapped remainder from slot 0
     let rem = n - first_n;
-    for slot in 0..rem {
-        if lens[slot] != 0 {
-            lens[slot] = 0;
+    for cell in lens.iter_mut().take(rem) {
+        if *cell != 0 {
+            *cell = 0;
             *staged_count -= 1;
             if *staged_count == 0 {
                 *max_staged = 0;
