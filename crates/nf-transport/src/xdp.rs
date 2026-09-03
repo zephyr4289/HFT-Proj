@@ -97,6 +97,11 @@ pub struct XdpTransport {
 unsafe impl Send for XdpTransport {}
 unsafe impl Sync for XdpTransport {}
 
+#[inline(always)]
+fn get_errno() -> i32 {
+    std::io::Error::last_os_error().raw_os_error().unwrap_or(1)
+}
+
 impl XdpTransport {
     /// Creates a mock / synthetic XdpTransport when running in non-privileged / non-XDP mode.
     pub fn new_mock() -> Self {
@@ -138,13 +143,13 @@ impl XdpTransport {
                 0,
             );
             if umem_area == libc::MAP_FAILED {
-                return Err(*libc::__errno_location());
+                return Err(get_errno());
             }
 
             // 2. Create Socket A
             let fd_a = libc::socket(AF_XDP, libc::SOCK_RAW, 0);
             if fd_a < 0 {
-                return Err(*libc::__errno_location());
+                return Err(get_errno());
             }
 
             // Register UMEM on Socket A
@@ -163,7 +168,7 @@ impl XdpTransport {
                 std::mem::size_of::<xdp_umem_reg>() as libc::socklen_t,
             ) < 0
             {
-                return Err(*libc::__errno_location());
+                return Err(get_errno());
             }
 
             // Set Fill Ring size
@@ -176,7 +181,7 @@ impl XdpTransport {
                 std::mem::size_of::<u32>() as libc::socklen_t,
             ) < 0
             {
-                return Err(*libc::__errno_location());
+                return Err(get_errno());
             }
 
             // Set RX Ring size
@@ -188,7 +193,7 @@ impl XdpTransport {
                 std::mem::size_of::<u32>() as libc::socklen_t,
             ) < 0
             {
-                return Err(*libc::__errno_location());
+                return Err(get_errno());
             }
 
             // Read offsets
@@ -202,7 +207,7 @@ impl XdpTransport {
                 &mut optlen,
             ) < 0
             {
-                return Err(*libc::__errno_location());
+                return Err(get_errno());
             }
 
             // Map Fill Ring
@@ -215,7 +220,7 @@ impl XdpTransport {
                 0x100000000, // XDP_UMEM_PGOFF_FILL_RING
             );
             if fill_map == libc::MAP_FAILED {
-                return Err(*libc::__errno_location());
+                return Err(get_errno());
             }
 
             let fill_ring = XskRingFill {
@@ -235,7 +240,7 @@ impl XdpTransport {
                 0, // XDP_PGOFF_RX_RING
             );
             if rx_map_a == libc::MAP_FAILED {
-                return Err(*libc::__errno_location());
+                return Err(get_errno());
             }
 
             let rx_ring_a = XskRingRx {
@@ -259,7 +264,7 @@ impl XdpTransport {
                 std::mem::size_of::<sockaddr_xdp>() as libc::socklen_t,
             ) < 0
             {
-                return Err(*libc::__errno_location());
+                return Err(get_errno());
             }
 
             // Pre-populate Fill Ring with all 2048 frame addresses

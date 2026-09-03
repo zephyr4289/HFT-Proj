@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 set -e
 
+# P0 GH tuning: honor external RUSTFLAGS if set (ci.yml znver3), else fallback to native for local/Termux
+# Keep RUSTFLAGS minimal (target-cpu only); profile controls lto/codegen/opt/strip.
+if [ -z "${RUSTFLAGS:-}" ]; then
+  export RUSTFLAGS="-C target-cpu=native"
+  echo "RUSTFLAGS (auto-native): $RUSTFLAGS"
+else
+  echo "RUSTFLAGS (env): $RUSTFLAGS"
+fi
+export CARGO_INCREMENTAL=0
+export CARGO_PROFILE_RELEASE_LTO=fat
+export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
+
+echo "rustc: $(rustc -Vv 2>&1 | head -n 1)"
+rustc --print cfg 2>&1 | grep -E "target_arch|target_cpu|target_feature" | head -n 20 || true
+
 LOGDIR="${RUNNER_TEMP:-/tmp}/ci-logs"
 mkdir -p "$LOGDIR"
 

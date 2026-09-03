@@ -12,13 +12,34 @@ jobs:
   build-and-verify:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      CARGO_NET_RETRY: 3
+      # GH-tuned: znver3 == EPYC 7763. Profile (Cargo.toml) already controls lto/codegen/opt/strip.
+      RUSTFLAGS: "-C target-cpu=znver3 -C target-feature=+avx2,+bmi1,+bmi2,+fma,+movbe"
+      CARGO_PROFILE_RELEASE_LTO: fat
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
+      CARGO_PROFILE_RELEASE_OPT_LEVEL: 3
+      CARGO_PROFILE_RELEASE_PANIC: abort
+      CARGO_PROFILE_RELEASE_STRIP: debuginfo
     steps:
       - uses: actions/checkout@v4
+
+      - name: Cache Cargo Registry & Build
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ci-znver3-v0.1"
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v0.1' }}
 
       - name: Run CI Suite with Full Log Capture
         id: ci_run
         run: |
           set -o pipefail
+          echo "RUSTFLAGS=$RUSTFLAGS"
+          echo "CARGO_PROFILE_RELEASE_LTO=$CARGO_PROFILE_RELEASE_LTO"
+          rustc --print cfg | grep target_cpu || true
+          rustc -Vv
           ./scripts/ci.sh 2>&1 | tee /tmp/ci_full_output.log
 
       - name: Auto-push Execution Logs to build-log Branch
