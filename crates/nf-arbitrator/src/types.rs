@@ -11,7 +11,7 @@ pub struct LiveFeedProof {
 
 impl LiveFeedProof {
     /// Returns the proof era generation counter.
-    #[inline]
+    #[inline(always)]
     pub fn gen(&self) -> u64 {
         self.gen
     }

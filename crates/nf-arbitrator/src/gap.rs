@@ -5,7 +5,8 @@ use crate::state::State;
 use crate::types::{Event, Sink};
 
 /// Records gap evidence. A gap opens if not already open and x > W.
-#[inline]
+/// P2: always-inline — cold path out-of-lined via cold_path() at call site.
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub fn gap_evidence<S: Sink>(
     gap_active: &mut bool,
@@ -34,7 +35,8 @@ pub fn gap_evidence<S: Sink>(
 }
 
 /// Checks if an active gap is fully closed by W advancing >= evidence_hwm.
-#[inline]
+/// P2: always-inline — guarded by `if gap_active` at hot call site.
+#[inline(always)]
 pub fn check_gap_close<S: Sink>(
     gap_active: &mut bool,
     evidence_hwm: &mut u64,

@@ -23,7 +23,7 @@ pub struct ViolationCounters {
 }
 
 impl ViolationCounters {
-    #[inline]
+    #[inline(always)]
     pub fn record_frame_error(&mut self, err: FrameError) {
         match err {
             FrameError::Truncated { .. } => self.truncated += 1,
@@ -34,7 +34,7 @@ impl ViolationCounters {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn record_packet_error(&mut self, err: PacketError) {
         match err {
             PacketError::Framing(fe) => self.record_frame_error(fe),
@@ -66,7 +66,7 @@ pub struct Counters {
 }
 
 impl Counters {
-    #[inline]
+    #[inline(always)]
     pub fn feed_mut(&mut self, feed: FeedId) -> &mut FeedCounters {
         if (feed & 1) == 0 {
             &mut self.feed_a
@@ -75,7 +75,7 @@ impl Counters {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     pub fn feed(&self, feed: FeedId) -> &FeedCounters {
         if (feed & 1) == 0 {
             &self.feed_a

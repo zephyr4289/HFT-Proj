@@ -25,7 +25,7 @@ pub enum Kind {
 
 impl Header {
     /// Classification by count field (doc 02 §3).
-    #[inline]
+    #[inline(always)]
     pub fn kind(&self) -> Kind {
         match self.count {
             HEARTBEAT_COUNT => Kind::Heartbeat,
@@ -36,7 +36,8 @@ impl Header {
 
     /// Inclusive message span [seq, seq+count-1] for data packets.
     /// None for heartbeat/EOS (no messages) and on u64 overflow (P-4).
-    #[inline]
+    /// P2: always-inline — per-packet hot (1 checked_add).
+    #[inline(always)]
     pub fn span(&self) -> Option<(u64, u64)> {
         if self.count == HEARTBEAT_COUNT || self.count == EOS_COUNT {
             return None;
@@ -79,7 +80,7 @@ pub struct MessageBlocks<'a> {
 }
 
 impl<'a> MessageBlocks<'a> {
-    #[inline]
+    #[inline(always)]
     pub(crate) fn new(buf: &'a [u8], start_seq: u64, count: u16) -> Self {
         Self {
             buf,
@@ -93,7 +94,7 @@ impl<'a> MessageBlocks<'a> {
 impl<'a> Iterator for MessageBlocks<'a> {
     type Item = MessageBlock<'a>;
 
-    #[inline]
+    #[inline(always)]
     fn next(&mut self) -> Option<MessageBlock<'a>> {
         if self.remaining == 0 {
             return None;
@@ -111,7 +112,7 @@ impl<'a> Iterator for MessageBlocks<'a> {
         Some(MessageBlock { seq, data })
     }
 
-    #[inline]
+    #[inline(always)]
     fn size_hint(&self) -> (usize, Option<usize>) {
         let rem = self.remaining as usize;
         (rem, Some(rem))
@@ -119,7 +120,7 @@ impl<'a> Iterator for MessageBlocks<'a> {
 }
 
 impl<'a> ExactSizeIterator for MessageBlocks<'a> {
-    #[inline]
+    #[inline(always)]
     fn len(&self) -> usize {
         self.remaining as usize
     }
@@ -141,7 +142,8 @@ pub enum Parsed<'a> {
 
 /// Kept from G1 scaffold; now infallible once buf.len() >= 20 checked by
 /// callers — internal helper for `parse`, public for tests.
-#[inline]
+/// P2: always-inline — 20B decode per packet (10B session + u64 + u16).
+#[inline(always)]
 pub fn parse_header(buf: &[u8]) -> Result<Header, FrameError> {
     if buf.len() < HEADER_LEN {
         return Err(FrameError::Truncated {

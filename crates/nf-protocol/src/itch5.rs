@@ -30,7 +30,7 @@ pub const LENGTH: [u8; 256] = {
     t
 };
 
-#[inline]
+#[inline(always)]
 pub fn msg_len(type_byte: u8) -> Option<u8> {
     match LENGTH[type_byte as usize] {
         0 => None,
@@ -46,7 +46,8 @@ pub enum ItchError {
 }
 
 /// O(1): one load, two compares. The ONLY ITCH call on the hot path.
-#[inline]
+/// P2: always-inline — 500k calls/run, 2 compares must fuse into caller.
+#[inline(always)]
 pub fn validate(msg: &[u8]) -> Result<(), ItchError> {
     if msg.is_empty() {
         return Err(ItchError::Empty);

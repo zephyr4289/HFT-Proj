@@ -12,6 +12,8 @@ pub enum PacketError {
 /// Parse the MoldUDP64 frame and validate every payload block against the
 /// ITCH 5.0 LENGTH table. Returns Ok(Parsed) only if both framing and all
 /// message payloads are structurally valid.
+/// P2: always-inline — fuses parse + ITCH walk into ingest (saves call/packet).
+#[inline(always)]
 pub fn validate_frame(buf: &[u8]) -> Result<moldudp64::Parsed<'_>, PacketError> {
     let parsed = moldudp64::parse(buf).map_err(PacketError::Framing)?;
     if let moldudp64::Parsed::Data { ref blocks, .. } = parsed {

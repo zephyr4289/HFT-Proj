@@ -8,7 +8,8 @@ use crate::window::WINDOW_SLOTS;
 use nf_protocol::moldudp64::Header;
 
 /// Handles session discovery or session boundary transition.
-#[inline]
+/// P2: always-inline — steady-state is 2 compares + return (session match).
+#[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub fn session_dispatch<S: Sink>(
     session: &mut [u8; 10],
@@ -59,7 +60,9 @@ pub fn session_dispatch<S: Sink>(
 }
 
 /// Handles heartbeat packet classification (count == 0).
-#[inline]
+/// P2: cold + never-inline — rare control packet, keep out of hot icache.
+#[cold]
+#[inline(never)]
 #[allow(clippy::too_many_arguments)]
 pub fn handle_heartbeat<S: Sink>(
     seq: u64,
@@ -96,7 +99,9 @@ pub fn handle_heartbeat<S: Sink>(
 }
 
 /// Handles End-of-Session packet classification (count == 0xFFFF).
-#[inline]
+/// P2: cold + never-inline — EOS train is end-of-run only.
+#[cold]
+#[inline(never)]
 pub fn handle_eos<S: Sink>(
     hdr: &Header,
     w: u64,
@@ -154,7 +159,9 @@ pub fn handle_eos<S: Sink>(
 }
 
 /// Permanently seals the sequencer to DEAD state (doc 05 §10).
-#[inline]
+/// P2: cold — terminal path only.
+#[cold]
+#[inline(never)]
 pub fn seal<S: Sink>(
     reason: DeadReason,
     w: u64,

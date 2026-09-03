@@ -85,6 +85,8 @@ impl Sequencer {
     }
 
     /// Primary normative ingest algorithm (doc 05 §5).
+    /// P2: inline(always) for cross-crate emit-path fusion, cold_path hints for rare branches.
+    #[inline(always)]
     pub fn ingest<S: Sink>(
         &mut self,
         frame: &[u8],
@@ -98,6 +100,7 @@ impl Sequencer {
         feed_cnt.bytes += frame.len() as u64;
 
         if frame.len() < moldudp64::HEADER_LEN {
+            std::hint::cold_path();
             self.counters.violations.truncated += 1;
             self.counters.total_violations += 1;
             return;
@@ -106,6 +109,7 @@ impl Sequencer {
         let hdr = match moldudp64::parse_header(frame) {
             Ok(h) => h,
             Err(e) => {
+                std::hint::cold_path();
                 self.counters.violations.record_frame_error(e);
                 self.counters.total_violations += 1;
                 return;
@@ -113,6 +117,7 @@ impl Sequencer {
         };
 
         if self.state == State::Dead {
+            std::hint::cold_path();
             self.counters.ignored_after_dead += 1;
             return;
         }
@@ -135,8 +140,9 @@ impl Sequencer {
             sink,
         );
 
-        // S2: KIND CLASSIFY
+        // S2: KIND CLASSIFY (HB/EOS rare in steady replay — cold)
         if hdr.count == moldudp64::HEARTBEAT_COUNT {
+            std::hint::cold_path();
             session::handle_heartbeat(
                 hdr.seq,
                 feed,
@@ -155,6 +161,7 @@ impl Sequencer {
         }
 
         if hdr.count == moldudp64::EOS_COUNT {
+            std::hint::cold_path();
             if self.mutation == SequencerMutation::DropStagedAtEos {
                 self.lens.fill(0);
                 self.staged_count = 0;
@@ -172,6 +179,7 @@ impl Sequencer {
 
         // Check if data packet arrives after EOS in current session
         if self.state == State::Ended {
+            std::hint::cold_path();
             self.counters.data_after_eos += 1;
             self.counters.total_violations += 1;
             return;
@@ -181,6 +189,7 @@ impl Sequencer {
         let (first, last) = match hdr.span() {
             Some(s) => s,
             None => {
+                std::hint::cold_path();
                 self.counters.violations.seq_overflow += 1;
                 self.counters.total_violations += 1;
                 return;
@@ -188,12 +197,13 @@ impl Sequencer {
         };
 
         if self.state == State::Init {
+            std::hint::cold_path();
             // Anchor W on first data packet of session
             self.w = first;
             self.progress_vt = now_ns;
             self.state = State::Contig;
         } else if last < self.w {
-            // Pure duplicate packet: ~15 cycles done
+            // Pure duplicate packet: ~15 cycles done (HOT in dual-feed replay)
             self.counters.feed_mut(feed).dups += 1;
             self.counters.dup_msgs += hdr.count as u64;
             return;
@@ -203,6 +213,7 @@ impl Sequencer {
         let parsed = match packet::validate_frame(frame) {
             Ok(p) => p,
             Err(e) => {
+                std::hint::cold_path();
                 self.counters.violations.record_packet_error(e);
                 self.counters.total_violations += 1;
                 return;
@@ -211,21 +222,30 @@ impl Sequencer {
 
         let blocks = match parsed {
             moldudp64::Parsed::Data { blocks, .. } => blocks,
-            _ => return,
+            _ => {
+                std::hint::cold_path();
+                return;
+            }
         };
 
-        // S5: APPLY
+        // S5: APPLY — contiguous is HOT, gap is COLD
         if first <= self.w {
             let old_w = self.w;
-            let proof = LiveFeedProof { gen: self.gen };
-            for block in blocks {
-                if block.seq >= self.w {
-                    sink.on_msg(&proof, block.seq, block.data);
-                    self.counters.msgs_emitted += 1;
-                } else {
-                    self.counters.dup_msgs += 1;
-                }
+            let gen = self.gen;
+            let proof = LiveFeedProof { gen };
+            // P2: hoist dup-skip — blocks are contiguous first..=last, first `skip` are dups.
+            // Eliminates per-message branch (predictor pressure) in steady lossless replay.
+            let n_blocks = blocks.len();
+            let skip = (old_w.wrapping_sub(first) as usize).min(n_blocks);
+            if skip != 0 {
+                self.counters.dup_msgs += skip as u64;
             }
+            let mut n_emit = 0u64;
+            for block in blocks.skip(skip) {
+                sink.on_msg(&proof, block.seq, block.data);
+                n_emit += 1;
+            }
+            self.counters.msgs_emitted += n_emit;
             self.w = last + 1;
 
             // §4.2 Clear-on-Advance Law
@@ -240,30 +260,37 @@ impl Sequencer {
             }
             self.progress_vt = now_ns;
 
-            let drained = window::drain(
-                &mut self.lens,
-                &self.arena,
-                &mut self.w,
-                &mut self.staged_count,
-                &mut self.max_staged,
-                self.gen,
-                sink,
-            );
-            self.counters.msgs_emitted += drained;
-            if drained > 0 {
-                self.progress_vt = now_ns;
+            // P2: guard drain (early-return inside too) — saves 1 load/packet steady-state
+            if self.staged_count != 0 {
+                let drained = window::drain(
+                    &mut self.lens,
+                    &self.arena,
+                    &mut self.w,
+                    &mut self.staged_count,
+                    &mut self.max_staged,
+                    gen,
+                    sink,
+                );
+                self.counters.msgs_emitted += drained;
+                if drained > 0 {
+                    self.progress_vt = now_ns;
+                }
             }
 
-            gap::check_gap_close(
-                &mut self.gap_active,
-                &mut self.evidence_hwm,
-                self.w,
-                self.gen,
-                &mut self.state,
-                &mut self.counters,
-                sink,
-            );
+            // P2: guard gap-close — gap_active false 99%+ in lossless replay
+            if self.gap_active {
+                gap::check_gap_close(
+                    &mut self.gap_active,
+                    &mut self.evidence_hwm,
+                    self.w,
+                    gen,
+                    &mut self.state,
+                    &mut self.counters,
+                    sink,
+                );
+            }
         } else {
+            std::hint::cold_path();
             gap::gap_evidence(
                 &mut self.gap_active,
                 &mut self.gen,
