@@ -8,7 +8,7 @@ use nf_arbitrator::{Event, LiveFeedProof, Sink};
 /// Keeps FNV SEED for cross-arch determinism, but GH x86_64 path dominates CI.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-fn fast_hash_bytes(mut h: u64, bytes: &[u8]) -> u64 {
+fn fast_hash_bytes(h: u64, bytes: &[u8]) -> u64 {
     // Use current hash low 32b as CRC seed (invert for IEEE)
     let mut crc = (h as u32) ^ 0xffffffffu32;
     let mut i = 0usize;
