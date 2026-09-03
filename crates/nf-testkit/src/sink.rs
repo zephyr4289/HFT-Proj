@@ -46,7 +46,7 @@ fn fast_hash_bytes(mut h: u64, bytes: &[u8]) -> u64 {
     }
     if i < len {
         unsafe {
-            crc = std::arch::x86_64::_mm_crc32_u8(crc, bytes[i] as u32);
+            crc = std::arch::x86_64::_mm_crc32_u8(crc, bytes[i]);
         }
     }
     let crc = crc ^ 0xffffffffu32;
