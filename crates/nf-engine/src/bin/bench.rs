@@ -288,6 +288,7 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
     let sess = *b"BENCHSESS1";
 
     let mut rates_a0 = Vec::with_capacity(runs);
+    let mut rates_a0_fast = Vec::with_capacity(runs);
     let mut rates_a0_disp = Vec::with_capacity(runs);
     let mut rates_a1 = Vec::with_capacity(runs);
     let mut rates_a2 = Vec::with_capacity(runs);
@@ -312,6 +313,24 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
             }
             let dt = read_monotonic_raw_ns().saturating_sub(t0);
             if dt > 0 { rates_a0.push(((sink.count() as f64) / (dt as f64) * 1e9) as u64); }
+        }
+
+        // A0_fast: Full Production Replay with FastConformanceSink (CRC32C hw prod hash)
+        // P4: wall-rate with zero RDTSC instrument tax — Tier3 PR-2 prod gate claim.
+        {
+            let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
+            let mut seq = Sequencer::new();
+            let mut sink = FastConformanceSink::new();
+            let mut batch = FrameBatch::new();
+            let t0 = read_monotonic_raw_ns();
+            while transport.poll(&mut batch) > 0 {
+                let now = transport.now_ns();
+                for f in batch.frames() {
+                    seq.ingest(f.bytes(), f.feed, now, &mut sink);
+                }
+            }
+            let dt = read_monotonic_raw_ns().saturating_sub(t0);
+            if dt > 0 { rates_a0_fast.push(((sink.count() as f64) / (dt as f64) * 1e9) as u64); }
         }
 
         // A0_disp: DispatchOnlySink (H10: on_msg dispatch & param pass, zero FNV-1a hash arithmetic)
@@ -467,14 +486,15 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
         }
     }
 
-    rates_a0.sort(); rates_a0_disp.sort(); rates_a1.sort(); rates_a2.sort(); rates_a3.sort();
+    rates_a0.sort(); rates_a0_fast.sort(); rates_a0_disp.sort(); rates_a1.sort(); rates_a2.sort(); rates_a3.sort();
     rates_a4.sort(); rates_a5.sort(); rates_a6.sort();
     let mid = runs / 2;
-    let r0 = rates_a0[mid]; let r0_disp = rates_a0_disp[mid]; let r1 = rates_a1[mid]; let r2 = rates_a2[mid]; let r3 = rates_a3[mid];
+    let r0 = rates_a0[mid]; let r0_fast = rates_a0_fast[mid]; let r0_disp = rates_a0_disp[mid]; let r1 = rates_a1[mid]; let r2 = rates_a2[mid]; let r3 = rates_a3[mid];
     let r4 = rates_a4[mid]; let r5 = rates_a5[mid]; let r6 = rates_a6[mid];
 
     let freq = cal.freq_mhz * 1e6;
     let c0 = freq / r0 as f64;
+    let c0_fast = freq / r0_fast as f64;
     let c0_disp = freq / r0_disp as f64;
     let c1 = freq / r1 as f64;
     let c2 = freq / r2 as f64;
@@ -484,6 +504,9 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
     let c6 = freq / r6 as f64;
 
     // Law B-1 Monotonicity Assertion: cycles must be non-increasing down the chain (within 0.5 cyc noise margin)
+    // P4: c0 (FNV 84c) >= c0_fast (CRC 15c) >= c0_disp (no hash) — fast prod sits between.
+    assert!(c0 >= c0_fast - 0.5, "Monotonicity inversion: c0 ({:.2}) < c0_fast ({:.2})", c0, c0_fast);
+    assert!(c0_fast >= c0_disp - 0.5, "Monotonicity inversion: c0_fast ({:.2}) < c0_disp ({:.2})", c0_fast, c0_disp);
     assert!(c0 >= c0_disp - 0.5, "Monotonicity inversion: c0 ({:.2}) < c0_disp ({:.2})", c0, c0_disp);
     assert!(c0_disp >= c1 - 0.5, "Monotonicity inversion: c0_disp ({:.2}) < c1 ({:.2})", c0_disp, c1);
     assert!(c1 >= c2 - 0.5, "Monotonicity inversion: c1 ({:.2}) < c2 ({:.2})", c1, c2);
@@ -495,6 +518,10 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
     let delta_fnv_math = (c0 - c0_disp).max(0.0);
     let delta_sink_disp = (c0_disp - c1).max(0.0);
     let delta_total_sink = (c0 - c1).max(0.0);
+    // P4: fast prod hash cost (CRC hw) vs dispatch-only — Tier3 claim basis.
+    // Wall-rate with zero RDTSC tax: c0_fast vs Tier3 60c (p50), sampled-fast p99 already PASS.
+    let delta_fast_hash = (c0_fast - c0_disp).max(0.0);
+    let prod_p50_verdict = nf_protocol::gates::evaluate_pr2_p50(c0_fast as u64);
     let delta_proof = (c1 - c2).max(0.0);
     let delta_seq = (c2 - c3).max(0.0);
     let delta_itch = (c3 - c4).max(0.0);
@@ -509,12 +536,16 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
     let r1_verdict = nf_protocol::gates::evaluate_reconciliation_residual(r1_composite_residual_pct);
 
     println!(
-        "STAGE_ECTOMY_RATES CONFIG_TAG=\"clean_replay\" sampling=\"none\" r0_hash={:.2}M r0_disp={:.2}M r1_count={:.2}M r2_noproof={:.2}M r3_noseq={:.2}M r4_noitch={:.2}M r5_noblock={:.2}M r6_poll={:.2}M",
-        r0 as f64 / 1e6, r0_disp as f64 / 1e6, r1 as f64 / 1e6, r2 as f64 / 1e6, r3 as f64 / 1e6, r4 as f64 / 1e6, r5 as f64 / 1e6, r6 as f64 / 1e6
+        "STAGE_ECTOMY_RATES CONFIG_TAG=\"clean_replay\" sampling=\"none\" r0_hash={:.2}M r0_fast={:.2}M r0_disp={:.2}M r1_count={:.2}M r2_noproof={:.2}M r3_noseq={:.2}M r4_noitch={:.2}M r5_noblock={:.2}M r6_poll={:.2}M",
+        r0 as f64 / 1e6, r0_fast as f64 / 1e6, r0_disp as f64 / 1e6, r1 as f64 / 1e6, r2 as f64 / 1e6, r3 as f64 / 1e6, r4 as f64 / 1e6, r5 as f64 / 1e6, r6 as f64 / 1e6
     );
     println!(
-        "STAGE_ECTOMY_CYCLES CONFIG_TAG=\"clean_replay\" c0={:.2} c0_disp={:.2} c1={:.2} c2={:.2} c3={:.2} c4={:.2} c5={:.2} c6={:.2}",
-        c0, c0_disp, c1, c2, c3, c4, c5, c6
+        "STAGE_ECTOMY_CYCLES CONFIG_TAG=\"clean_replay\" c0={:.2} c0_fast={:.2} c0_disp={:.2} c1={:.2} c2={:.2} c3={:.2} c4={:.2} c5={:.2} c6={:.2}",
+        c0, c0_fast, c0_disp, c1, c2, c3, c4, c5, c6
+    );
+    println!(
+        "PR2_PROD_VERDICT rate={} c0_fast={:.2} cyc fast_hash={:.2} cyc -> p50 < 60: {}",
+        r0_fast, c0_fast, delta_fast_hash, prod_p50_verdict.as_str()
     );
     println!(
         "H10_SINK_SPLIT total_sink={:.2} cyc fnv_math={:.2} cyc ({:.1}%) sink_dispatch={:.2} cyc ({:.1}%) H10_VERDICT={}",
@@ -1277,13 +1308,13 @@ fn run_bias_probe(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -> (f64, 
     let sched = build_schedule(gt, &cfg);
     let sess = *b"BIASSESS01";
 
-    // Dense 1-in-4
+    // Dense 1-in-4 (P4: fast sink for instrument consistency with sampled-fast prod path)
     let mut hist_dense = StaticHistogram::new();
     let mut hist_adj_dense = StaticHistogram::new();
     let mut study_dense = TailStudyContext::new(gt.len(), 5000);
     let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
     let mut seq = Sequencer::new();
-    let mut sink = ConformanceSink::new();
+    let mut sink = FastConformanceSink::new();
     let mut batch = FrameBatch::new();
     while transport.poll(&mut batch) > 0 {
         let now = transport.now_ns();
@@ -1310,13 +1341,13 @@ fn run_bias_probe(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -> (f64, 
     }
     let dense_mean = hist_dense.mean();
 
-    // Sparse 1-in-256
+    // Sparse 1-in-256 (P4: fast sink — matches run_sampled_256 prod instrument)
     let mut hist_sparse = StaticHistogram::new();
     let mut hist_adj_sparse = StaticHistogram::new();
     let mut study_sparse = TailStudyContext::new(gt.len(), 5000);
     let mut transport = ReplayTransport::new(gt, sched, sess);
     let mut seq = Sequencer::new();
-    let mut sink = ConformanceSink::new();
+    let mut sink = FastConformanceSink::new();
     let mut batch = FrameBatch::new();
     while transport.poll(&mut batch) > 0 {
         let now = transport.now_ns();
@@ -1362,11 +1393,12 @@ fn run_gap_probe(gt: &[u8]) -> f64 {
     let sess = *b"GAPSESS001";
     let mut transport = ReplayTransport::new(gt, sched, sess);
     let mut seq = Sequencer::new();
-    let mut base_sink = ConformanceSink::new();
+    // P4: fast inner for instrument consistency (bracket fast, gap fast, wall fast)
+    let mut base_sink = FastConformanceSink::new();
     let mut batch = FrameBatch::new();
 
     struct GapProbeSink<'a> {
-        inner: &'a mut ConformanceSink,
+        inner: &'a mut FastConformanceSink,
         last_t1: u64,
         total_gap: u64,
         sampled_count: u64,
