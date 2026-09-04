@@ -95,7 +95,7 @@ cargo run --release -p nf-testkit --bin fuzz_campaign | tee /tmp/fuzz_campaign.t
 grep -q "VR-4 FUZZ CAMPAIGN 100% COMPLETE AND VERIFIED" /tmp/fuzz_campaign.txt
 
 echo "=== 15. Spec-Only Retransmission Server Clean-Room Validation (doc 14 §3.2 / F-31) ==="
-cargo run --release -p nf-engine --bin spec_server | tee /tmp/spec_server.txt
+cargo run --release -p nf-testkit --bin spec_server | tee /tmp/spec_server.txt
 grep -q "SPEC-ONLY SERVER CLEAN-ROOM VALIDATION PASSED" /tmp/spec_server.txt
 
 echo "=== 16. HFT-Verify Statistical Gate (nano/constr1.1.md §1: 30 runs + warmup 5 + JSON) ==="
