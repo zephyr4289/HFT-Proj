@@ -16,6 +16,18 @@ export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
 echo "rustc: $(rustc -Vv 2>&1 | head -n 1)"
 rustc --print cfg 2>&1 | grep -E "target_arch|target_cpu|target_feature" | head -n 20 || true
 
+# P5 GH affinity: pin bench-critical steps to single core + warmup page/icache.
+# taskset optional (fallback unpinned); nproc + cpuinfo logged for provenance.
+echo "CPUS: $(nproc 2>&1 || echo unknown)"
+grep -m1 "model name" /proc/cpuinfo 2>&1 || true
+if command -v taskset >/dev/null 2>&1; then
+  echo "taskset: $(taskset -pc $$ 2>&1 || true)"
+  export HFT_TASKSET="taskset -c 1"
+else
+  echo "taskset: unavailable (unpinned fallback)"
+  export HFT_TASKSET=""
+fi
+
 LOGDIR="${RUNNER_TEMP:-/tmp}/ci-logs"
 mkdir -p "$LOGDIR"
 
@@ -59,9 +71,12 @@ echo "=== 10. Venue Sender & XDP Transport Smoke Check ==="
 cargo run --release -p nf-testkit --bin venue -- --sample data/tests/sample-mini.itch
 
 echo "=== 11. Benchmark & G12-T1 Tail Attribution Study ==="
-cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --runs 5 --study | tee /tmp/bench.txt
+# P5 warmup: single cold-arm run discards page-fault + freq-ramp noise (H1/H3), ~seconds.
+cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --runs 1 --arm cold > /dev/null 2>&1 || true
+$HFT_TASKSET cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --runs 5 --study | tee /tmp/bench.txt
 grep -q "STUDY_REPORT written to" /tmp/bench.txt
 grep -q "allocs=0" /tmp/bench.txt
+grep -q "PR2_PROD_VERDICT" /tmp/bench.txt
 
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D8) ==="
 # R-1 Independence Grep Audit
