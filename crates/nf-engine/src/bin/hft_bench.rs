@@ -13,7 +13,6 @@ use nf_arbitrator::{Sequencer, Sink};
 use nf_engine::clock::{calibrate_clock, read_monotonic_raw_ns};
 use nf_testkit::sched::{build_schedule, Packetize, ReplayConfig};
 use nf_transport::replay::ReplayTransport;
-use nf_transport::sched_types::ReplaySchedule;
 use nf_transport::{FrameBatch, Transport};
 use std::env;
 use std::fs;
@@ -47,10 +46,15 @@ fn get_cpu_model() -> String {
     "Generic x86_64 CPU".to_string()
 }
 
-/// One measured wall-rate pass: fresh transport + sequencer + sink.
+/// One measured wall-rate pass over a REUSED transport (reset per pass).
+/// Reuse matters: a fresh 15MB pre-rendered blob per pass means 35x
+/// mmap/munmap + page-fault churn, which showed up as a 12c↔20c sawtooth
+/// across runs (host compaction/THP dance). reset() only rewinds event_idx /
+/// clock with an identical session, so frames are byte-identical and pages
+/// stay faulted and warm — steady-state measurement.
 /// Returns messages/sec. Panics on zero messages or zero-duration pass.
-fn wall_pass(gt: &[u8], sched: &ReplaySchedule, sess: [u8; 10]) -> u64 {
-    let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
+fn wall_pass(transport: &mut ReplayTransport, sess: [u8; 10]) -> u64 {
+    transport.reset(sess);
     let mut seq = Sequencer::new();
     let mut sink = CountSink { count: 0 };
     let mut batch = FrameBatch::new();
@@ -128,15 +132,17 @@ fn main() {
     };
     let sched = build_schedule(&gt, &cfg);
     let sess = *b"HFTBENCH01";
+    // Single transport for all passes (see wall_pass): identical bytes, warm pages.
+    let mut transport = ReplayTransport::new(&gt, sched, sess);
 
     for w in 0..warmup {
-        let r = wall_pass(&gt, &sched, sess);
+        let r = wall_pass(&mut transport, sess);
         eprintln!("HFT_BENCH_WARMUP {}/{} rate={}", w + 1, warmup, r);
     }
 
     let mut cs: Vec<f64> = Vec::with_capacity(runs);
     for run in 0..runs {
-        let rate = wall_pass(&gt, &sched, sess);
+        let rate = wall_pass(&mut transport, sess);
         let cyc = freq / rate.max(1) as f64;
         eprintln!("HFT_BENCH_RUN {}/{} rate={} cyc={:.2}", run + 1, runs, rate, cyc);
         cs.push(cyc);
