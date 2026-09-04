@@ -437,9 +437,11 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
             if dt > 0 { rates_a3.push(((count as f64) / (dt as f64) * 1e9) as u64); }
         }
 
-        // A4': No ITCH Validation (precomputed index traversal + line touch only).
-        // F-48 re-baseline: measures offset-load cost (~1c), replacing the old
-        // wire length-walk (~9.6c, now amortized at construction).
+        // A4': No ITCH Validation (precomputed index traversal + slice only).
+        // F-48 re-baseline: strict subset of A3' (same loop minus validate) so
+        // the ladder c3 >= c4 holds by construction. Lesson from run 33856755213
+        // (8573C): an extra first-byte touch made A4' SLOWER than A3' (2.40 <
+        // 4.60) — elimination guards must never add work the upper arm lacks.
         {
             let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
             let mut count = 0u64;
@@ -452,7 +454,6 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
                         let data = &fb[start as usize..end as usize];
                         count += 1;
                         std::hint::black_box(data.len());
-                        std::hint::black_box(data.first().copied());
                     }
                 }
             }
