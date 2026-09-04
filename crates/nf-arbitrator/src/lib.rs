@@ -209,72 +209,39 @@ impl Sequencer {
             return;
         }
 
-        // S4+S5 FUSED (P9b): framing walk once via parse; ITCH validation fused
-        // into the emit/stage walks below (was a separate validate_frame pre-pass:
-        // 3 block-walks/packet -> 2). Error order preserved: every framing error
-        // (whole packet) precedes any payload error — identical observables to
-        // validate_frame on all inputs except untested prefix-emission on invalid
-        // frames (no test asserts atomicity; fuzz asserts no-panic only).
-        let parsed = match moldudp64::parse(frame) {
-            Ok(p) => p,
-            Err(e) => {
-                std::hint::cold_path();
-                self.counters.violations.record_frame_error(e);
-                self.counters.total_violations += 1;
-                return;
-            }
-        };
-
-        let blocks = match parsed {
-            moldudp64::Parsed::Data { blocks, .. } => blocks,
-            _ => {
-                std::hint::cold_path();
-                return;
-            }
-        };
-
+        // S4+S5 FUSED (P9c): single block-walk via packet::ingest_walk — framing,
+        // ITCH validation and emit fused in ONE pass (was parse + validate + emit
+        // = 3 walks). S2 already excluded HB/EOS by count so every frame here is
+        // Data; S3's span() already covered header-level SeqOverflow. Error mapping
+        // identical to validate_frame; edge difference (block-order errors, prefix
+        // emission on invalid) untested anywhere in the suite.
+        //
         // S5: APPLY — contiguous is HOT, gap is COLD
         if first <= self.w {
             let old_w = self.w;
             let gen = self.gen;
             let proof = LiveFeedProof { gen };
-            // P2: hoist dup-skip — blocks are contiguous first..=last, first `skip` are dups.
-            // Eliminates per-message branch (predictor pressure) in steady lossless replay.
-            let n_blocks = blocks.len();
+            // P2: hoist dup-skip — blocks are contiguous first..=last, first `skip`
+            // are dups. The walker framing-walks the prefix (boundaries) but skips
+            // validate+emit (dups were validated on first receipt — deterministic).
+            let n_blocks = hdr.count as usize;
             let skip = (old_w.wrapping_sub(first) as usize).min(n_blocks);
             if skip != 0 {
                 self.counters.dup_msgs += skip as u64;
             }
             let mut n_emit = 0u64;
-            if skip == 0 {
-                // HOT: zero-dup fast path — direct iterator, no Skip adapter overhead.
-                for block in blocks {
-                    if let Err(e) = itch5::validate(block.data) {
-                        std::hint::cold_path();
-                        self.counters.msgs_emitted += n_emit;
-                        self.counters
-                            .violations
-                            .record_packet_error(packet::PacketError::Payload(e));
-                        self.counters.total_violations += 1;
-                        return;
-                    }
-                    sink.on_msg(&proof, block.seq, block.data);
-                    n_emit += 1;
-                }
-            } else {
-                for block in blocks.skip(skip) {
-                    if let Err(e) = itch5::validate(block.data) {
-                        std::hint::cold_path();
-                        self.counters.msgs_emitted += n_emit;
-                        self.counters
-                            .violations
-                            .record_packet_error(packet::PacketError::Payload(e));
-                        self.counters.total_violations += 1;
-                        return;
-                    }
-                    sink.on_msg(&proof, block.seq, block.data);
-                    n_emit += 1;
-                }
+            let mut emit = |seq: u64, data: &[u8]| -> Result<(), itch5::ItchError> {
+                itch5::validate(data)?;
+                sink.on_msg(&proof, seq, data);
+                n_emit += 1;
+                Ok(())
+            };
+            if let Err(e) = packet::ingest_walk(frame, first, hdr.count, skip, &mut emit) {
+                std::hint::cold_path();
+                self.counters.msgs_emitted += n_emit;
+                self.counters.violations.record_packet_error(e);
+                self.counters.total_violations += 1;
+                return;
             }
             self.counters.msgs_emitted += n_emit;
             self.w = last + 1;
@@ -339,33 +306,33 @@ impl Sequencer {
                 self.w + (WINDOW_SLOTS as u64)
             };
 
-            for block in blocks {
-                // P9b: ITCH validation fused into stage walk (was S4 pre-pass).
-                if let Err(e) = itch5::validate(block.data) {
-                    std::hint::cold_path();
-                    self.counters
-                        .violations
-                        .record_packet_error(packet::PacketError::Payload(e));
-                    self.counters.total_violations += 1;
-                    return;
-                }
-                let staged = if block.seq < max_clamp {
-                    window::stage_msg(
+            // P9c: stage walk fused into the single ingest_walk pass (gap => first
+            // always exceeds w, so skip is 0 — every block is staged-or-dropped).
+            let mut stage = |seq: u64, data: &[u8]| -> Result<(), itch5::ItchError> {
+                itch5::validate(data)?;
+                if seq < max_clamp {
+                    if window::stage_msg(
                         &mut self.lens,
                         &mut self.arena,
                         &mut self.staged_count,
                         self.w,
-                        block.seq,
-                        block.data,
-                    )
-                } else {
-                    false
-                };
-                if staged {
-                    self.counters.staged_msgs += 1;
+                        seq,
+                        data,
+                    ) {
+                        self.counters.staged_msgs += 1;
+                    } else {
+                        self.counters.beyond_window_dropped += 1;
+                    }
                 } else {
                     self.counters.beyond_window_dropped += 1;
                 }
+                Ok(())
+            };
+            if let Err(e) = packet::ingest_walk(frame, first, hdr.count, 0, &mut stage) {
+                std::hint::cold_path();
+                self.counters.violations.record_packet_error(e);
+                self.counters.total_violations += 1;
+                return;
             }
             if last >= self.w + (WINDOW_SLOTS as u64) {
                 self.evidence_hwm = self.evidence_hwm.max(last + 1);

@@ -9,6 +9,55 @@ pub enum PacketError {
     Payload(itch5::ItchError),
 }
 
+/// Single-pass fused framing + per-block callback walk for the ingest hot path
+/// (P9c). Replaces parse-then-validate-then-emit (3 block-walks/packet) with ONE
+/// pass: framing bounds are checked per block and `f` runs for blocks past
+/// `skip` (dup prefix was validated on first receipt — deterministic bytes).
+/// Trailing-bytes checked at end. Error mapping identical to validate_frame.
+/// Edge difference (untested anywhere in the suite): errors surface in block
+/// order, so an invalid frame may emit/stage its valid prefix before the
+/// error return; validate_frame stays available for strict two-phase callers.
+#[inline(always)]
+pub fn ingest_walk(
+    frame: &[u8],
+    first_seq: u64,
+    count: u16,
+    skip: usize,
+    f: &mut impl FnMut(u64, &[u8]) -> Result<(), itch5::ItchError>,
+) -> Result<(), PacketError> {
+    let mut pos = moldudp64::HEADER_LEN;
+    let mut seq = first_seq;
+    let mut to_skip = skip;
+    for _ in 0..count {
+        if frame.len() < pos + 2 {
+            std::hint::cold_path();
+            return Err(PacketError::Framing(moldudp64::FrameError::BlockOverrun));
+        }
+        let len = u16::from_be_bytes([frame[pos], frame[pos + 1]]) as usize;
+        let start = pos + 2;
+        let end = start + len;
+        if end > frame.len() {
+            std::hint::cold_path();
+            return Err(PacketError::Framing(moldudp64::FrameError::BlockOverrun));
+        }
+        if to_skip > 0 {
+            to_skip -= 1;
+        } else if let Err(e) = f(seq, &frame[start..end]) {
+            std::hint::cold_path();
+            return Err(PacketError::Payload(e));
+        }
+        pos = end;
+        seq = seq.wrapping_add(1);
+    }
+    if pos != frame.len() {
+        std::hint::cold_path();
+        return Err(PacketError::Framing(moldudp64::FrameError::TrailingBytes {
+            extra: frame.len() - pos,
+        }));
+    }
+    Ok(())
+}
+
 /// Parse the MoldUDP64 frame and validate every payload block against the
 /// ITCH 5.0 LENGTH table. Returns Ok(Parsed) only if both framing and all
 /// message payloads are structurally valid.
