@@ -53,6 +53,8 @@ jobs:
           mkdir -p ci-logs
           cp /tmp/ci_full_output.log ci-logs/ 2>/dev/null || true
           cp /tmp/*.txt ci-logs/ 2>/dev/null || true
+          cp /tmp/*.json ci-logs/ 2>/dev/null || true
+          cp /tmp/musl_build.log ci-logs/ 2>/dev/null || true
           echo "Run triggered by commit: ${{ github.sha }}" > ci-logs/run-metadata.txt
           echo "Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> ci-logs/run-metadata.txt
           echo "Timestamp: $(date -u)" >> ci-logs/run-metadata.txt

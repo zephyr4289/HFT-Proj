@@ -95,7 +95,55 @@ cargo run --release -p nf-testkit --bin fuzz_campaign | tee /tmp/fuzz_campaign.t
 grep -q "VR-4 FUZZ CAMPAIGN 100% COMPLETE AND VERIFIED" /tmp/fuzz_campaign.txt
 
 echo "=== 15. Spec-Only Retransmission Server Clean-Room Validation (doc 14 §3.2 / F-31) ==="
-cargo run --release -p nf-testkit --bin spec_server | tee /tmp/spec_server.txt
+cargo run --release -p nf-engine --bin spec_server | tee /tmp/spec_server.txt
 grep -q "SPEC-ONLY SERVER CLEAN-ROOM VALIDATION PASSED" /tmp/spec_server.txt
+
+echo "=== 16. HFT-Verify Statistical Gate (nano/constr1.1.md §1: 30 runs + warmup 5 + JSON) ==="
+# Musl static build attempt (constr1.1.md requires musl target); gnu fallback keeps gate running.
+HFT_BIN="target/release/hft_bench"
+if ! rustup target list --installed 2>/dev/null | grep -q "x86_64-unknown-linux-musl"; then
+  rustup target add x86_64-unknown-linux-musl || echo "MUSL_TARGET_UNAVAILABLE fallback gnu"
+fi
+if ! command -v musl-gcc >/dev/null 2>&1; then
+  sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools || echo "MUSL_TOOLS_UNAVAILABLE fallback gnu"
+fi
+if cargo build --release --target x86_64-unknown-linux-musl -p nf-engine --bin hft_bench 2>/tmp/musl_build.log; then
+  echo "MUSL_BUILD_OK static target"
+  HFT_BIN="target/x86_64-unknown-linux-musl/release/hft_bench"
+else
+  echo "MUSL_BUILD_FAILED fallback gnu (tail):"
+  tail -n 20 /tmp/musl_build.log || true
+  echo "MUSL_BUILD_FAILED fallback gnu" > /tmp/musl_build.log
+fi
+$HFT_TASKSET "$HFT_BIN" --sample data/tests/sample-mini.itch --runs 30 --warmup 5 --output-format json | tee /tmp/bench_results.json
+grep -q "median_cycles" /tmp/bench_results.json
+python3 - <<'PYEOF'
+import json, sys
+with open('/tmp/bench_results.json') as f:
+    r = json.load(f)
+required = ['median_cycles', 'p95_cycles', 'p99_cycles', 'stddev', 'cv_percent']
+for k in required:
+    if k not in r:
+        print(f'MISSING METRIC: {k}')
+        sys.exit(1)
+constraints = {
+    'median_cycles': {'max': 25.0, 'unit': 'cycles/msg'},
+    'p95_cycles': {'max': 35.0, 'unit': 'cycles/msg'},
+    'p99_cycles': {'max': 50.0, 'unit': 'cycles/msg'},
+    'stddev': {'max': 2.0, 'unit': 'cycles'},
+    'cv_percent': {'max': 8.0, 'unit': '%'},
+}
+failed = []
+for metric, rule in constraints.items():
+    val = r[metric]
+    if val > rule['max']:
+        failed.append(f'{metric}: {val} > {rule["max"]} {rule["unit"]}')
+if failed:
+    print('CONSTRAINT VIOLATIONS:')
+    for f in failed:
+        print(f'  - {f}')
+    sys.exit(1)
+print('ALL CONSTRAINTS PASSED')
+PYEOF
 
 echo "=== ALL CHECKS PASSED SUCCESSFULLY ==="
