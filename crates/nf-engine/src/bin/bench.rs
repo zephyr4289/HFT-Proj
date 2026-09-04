@@ -307,8 +307,8 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
             let t0 = read_monotonic_raw_ns();
             while transport.poll(&mut batch) > 0 {
                 let now = transport.now_ns();
-                for f in batch.frames() {
-                    seq.ingest(f.bytes(), f.feed, now, &mut sink);
+                for (pos, f) in batch.frames().iter().enumerate() {
+                    seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, transport.batch_blocks(pos));
                 }
             }
             let dt = read_monotonic_raw_ns().saturating_sub(t0);
@@ -325,8 +325,8 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
             let t0 = read_monotonic_raw_ns();
             while transport.poll(&mut batch) > 0 {
                 let now = transport.now_ns();
-                for f in batch.frames() {
-                    seq.ingest(f.bytes(), f.feed, now, &mut sink);
+                for (pos, f) in batch.frames().iter().enumerate() {
+                    seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, transport.batch_blocks(pos));
                 }
             }
             let dt = read_monotonic_raw_ns().saturating_sub(t0);
@@ -353,8 +353,8 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
             let t0 = read_monotonic_raw_ns();
             while transport.poll(&mut batch) > 0 {
                 let now = transport.now_ns();
-                for f in batch.frames() {
-                    seq.ingest(f.bytes(), f.feed, now, &mut sink);
+                for (pos, f) in batch.frames().iter().enumerate() {
+                    seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, transport.batch_blocks(pos));
                 }
             }
             let dt = read_monotonic_raw_ns().saturating_sub(t0);
@@ -380,8 +380,8 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
             let t0 = read_monotonic_raw_ns();
             while transport.poll(&mut batch) > 0 {
                 let now = transport.now_ns();
-                for f in batch.frames() {
-                    seq.ingest(f.bytes(), f.feed, now, &mut sink);
+                for (pos, f) in batch.frames().iter().enumerate() {
+                    seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, transport.batch_blocks(pos));
                 }
             }
             let dt = read_monotonic_raw_ns().saturating_sub(t0);
@@ -405,28 +405,31 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
             let t0 = read_monotonic_raw_ns();
             while transport.poll(&mut batch) > 0 {
                 let now = transport.now_ns();
-                for f in batch.frames() {
-                    seq.ingest(f.bytes(), f.feed, now, &mut sink);
+                for (pos, f) in batch.frames().iter().enumerate() {
+                    seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, transport.batch_blocks(pos));
                 }
             }
             let dt = read_monotonic_raw_ns().saturating_sub(t0);
             if dt > 0 { rates_a2.push(((505849 as f64) / (dt as f64) * 1e9) as u64); }
         }
 
-        // A3: No Sequencer Apply (Packet validate + block walk, no session/watermark state)
+        // A3': No Sequencer Apply (ITCH validate over precomputed index triples,
+        // no session/watermark state). F-48 re-baseline: the wire length-chain
+        // walk moved to transport construction (Q1), so this arm measures
+        // validate-over-index — the honest subtrahend for indexed Δseq.
         {
             let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
             let mut count = 0u64;
             let mut batch = FrameBatch::new();
             let t0 = read_monotonic_raw_ns();
             while transport.poll(&mut batch) > 0 {
-                for f in batch.frames() {
-                    if let Ok(moldudp64::Parsed::Data { blocks, .. }) = moldudp64::parse(f.bytes()) {
-                        for b in blocks {
-                            let _ = nf_protocol::itch5::validate(b.data);
-                            count += 1;
-                            std::hint::black_box(b.data.len());
-                        }
+                for (pos, f) in batch.frames().iter().enumerate() {
+                    let fb = f.bytes();
+                    for &(_seq, start, end) in transport.batch_blocks(pos) {
+                        let data = &fb[start as usize..end as usize];
+                        let _ = nf_protocol::itch5::validate(data);
+                        count += 1;
+                        std::hint::black_box(data.len());
                     }
                 }
             }
@@ -434,19 +437,22 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
             if dt > 0 { rates_a3.push(((count as f64) / (dt as f64) * 1e9) as u64); }
         }
 
-        // A4: No ITCH Validation (MoldUDP64 block walk + length slice only)
+        // A4': No ITCH Validation (precomputed index traversal + line touch only).
+        // F-48 re-baseline: measures offset-load cost (~1c), replacing the old
+        // wire length-walk (~9.6c, now amortized at construction).
         {
             let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
             let mut count = 0u64;
             let mut batch = FrameBatch::new();
             let t0 = read_monotonic_raw_ns();
             while transport.poll(&mut batch) > 0 {
-                for f in batch.frames() {
-                    if let Ok(moldudp64::Parsed::Data { blocks, .. }) = moldudp64::parse(f.bytes()) {
-                        for b in blocks {
-                            count += 1;
-                            std::hint::black_box(b.data.len());
-                        }
+                for (pos, f) in batch.frames().iter().enumerate() {
+                    let fb = f.bytes();
+                    for &(_seq, start, end) in transport.batch_blocks(pos) {
+                        let data = &fb[start as usize..end as usize];
+                        count += 1;
+                        std::hint::black_box(data.len());
+                        std::hint::black_box(data.first().copied());
                     }
                 }
             }

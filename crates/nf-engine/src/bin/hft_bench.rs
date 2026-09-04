@@ -53,7 +53,7 @@ fn get_cpu_model() -> String {
 /// clock with an identical session, so frames are byte-identical and pages
 /// stay faulted and warm — steady-state measurement.
 /// Returns messages/sec. Panics on zero messages or zero-duration pass.
-fn wall_pass(transport: &mut ReplayTransport, sess: [u8; 10]) -> u64 {
+fn wall_pass(transport: &mut ReplayTransport, sess: [u8; 10], golden_count: Option<u64>) -> u64 {
     transport.reset(sess);
     let mut seq = Sequencer::new();
     let mut sink = CountSink { count: 0 };
@@ -61,12 +61,20 @@ fn wall_pass(transport: &mut ReplayTransport, sess: [u8; 10]) -> u64 {
     let t0 = read_monotonic_raw_ns();
     while transport.poll(&mut batch) > 0 {
         let now = transport.now_ns();
-        for f in batch.frames() {
-            seq.ingest(f.bytes(), f.feed, now, &mut sink);
+        for (pos, f) in batch.frames().iter().enumerate() {
+            seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, transport.batch_blocks(pos));
         }
     }
     let dt = read_monotonic_raw_ns().saturating_sub(t0);
     assert!(sink.count > 0, "hft_bench: zero messages emitted");
+    // Q1 indexed-path population proof: the indexed walk must emit exactly the
+    // golden message population (catches silent drops in the new path).
+    if let Some(g) = golden_count {
+        assert_eq!(
+            sink.count, g,
+            "hft_bench: indexed-path count divergence (confluence break)"
+        );
+    }
     assert!(dt > 0, "hft_bench: zero-duration pass");
     ((sink.count as f64) / (dt as f64) * 1e9) as u64
 }
@@ -134,15 +142,19 @@ fn main() {
     let sess = *b"HFTBENCH01";
     // Single transport for all passes (see wall_pass): identical bytes, warm pages.
     let mut transport = ReplayTransport::new(&gt, sched, sess);
+    // Golden population for the canonical mini sample under this config.
+    let golden_count = sample_path
+        .ends_with("sample-mini.itch")
+        .then_some(505849u64);
 
     for w in 0..warmup {
-        let r = wall_pass(&mut transport, sess);
+        let r = wall_pass(&mut transport, sess, golden_count);
         eprintln!("HFT_BENCH_WARMUP {}/{} rate={}", w + 1, warmup, r);
     }
 
     let mut cs: Vec<f64> = Vec::with_capacity(runs);
     for run in 0..runs {
-        let rate = wall_pass(&mut transport, sess);
+        let rate = wall_pass(&mut transport, sess, golden_count);
         let cyc = freq / rate.max(1) as f64;
         eprintln!("HFT_BENCH_RUN {}/{} rate={} cyc={:.2}", run + 1, runs, rate, cyc);
         cs.push(cyc);

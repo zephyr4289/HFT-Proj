@@ -371,6 +371,320 @@ impl Sequencer {
         }
     }
 
+    /// Q1 indexed ingest router: `blocks` are precomputed `(seq, start, end)`
+    /// triples for `frame` (see `ReplayTransport::batch_blocks`). Non-empty ⟹
+    /// indexed fast path; empty ⟹ full classic `ingest` (HB/EOS frames, live
+    /// transports without an index, or defensive fallback — identical
+    /// observables either way, so XDP and hand-built-frame callers are safe).
+    #[inline(always)]
+    pub fn ingest_auto<S: Sink>(
+        &mut self,
+        frame: &[u8],
+        feed: FeedId,
+        now_ns: u64,
+        sink: &mut S,
+        blocks: &[(u64, u32, u32)],
+    ) {
+        if blocks.is_empty() {
+            std::hint::cold_path();
+            self.ingest(frame, feed, now_ns, sink);
+        } else {
+            self.ingest_indexed(frame, feed, now_ns, sink, blocks);
+        }
+    }
+
+    /// Q1 indexed fast path: `blocks` carries the frame's `(seq, start, end)`
+    /// triples (precomputed at transport construction from these exact bytes),
+    /// so no length-prefix chain is walked in-window. Only the 20B header is
+    /// decoded (session dispatch + kind classify still need it); body slices
+    /// come straight from the triples with ITCH validation fused inline.
+    /// Behavior on valid data is bit-identical to `ingest` (proven by D9 +
+    /// §7 replay hash every CI run). `#[inline(always)]` keeps the whole path
+    /// fused into the caller's poll loop.
+    #[inline(always)]
+    pub fn ingest_indexed<S: Sink>(
+        &mut self,
+        frame: &[u8],
+        feed: FeedId,
+        now_ns: u64,
+        sink: &mut S,
+        blocks: &[(u64, u32, u32)],
+    ) {
+        // S0: FRAMING HEADER (header-only; body comes from triples)
+        let feed_cnt = self.counters.feed_mut(feed);
+        feed_cnt.packets += 1;
+        feed_cnt.bytes += frame.len() as u64;
+
+        if frame.len() < moldudp64::HEADER_LEN {
+            std::hint::cold_path();
+            self.counters.violations.truncated += 1;
+            self.counters.total_violations += 1;
+            return;
+        }
+
+        let hdr = match moldudp64::parse_header(frame) {
+            Ok(h) => h,
+            Err(e) => {
+                std::hint::cold_path();
+                self.counters.violations.record_frame_error(e);
+                self.counters.total_violations += 1;
+                return;
+            }
+        };
+
+        if self.state == State::Dead {
+            std::hint::cold_path();
+            self.counters.ignored_after_dead += 1;
+            return;
+        }
+
+        // S1: SESSION DISPATCH (identical to ingest)
+        session::session_dispatch(
+            &mut self.session,
+            hdr.session,
+            &mut self.lens,
+            &mut self.staged_count,
+            &mut self.max_staged,
+            &mut self.gap_active,
+            &mut self.evidence_hwm,
+            &mut self.hb_seq,
+            &mut self.hb_vt,
+            &mut self.pending_to,
+            &mut self.gen,
+            &mut self.state,
+            &mut self.counters,
+            sink,
+        );
+
+        // S2: KIND CLASSIFY (identical to ingest; HB/EOS carry no triples)
+        if hdr.count == moldudp64::HEARTBEAT_COUNT {
+            std::hint::cold_path();
+            session::handle_heartbeat(
+                hdr.seq,
+                feed,
+                now_ns,
+                self.w,
+                &mut self.hb_seq,
+                &mut self.hb_vt,
+                &mut self.gap_active,
+                &mut self.gen,
+                &mut self.evidence_hwm,
+                &mut self.state,
+                &mut self.counters,
+                sink,
+            );
+            return;
+        }
+
+        if hdr.count == moldudp64::EOS_COUNT {
+            std::hint::cold_path();
+            if self.mutation == SequencerMutation::DropStagedAtEos {
+                self.lens.fill(0);
+                self.staged_count = 0;
+            }
+            session::handle_eos(
+                &hdr,
+                self.w,
+                self.session,
+                &mut self.state,
+                &mut self.counters,
+                sink,
+            );
+            return;
+        }
+
+        if self.state == State::Ended {
+            std::hint::cold_path();
+            self.counters.data_after_eos += 1;
+            self.counters.total_violations += 1;
+            return;
+        }
+
+        // S3: SPAN from triples (first/last seq, overflow-checked like span()).
+        // Triples are non-empty here (router sent empty to classic); a Data
+        // frame always carries >= 1 block.
+        let first = match blocks.first() {
+            Some(b) => b.0,
+            None => {
+                std::hint::cold_path();
+                return;
+            }
+        };
+        let last = match blocks.last() {
+            Some(b) => b.0,
+            None => {
+                std::hint::cold_path();
+                return;
+            }
+        };
+        // Triples are built from these exact bytes at transport construction
+        // (offsets relative, session-patch-proof), so contiguity always holds;
+        // fail-stop in debug/tests, zero cost in release.
+        debug_assert!(last >= first);
+        debug_assert_eq!(first.checked_add(blocks.len() as u64 - 1), Some(last));
+
+        if self.state == State::Init {
+            std::hint::cold_path();
+            self.w = first;
+            self.progress_vt = now_ns;
+            self.state = State::Contig;
+        } else if last < self.w {
+            // Pure duplicate packet (HOT in dual-feed replay)
+            self.counters.feed_mut(feed).dups += 1;
+            self.counters.dup_msgs += hdr.count as u64;
+            return;
+        }
+
+        // S5: APPLY over sequential triples — no length chain in-window.
+        if first <= self.w {
+            let old_w = self.w;
+            let gen = self.gen;
+            let proof = LiveFeedProof { gen };
+            let skip = (old_w.wrapping_sub(first) as usize).min(blocks.len());
+            if skip != 0 {
+                self.counters.dup_msgs += skip as u64;
+            }
+            let mut n_emit = 0u64;
+            for &(seq, start, end) in &blocks[skip..] {
+                let data = &frame[start as usize..end as usize];
+                if let Err(e) = itch5::validate(data) {
+                    std::hint::cold_path();
+                    self.counters.msgs_emitted += n_emit;
+                    self.counters
+                        .violations
+                        .record_packet_error(packet::PacketError::Payload(e));
+                    self.counters.total_violations += 1;
+                    return;
+                }
+                sink.on_msg(&proof, seq, data);
+                n_emit += 1;
+            }
+            self.counters.msgs_emitted += n_emit;
+            self.w = last + 1;
+
+            // §4.2 Clear-on-Advance Law
+            if self.staged_count != 0 && self.mutation != SequencerMutation::DisableClearOnAdvance
+            {
+                window::clear_slots(
+                    &mut self.lens,
+                    &mut self.staged_count,
+                    &mut self.max_staged,
+                    old_w,
+                    self.w,
+                );
+            }
+            self.progress_vt = now_ns;
+
+            if self.staged_count != 0 {
+                let drained = window::drain(
+                    &mut self.lens,
+                    &self.arena,
+                    &mut self.w,
+                    &mut self.staged_count,
+                    &mut self.max_staged,
+                    gen,
+                    sink,
+                );
+                self.counters.msgs_emitted += drained;
+                if drained > 0 {
+                    self.progress_vt = now_ns;
+                }
+            }
+
+            if self.gap_active {
+                gap::check_gap_close(
+                    &mut self.gap_active,
+                    &mut self.evidence_hwm,
+                    self.w,
+                    gen,
+                    &mut self.state,
+                    &mut self.counters,
+                    sink,
+                );
+            }
+        } else {
+            std::hint::cold_path();
+            gap::gap_evidence(
+                &mut self.gap_active,
+                &mut self.gen,
+                &mut self.evidence_hwm,
+                self.w,
+                first,
+                &mut self.state,
+                &mut self.counters,
+                sink,
+            );
+
+            let max_clamp = if self.mutation == SequencerMutation::OffByOneClamp {
+                self.w + (WINDOW_SLOTS as u64 / 2)
+            } else {
+                self.w + (WINDOW_SLOTS as u64)
+            };
+
+            for &(seq, start, end) in blocks.iter() {
+                let data = &frame[start as usize..end as usize];
+                if let Err(e) = itch5::validate(data) {
+                    std::hint::cold_path();
+                    self.counters
+                        .violations
+                        .record_packet_error(packet::PacketError::Payload(e));
+                    self.counters.total_violations += 1;
+                    return;
+                }
+                if seq < max_clamp {
+                    if window::stage_msg(
+                        &mut self.lens,
+                        &mut self.arena,
+                        &mut self.staged_count,
+                        self.w,
+                        seq,
+                        data,
+                    ) {
+                        self.counters.staged_msgs += 1;
+                    } else {
+                        self.counters.beyond_window_dropped += 1;
+                    }
+                } else {
+                    self.counters.beyond_window_dropped += 1;
+                }
+            }
+            if last >= self.w + (WINDOW_SLOTS as u64) {
+                self.evidence_hwm = self.evidence_hwm.max(last + 1);
+            }
+            self.max_staged = self.max_staged.max(last);
+
+            let drained = window::drain(
+                &mut self.lens,
+                &self.arena,
+                &mut self.w,
+                &mut self.staged_count,
+                &mut self.max_staged,
+                self.gen,
+                sink,
+            );
+            self.counters.msgs_emitted += drained;
+            if drained > 0 {
+                self.progress_vt = now_ns;
+            }
+
+            gap::check_gap_close(
+                &mut self.gap_active,
+                &mut self.evidence_hwm,
+                self.w,
+                self.gen,
+                &mut self.state,
+                &mut self.counters,
+                sink,
+            );
+        }
+
+        if let Some(p) = self.pending_to {
+            if self.w >= p {
+                self.pending_to = None;
+            }
+        }
+    }
+
     /// Evaluates gap recovery intent (doc 05 §10).
     pub fn recovery_intent(&mut self, now_ns: u64) -> Option<RecoveryIntent> {
         intent::check_recovery_intent(

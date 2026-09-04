@@ -365,6 +365,112 @@ fn test_d6_unclean_death(gt: &[u8]) {
     println!("D6 UNCLEAN_DEATH_PASSED: State matches reference final state.");
 }
 
+/// Q1 indexed-ingest parity harness: runs the full schedule through classic
+/// `ingest` and indexed `ingest_auto`, asserting identical (watermark, count,
+/// hash) across configs x mutations. HB/EOS frames route classic inside
+/// ingest_auto (empty triples), so this also covers the router itself.
+fn run_classic_path(
+    gt: &[u8],
+    cfg: &ReplayConfig,
+    sess: [u8; 10],
+    mutation: SequencerMutation,
+) -> (u64, u64, u64) {
+    let sched = build_schedule(gt, cfg);
+    let mut transport = ReplayTransport::new(gt, sched, sess);
+    let mut seq = Sequencer::with_mutation(mutation);
+    let mut sink = ConformanceSink::new();
+    let mut batch = FrameBatch::new();
+    while transport.poll(&mut batch) > 0 {
+        let now = transport.now_ns();
+        for frame in batch.frames() {
+            seq.ingest(frame.bytes(), frame.feed, now, &mut sink);
+        }
+    }
+    (seq.watermark(), sink.count(), sink.hash())
+}
+
+fn run_indexed_path(
+    gt: &[u8],
+    cfg: &ReplayConfig,
+    sess: [u8; 10],
+    mutation: SequencerMutation,
+) -> (u64, u64, u64) {
+    let sched = build_schedule(gt, cfg);
+    let mut transport = ReplayTransport::new(gt, sched, sess);
+    let mut seq = Sequencer::with_mutation(mutation);
+    let mut sink = ConformanceSink::new();
+    let mut batch = FrameBatch::new();
+    while transport.poll(&mut batch) > 0 {
+        let now = transport.now_ns();
+        for (pos, frame) in batch.frames().iter().enumerate() {
+            seq.ingest_auto(
+                frame.bytes(),
+                frame.feed,
+                now,
+                &mut sink,
+                transport.batch_blocks(pos),
+            );
+        }
+    }
+    (seq.watermark(), sink.count(), sink.hash())
+}
+
+fn test_d9_indexed_equivalence(gt: &[u8]) {
+    println!("=== D9: Indexed-Ingest Equivalence (classic == indexed) ===");
+    let configs: Vec<(&str, ReplayConfig, [u8; 10])> = vec![
+        (
+            "m1-baseline",
+            ReplayConfig {
+                msgs_per_packet: Packetize::MtuBound(1400),
+                guarantee_coverage: true,
+                ..Default::default()
+            },
+            *b"D9BASELINE",
+        ),
+        (
+            "session-split",
+            ReplayConfig {
+                session_change_at_msg: Some(250_000),
+                guarantee_coverage: true,
+                ..Default::default()
+            },
+            *b"D9SPLIT001",
+        ),
+        (
+            "fixed-1",
+            ReplayConfig {
+                msgs_per_packet: Packetize::Fixed(1),
+                guarantee_coverage: true,
+                ..Default::default()
+            },
+            *b"D9FIXED001",
+        ),
+    ];
+    let mutations = [
+        ("none", SequencerMutation::None),
+        ("no-clear", SequencerMutation::DisableClearOnAdvance),
+        ("clamp", SequencerMutation::OffByOneClamp),
+        ("drop-eos", SequencerMutation::DropStagedAtEos),
+    ];
+    let mut cells = 0;
+    for (cname, cfg, sess) in &configs {
+        for (mname, mutation) in &mutations {
+            let classic = run_classic_path(gt, cfg, *sess, *mutation);
+            let indexed = run_indexed_path(gt, cfg, *sess, *mutation);
+            assert_eq!(
+                classic, indexed,
+                "D9 parity failure: cfg={} mutation={} classic={:?} indexed={:?}",
+                cname, mname, classic, indexed
+            );
+            cells += 1;
+        }
+    }
+    println!(
+        "D9 INDEXED_EQUIVALENCE_PASSED: {} cells (3 configs x 4 mutations) classic==indexed",
+        cells
+    );
+}
+
 fn test_d7_d8_watchdog_and_determinism(gt: &[u8]) {
     println!("=== D7/D8: Watchdog & Double-Run Determinism ===");
     let t0 = Instant::now();
@@ -396,7 +502,7 @@ fn main() {
             .unwrap_or_else(|_| fs::read("../data/tests/sample-mini.itch").expect("Failed to load sample"))
     });
 
-    println!("=== RUNNING G12-T3 REFERENCE ARBITRATOR & DIFFERENTIAL SUITE (D1..D8) ===");
+    println!("=== RUNNING G12-T3 REFERENCE ARBITRATOR & DIFFERENTIAL SUITE (D1..D9) ===");
     test_d3_oracle_validation();
     test_d1_matrix_cells(&gt);
     test_d2_random_configs(&gt);
@@ -404,5 +510,6 @@ fn main() {
     test_d5_session_splits(&gt);
     test_d6_unclean_death(&gt);
     test_d7_d8_watchdog_and_determinism(&gt);
+    test_d9_indexed_equivalence(&gt);
     println!("=== ALL D1..D8 DIFFERENTIAL ORACLE CHECKS PASSED SUCCESSFULLY ===");
 }

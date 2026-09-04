@@ -106,4 +106,12 @@ pub trait Transport {
     /// Return current timestamp in nanoseconds (AM-1). Virtual clock under replay,
     /// kernel clock under live transports.
     fn now_ns(&self) -> u64;
+    /// Q1 indexed ingest: precomputed `(seq, start, end)` block triples for the
+    /// frame at batch position `batch_pos` (see `ReplayTransport::batch_blocks`).
+    /// Default is empty (no index — e.g. live XDP path); callers fall back to
+    /// classic parsing on empty with identical observables.
+    #[inline(always)]
+    fn batch_blocks(&self, _batch_pos: usize) -> &[(u64, u32, u32)] {
+        &[]
+    }
 }

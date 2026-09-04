@@ -198,8 +198,17 @@ fn run_engine<T: Transport>(
         }
 
         // 2. Ingest multicast / replay transport batch (P-ORDER 2)
-        for frame in batch.frames() {
-            seq.ingest(frame.bytes(), frame.feed, now, &mut sink);
+        // Q1: indexed fast path with classic fallback — ReplayTransport serves
+        // precomputed triples; XDP hits the trait default (empty) and runs the
+        // identical classic path. §7 VERDICT hash proves equivalence every run.
+        for (pos, frame) in batch.frames().iter().enumerate() {
+            seq.ingest_auto(
+                frame.bytes(),
+                frame.feed,
+                now,
+                &mut sink,
+                transport.batch_blocks(pos),
+            );
         }
 
         // 3. Recovery intent evaluation (P-ORDER 3)
