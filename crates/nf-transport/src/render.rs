@@ -3,7 +3,7 @@
 #![cfg_attr(not(test), deny(clippy::disallowed_types))]
 
 use crate::sched_types::{ReplaySchedule, SchedEvent, SchedKind};
-use crate::{FrameBatch, FrameView, Transport};
+use crate::{FeedId, FrameBatch, FrameView, Transport};
 use nf_protocol::moldudp64::{EOS_COUNT, HEADER_LEN, HEARTBEAT_COUNT};
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -40,31 +40,103 @@ impl Cursor {
 pub const ARENA_SLOT_SIZE: usize = 1500;
 pub const ARENA_SLOTS: usize = 256;
 
-pub struct ReplayTransport<'a> {
-    gt: &'a [u8],
+/// Pre-rendered frame directory entry. `offset/len` locate the frame bytes in
+/// `frames`; `patch` marks frames whose 10B session prefix is reset()-mutable
+/// (zeroed at build, patched with the live session at poll time).
+#[derive(Debug, Clone, Copy)]
+struct FrameMeta {
+    release_vt: u64,
+    offset: u32,
+    len: u16,
+    feed: FeedId,
+    patch: bool,
+}
+
+pub struct ReplayTransport {
     schedule: ReplaySchedule,
     event_idx: usize,
     virtual_clock: u64,
-    arena: Box<[[u8; ARENA_SLOT_SIZE]; ARENA_SLOTS]>,
-    cursors: [Cursor; 2],
+    /// All event frames rendered once at construction (startup-only work, outside
+    /// every measurement window). poll() only slices + patches session prefix.
+    /// ~15MB for the 505k-msg mini schedule; dropped with the transport.
+    frames: Box<[u8]>,
+    meta: Box<[FrameMeta]>,
     session: [u8; 10],
     clock_clamp: Option<u64>,
 }
 
-impl<'a> ReplayTransport<'a> {
-    pub fn new(gt: &'a [u8], schedule: ReplaySchedule, session: [u8; 10]) -> Self {
+impl ReplayTransport {
+    pub fn new(gt: &[u8], schedule: ReplaySchedule, session: [u8; 10]) -> Self {
         let first_vt = schedule
             .events
             .first()
             .map(|e| e.release_vt)
             .unwrap_or(0);
+        // P9a: render every event frame NOW (startup, outside windows) through the
+        // exact same render_event_standalone path poll() used before — byte-identical
+        // output, ~zero per-frame cost in-window. Vec use is construction-only;
+        // the hot path never allocates (PR-3 ALLOC_DELTA still 0 in-window).
+        #[allow(clippy::disallowed_types)]
+        let mut blob: Vec<u8> =
+            Vec::with_capacity(schedule.events.len().saturating_mul(768));
+        #[allow(clippy::disallowed_types)]
+        let mut meta: Vec<FrameMeta> = Vec::with_capacity(schedule.events.len());
+        {
+            let mut cursors = [Cursor::default(), Cursor::default()];
+            let mut scratch = [0u8; ARENA_SLOT_SIZE];
+            for ev in &schedule.events {
+                let feed_idx = (ev.feed as usize) & 1;
+                if let Some(len) = render_event_standalone(
+                    gt,
+                    ev,
+                    &schedule,
+                    session,
+                    &mut scratch,
+                    &mut cursors[feed_idx],
+                ) {
+                    let off = blob.len() as u32;
+                    blob.extend_from_slice(&scratch[..len]);
+                    // Mirror of render_event_standalone's session rule (source of
+                    // truth): patch iff the frame carries the resettable session.
+                    let patch = match schedule.session_split {
+                        Some((split_m, _)) => match ev.kind {
+                            SchedKind::Packet { first_msg, .. } => first_msg < split_m,
+                            SchedKind::Heartbeat { .. } | SchedKind::EndOfSession { .. } => false,
+                        },
+                        None => true,
+                    };
+                    if patch {
+                        let base = off as usize;
+                        blob[base..base + 10].fill(0);
+                    }
+                    meta.push(FrameMeta {
+                        release_vt: ev.release_vt,
+                        offset: off,
+                        len: len as u16,
+                        feed: ev.feed,
+                        patch,
+                    });
+                } else {
+                    // Unrenderable event (frame >1500B scratch — unreachable for
+                    // MTU-bound schedules): tombstone keeps event_idx aligned,
+                    // exactly as the old skip-without-push did.
+                    std::hint::cold_path();
+                    meta.push(FrameMeta {
+                        release_vt: ev.release_vt,
+                        offset: 0,
+                        len: 0,
+                        feed: ev.feed,
+                        patch: false,
+                    });
+                }
+            }
+        }
         Self {
-            gt,
             schedule,
             event_idx: 0,
             virtual_clock: first_vt,
-            arena: Box::new([[0u8; ARENA_SLOT_SIZE]; ARENA_SLOTS]),
-            cursors: [Cursor::default(), Cursor::default()],
+            frames: blob.into_boxed_slice(),
+            meta: meta.into_boxed_slice(),
             session,
             clock_clamp: None,
         }
@@ -80,7 +152,6 @@ impl<'a> ReplayTransport<'a> {
             .unwrap_or(0);
         self.event_idx = 0;
         self.virtual_clock = first_vt;
-        self.cursors = [Cursor::default(), Cursor::default()];
         self.session = session;
         self.clock_clamp = None;
     }
@@ -90,17 +161,19 @@ impl<'a> ReplayTransport<'a> {
         self.clock_clamp = clamp;
     }
 
-    /// P3: always-inline + hoisted len/capacity, cold clamp path, single bounds check.
+    /// P3: always-inline + hoisted len/capacity, cold clamp path.
+    /// P9a: per released frame: 2 indexed loads + 10B session patch + batch push.
+    /// No cursor seeks, no length re-walk, no payload memcpy in-window.
     #[inline(always)]
     pub fn poll_clamped(&mut self, batch: &mut FrameBatch, max_vt: Option<u64>) -> usize {
         batch.clear();
 
-        let events_len = self.schedule.events.len();
+        let events_len = self.meta.len();
         if self.event_idx >= events_len {
             return 0;
         }
 
-        let next_vt = self.schedule.events[self.event_idx].release_vt;
+        let next_vt = self.meta[self.event_idx].release_vt;
         // HOT: max_vt=None + clock_clamp=None (steady replay) — clamp is cold.
         let jump_to = match max_vt.or(self.clock_clamp) {
             Some(clamp) => {
@@ -115,20 +188,24 @@ impl<'a> ReplayTransport<'a> {
         }
         let vclock = self.virtual_clock;
         let cap = FrameBatch::capacity();
+        let session = self.session;
 
         while self.event_idx < events_len && batch.len() < cap {
-            let ev = self.schedule.events[self.event_idx];
-            if ev.release_vt > vclock {
+            let m = self.meta[self.event_idx];
+            if m.release_vt > vclock {
                 break;
             }
-
-            let slot_idx = batch.len();
-            let slot_ptr = self.arena[slot_idx].as_ptr();
-            if let Some(frame_len) = self.render_event(&ev, slot_idx) {
+            if m.len > 0 {
+                let base = m.offset as usize;
+                let end = base + m.len as usize;
+                let frame = &mut self.frames[base..end];
+                if m.patch {
+                    frame[0..10].copy_from_slice(&session);
+                }
                 batch.push(FrameView {
-                    ptr: slot_ptr,
-                    len: frame_len,
-                    feed: ev.feed,
+                    ptr: frame.as_ptr(),
+                    len: m.len,
+                    feed: m.feed,
                 });
             }
             self.event_idx += 1;
@@ -206,24 +283,7 @@ pub fn render_event_standalone(
     }
 }
 
-impl<'a> ReplayTransport<'a> {
-    #[inline(always)]
-    fn render_event(&mut self, ev: &SchedEvent, slot_idx: usize) -> Option<u16> {
-        let feed_idx = (ev.feed as usize) & 1;
-        let slot = &mut self.arena[slot_idx];
-        render_event_standalone(
-            self.gt,
-            ev,
-            &self.schedule,
-            self.session,
-            slot,
-            &mut self.cursors[feed_idx],
-        )
-        .map(|l| l as u16)
-    }
-}
-
-impl<'a> Transport for ReplayTransport<'a> {
+impl Transport for ReplayTransport {
     #[inline(always)]
     fn poll(&mut self, batch: &mut FrameBatch) -> usize {
         self.poll_clamped(batch, None)
