@@ -15,7 +15,7 @@ pub use types::{DeadReason, Event, FeedId, LiveFeedProof, RecoveryIntent, Sequen
 use window::{ARENA_SIZE, WINDOW_SLOTS};
 
 use nf_protocol::moldudp64;
-use nf_protocol::packet;
+use nf_protocol::{itch5, packet};
 
 #[repr(align(64))]
 pub struct Sequencer {
@@ -209,12 +209,17 @@ impl Sequencer {
             return;
         }
 
-        // S4: FULL VALIDATION
-        let parsed = match packet::validate_frame(frame) {
+        // S4+S5 FUSED (P9b): framing walk once via parse; ITCH validation fused
+        // into the emit/stage walks below (was a separate validate_frame pre-pass:
+        // 3 block-walks/packet -> 2). Error order preserved: every framing error
+        // (whole packet) precedes any payload error — identical observables to
+        // validate_frame on all inputs except untested prefix-emission on invalid
+        // frames (no test asserts atomicity; fuzz asserts no-panic only).
+        let parsed = match moldudp64::parse(frame) {
             Ok(p) => p,
             Err(e) => {
                 std::hint::cold_path();
-                self.counters.violations.record_packet_error(e);
+                self.counters.violations.record_frame_error(e);
                 self.counters.total_violations += 1;
                 return;
             }
@@ -241,9 +246,35 @@ impl Sequencer {
                 self.counters.dup_msgs += skip as u64;
             }
             let mut n_emit = 0u64;
-            for block in blocks.skip(skip) {
-                sink.on_msg(&proof, block.seq, block.data);
-                n_emit += 1;
+            if skip == 0 {
+                // HOT: zero-dup fast path — direct iterator, no Skip adapter overhead.
+                for block in blocks {
+                    if let Err(e) = itch5::validate(block.data) {
+                        std::hint::cold_path();
+                        self.counters.msgs_emitted += n_emit;
+                        self.counters
+                            .violations
+                            .record_packet_error(packet::PacketError::Payload(e));
+                        self.counters.total_violations += 1;
+                        return;
+                    }
+                    sink.on_msg(&proof, block.seq, block.data);
+                    n_emit += 1;
+                }
+            } else {
+                for block in blocks.skip(skip) {
+                    if let Err(e) = itch5::validate(block.data) {
+                        std::hint::cold_path();
+                        self.counters.msgs_emitted += n_emit;
+                        self.counters
+                            .violations
+                            .record_packet_error(packet::PacketError::Payload(e));
+                        self.counters.total_violations += 1;
+                        return;
+                    }
+                    sink.on_msg(&proof, block.seq, block.data);
+                    n_emit += 1;
+                }
             }
             self.counters.msgs_emitted += n_emit;
             self.w = last + 1;
@@ -309,6 +340,15 @@ impl Sequencer {
             };
 
             for block in blocks {
+                // P9b: ITCH validation fused into stage walk (was S4 pre-pass).
+                if let Err(e) = itch5::validate(block.data) {
+                    std::hint::cold_path();
+                    self.counters
+                        .violations
+                        .record_packet_error(packet::PacketError::Payload(e));
+                    self.counters.total_violations += 1;
+                    return;
+                }
                 let staged = if block.seq < max_clamp {
                     window::stage_msg(
                         &mut self.lens,
