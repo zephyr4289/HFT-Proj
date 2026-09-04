@@ -1,0 +1,8 @@
+[1m[92m   Compiling[0m libc v0.2.189
+[1m[92m   Compiling[0m nf-protocol v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-protocol)
+[1m[92m   Compiling[0m nf-arbitrator v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-arbitrator)
+[1m[92m   Compiling[0m nf-recovery v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-recovery)
+[1m[92m   Compiling[0m nf-transport v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-transport)
+[1m[92m   Compiling[0m nf-testkit v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-testkit)
+[1m[92m   Compiling[0m nf-engine v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-engine)
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 4.84s

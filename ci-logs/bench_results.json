@@ -1,0 +1,14 @@
+{
+  "median_cycles": 19.7604,
+  "p95_cycles": 20.8549,
+  "p99_cycles": 20.8664,
+  "stddev": 0.6605,
+  "cv_percent": 3.3426,
+  "runs": 30,
+  "warmup": 5,
+  "cpu_model": "AMD EPYC 9V74 80-Core Processor",
+  "freq_mhz": 2596.14,
+  "target": "x86_64-unknown-linux-musl",
+  "sink": "count",
+  "sample": "data/tests/sample-mini.itch"
+}

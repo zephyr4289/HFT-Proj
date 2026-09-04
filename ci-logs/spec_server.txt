@@ -1,0 +1,4 @@
+=== SPEC-ONLY SERVER CLEAN-ROOM VALIDATION (doc 14 §3.2 / F-31) ===
+Spec server spawned on UDP port 53782
+SPEC_SERVER_RESPONSE: session="SPECSESS01" start_seq=10 count=25 bytes_received=645
+=== SPEC-ONLY SERVER CLEAN-ROOM VALIDATION PASSED (F-31 CLOSED) ===

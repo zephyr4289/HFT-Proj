@@ -1,0 +1,16 @@
+=== RUNNING T2 WINDOW SIZE SWEEP (256..4096 x M1, M11) ===
+WINDOW_SWEEP slots=256  arena= 16640 B l1_fit=Fits 32K L1D                   M1_rate=21.69M golden_M1=true M11_rate=18.41M golden_M11=true max_staged=0 beyond_drops=0
+WINDOW_SWEEP slots=512  arena= 33280 B l1_fit=Fits 64K L1D                   M1_rate=21.71M golden_M1=true M11_rate=18.35M golden_M11=true max_staged=0 beyond_drops=0
+WINDOW_SWEEP slots=1024 arena= 66560 B l1_fit=Exceeds L1D (L2 Cache resident) M1_rate=21.69M golden_M1=true M11_rate=18.41M golden_M11=true max_staged=0 beyond_drops=0
+WINDOW_SWEEP slots=2048 arena=133120 B l1_fit=Exceeds L1D (L2 Cache resident) M1_rate=22.15M golden_M1=true M11_rate=18.37M golden_M11=true max_staged=0 beyond_drops=0
+WINDOW_SWEEP slots=4096 arena=266240 B l1_fit=Exceeds L1D (L2 Cache resident) M1_rate=21.86M golden_M1=true M11_rate=18.35M golden_M11=true max_staged=0 beyond_drops=0
+
+=== T2 WINDOW SWEEP KNEE TABLE ===
+| Window Slots | Arena Footprint | Cache Residency | M1 Rate | M11 Rate | Max Staged | Beyond Drops | Confluence Verdict |
+|---|---|---|---|---|---|---|---|
+| 256  |  16640 B ( 16.2 KiB) | Fits 32K L1D                 | 21.69M msg/s | 18.41M msg/s | 0          | 0            | **PASS** |
+| 512  |  33280 B ( 32.5 KiB) | Fits 64K L1D                 | 21.71M msg/s | 18.35M msg/s | 0          | 0            | **PASS** |
+| 1024 |  66560 B ( 65.0 KiB) | Exceeds L1D (L2 Cache resident) | 21.69M msg/s | 18.41M msg/s | 0          | 0            | **PASS** |
+| 2048 | 133120 B (130.0 KiB) | Exceeds L1D (L2 Cache resident) | 22.15M msg/s | 18.37M msg/s | 0          | 0            | **PASS** |
+| 4096 | 266240 B (260.0 KiB) | Exceeds L1D (L2 Cache resident) | 21.86M msg/s | 18.35M msg/s | 0          | 0            | **PASS** |
+=== T2 WINDOW SWEEP COMPLETED SUCCESSFULLY ===

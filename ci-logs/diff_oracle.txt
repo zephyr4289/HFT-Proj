@@ -1,0 +1,38 @@
+=== RUNNING G12-T3 REFERENCE ARBITRATOR & DIFFERENTIAL SUITE (D1..D9) ===
+=== D3-REDO: Oracle Validation by Sequencer-Logic Bug Injections ===
+D3_DIVERGENCE_DUMP mutation="DisableClearOnAdvance" detected=true seq_wm=1231 ref_wm=1224 seq_hash=0x473C5B1BF49F1C91 ref_hash=0xCFE76D07416B4CA5
+D3_DIVERGENCE_DUMP mutation="OffByOneClamp" detected=true seq_wm=600 ref_wm=601 seq_hash=0xB1C1F8344636F511 ref_hash=0x972FEC36E88A4C25
+D3_DIVERGENCE_DUMP mutation="DropStagedAtEos" detected=true seq_wm=10 ref_wm=13 seq_hash=0xF0B1A3FF15503051 ref_hash=0x9D6D68BF10C6C3A5
+D3 ALL_SEQUENCER_LOGIC_MUTATIONS_DETECTED: Oracle caught all 3 sequencer mutations with divergence dumps.
+=== D1: Full 17-Cell Matrix Differential Verification ===
+D1 cell="M1 (Baseline MTU contiguous)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M2 (Fixed 1 msg)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M3 (Fixed 16 msgs)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M4 (Gaussian delay jitter)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M5 (Bernoulli loss with dual feed)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M6 (Gilbert-Elliott burst loss)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M7 (Pathological split: 1B to MTU)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M8 (Feed A only lossless)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M9 (Feed B only lossless)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M10 (Heavy reorder jitter)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M11 (Deep out-of-order window)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M12 (Max-rate unconstrained)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M13 (M-LATE: Staged arrival edge)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M14 (M-BURST: Burst packet arrival)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M15 (M-STARVE: Feed A silent for 2s)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M16 (M-DUP2: Overlapping dual feed)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M17 (M-DROPRESP / Session Boundary)" seq_wm=255850 ref_wm=255850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 ALL_17_CELLS_PASSED: Triple equality verified across all 17 matrix cells.
+=== D2: 100 Seeded Random Configs Differential Test ===
+D2 100_RANDOM_CONFIGS_PASSED: Triple equality verified across 100 random configs.
+=== D4: Duplicate Ordering (First-Received Wins) ===
+D4 DUPLICATE_ORDERING_PASSED: seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8
+=== D5: Session Splits Verification ===
+D5 SESSION_SPLITS_PASSED: Watermarks and hashes match across session boundaries.
+=== D6: Unclean Death (Scripted Drops) Verification ===
+D6 UNCLEAN_DEATH_PASSED: State matches reference final state.
+=== D7/D8: Watchdog & Double-Run Determinism ===
+D7/D8 WATCHDOG_AND_DETERMINISM_PASSED: elapsed=0.49s run1=(505850, 505850, 505849, 17793464081775658456) run2=(505850, 505850, 505849, 17793464081775658456)
+=== D9: Indexed-Ingest Equivalence (classic == indexed) ===
+D9 INDEXED_EQUIVALENCE_PASSED: 12 cells (3 configs x 4 mutations) classic==indexed
+=== ALL D1..D8 DIFFERENTIAL ORACLE CHECKS PASSED SUCCESSFULLY ===

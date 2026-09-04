@@ -1,0 +1,930 @@
+RUSTFLAGS (env): -C target-cpu=x86-64-v3
+rustc: rustc 1.98.0 (88d9e12ae 2026-08-18)
+target_arch="x86_64"
+target_feature="fxsr"
+target_feature="sse"
+target_feature="sse2"
+CPUS: 4
+model name	: AMD EPYC 9V74 80-Core Processor
+taskset: pid 2291's current affinity list: 0-3
+GOVERNOR: cat: /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor: No such file or directory
+unavailable
+CGROUP: unavailable (taskset-only fallback)
+=== 1. Mini Sample SHA256 Check ===
+data/tests/sample-mini.itch: OK
+=== 2. Build Workspace Release ===
+[1m[92m    Updating[0m crates.io index
+[1m[92m   Compiling[0m nf-protocol v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-protocol)
+[1m[92m   Compiling[0m nf-arbitrator v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-arbitrator)
+[1m[92m   Compiling[0m nf-transport v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-transport)
+[1m[92m   Compiling[0m nf-recovery v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-recovery)
+[1m[92m   Compiling[0m nf-testkit v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-testkit)
+[1m[92m   Compiling[0m nf-engine v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-engine)
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 17.94s
+=== 3. Clippy Workspace ===
+[1m[92m    Checking[0m nf-protocol v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-protocol)
+[1m[92m    Checking[0m nf-arbitrator v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-arbitrator)
+[1m[92m    Checking[0m nf-transport v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-transport)
+[1m[92m    Checking[0m nf-recovery v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-recovery)
+[1m[92m    Checking[0m nf-testkit v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-testkit)
+[1m[92m    Checking[0m nf-engine v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-engine)
+[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 2.13s
+=== 4. Negative Lint Tripwire Test ===
+[1m[92m    Checking[0m lint-fixture v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/tests/lint_fixture)
+[1m[91merror[0m[1m: use of a disallowed type `alloc::vec::Vec`[0m
+ [1m[94m--> [0msrc/lib.rs:7:23
+  [1m[94m|[0m
+[1m[94m7[0m [1m[94m|[0m     let _v: Vec<u8> = Vec::new();
+  [1m[94m|[0m                       [1m[91m^^^[0m
+  [1m[94m|[0m
+  [1m[94m= [0m[1mnote[0m: Tier-F zero-allocation ban
+  [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#disallowed_types
+[1m[92mnote[0m: the lint level is defined here
+ [1m[94m--> [0msrc/lib.rs:3:9
+  [1m[94m|[0m
+[1m[94m3[0m [1m[94m|[0m #![deny(clippy::disallowed_types)]
+  [1m[94m|[0m         [1m[92m^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: use of a disallowed type `alloc::vec::Vec`[0m
+ [1m[94m--> [0msrc/lib.rs:7:13
+  [1m[94m|[0m
+[1m[94m7[0m [1m[94m|[0m     let _v: Vec<u8> = Vec::new();
+  [1m[94m|[0m             [1m[91m^^^^^^^[0m
+  [1m[94m|[0m
+  [1m[94m= [0m[1mnote[0m: Tier-F zero-allocation ban
+  [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#disallowed_types
+
+[1m[91merror[0m[1m: use of a disallowed type `alloc::string::String`[0m
+ [1m[94m--> [0msrc/lib.rs:8:22
+  [1m[94m|[0m
+[1m[94m8[0m [1m[94m|[0m     let _s: String = String::new();
+  [1m[94m|[0m                      [1m[91m^^^^^^[0m
+  [1m[94m|[0m
+  [1m[94m= [0m[1mnote[0m: Tier-F zero-allocation ban
+  [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#disallowed_types
+
+[1m[91merror[0m[1m: use of a disallowed type `alloc::string::String`[0m
+ [1m[94m--> [0msrc/lib.rs:8:13
+  [1m[94m|[0m
+[1m[94m8[0m [1m[94m|[0m     let _s: String = String::new();
+  [1m[94m|[0m             [1m[91m^^^^^^[0m
+  [1m[94m|[0m
+  [1m[94m= [0m[1mnote[0m: Tier-F zero-allocation ban
+  [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#disallowed_types
+
+[1m[91merror[0m[1m: use of a disallowed type `std::collections::HashMap`[0m
+ [1m[94m--> [0msrc/lib.rs:9:53
+  [1m[94m|[0m
+[1m[94m9[0m [1m[94m|[0m     let _map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+  [1m[94m|[0m                                                     [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [1m[94m|[0m
+  [1m[94m= [0m[1mnote[0m: Tier-F zero-allocation ban
+  [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#disallowed_types
+
+[1m[91merror[0m[1m: use of a disallowed type `std::collections::HashMap`[0m
+ [1m[94m--> [0msrc/lib.rs:9:15
+  [1m[94m|[0m
+[1m[94m9[0m [1m[94m|[0m     let _map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+  [1m[94m|[0m               [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [1m[94m|[0m
+  [1m[94m= [0m[1mnote[0m: Tier-F zero-allocation ban
+  [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#disallowed_types
+
+[1m[91merror[0m[1m: use of a disallowed type `alloc::rc::Rc`[0m
+  [1m[94m--> [0msrc/lib.rs:10:15
+   [1m[94m|[0m
+[1m[94m10[0m [1m[94m|[0m     let _rc = std::rc::Rc::new(42);
+   [1m[94m|[0m               [1m[91m^^^^^^^^^^^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mnote[0m: Tier-F zero-allocation ban
+   [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#disallowed_types
+
+[1m[91merror[0m[1m: use of a disallowed type `alloc::sync::Arc`[0m
+  [1m[94m--> [0msrc/lib.rs:11:16
+   [1m[94m|[0m
+[1m[94m11[0m [1m[94m|[0m     let _arc = std::sync::Arc::new(42);
+   [1m[94m|[0m                [1m[91m^^^^^^^^^^^^^^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mnote[0m: Tier-F zero-allocation ban
+   [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#disallowed_types
+
+[1m[91merror[0m[1m: use of a disallowed method `alloc::string::ToString::to_string`[0m
+  [1m[94m--> [0msrc/lib.rs:15:17
+   [1m[94m|[0m
+[1m[94m15[0m [1m[94m|[0m     let _s = 42.to_string();
+   [1m[94m|[0m                 [1m[91m^^^^^^^^^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mnote[0m: Tier-M zero-allocation hot-loop ban
+   [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#disallowed_methods
+[1m[92mnote[0m: the lint level is defined here
+  [1m[94m--> [0msrc/lib.rs:4:9
+   [1m[94m|[0m
+[1m[94m 4[0m [1m[94m|[0m #![deny(clippy::disallowed_methods)]
+   [1m[94m|[0m         [1m[92m^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: use of a disallowed method `alloc::borrow::ToOwned::to_owned`[0m
+  [1m[94m--> [0msrc/lib.rs:17:24
+   [1m[94m|[0m
+[1m[94m17[0m [1m[94m|[0m     let _owned = slice.to_owned();
+   [1m[94m|[0m                        [1m[91m^^^^^^^^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mnote[0m: Tier-M zero-allocation hot-loop ban
+   [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.98.0/index.html#disallowed_methods
+
+[1m[91merror[0m: could not compile `lint-fixture` (lib) due to 10 previous errors
+=== 5. Unit & Conformance Tests ===
+[1m[92m   Compiling[0m nf-protocol v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-protocol)
+[1m[92m   Compiling[0m nf-arbitrator v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-arbitrator)
+[1m[92m   Compiling[0m nf-transport v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-transport)
+[1m[92m   Compiling[0m nf-recovery v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-recovery)
+[1m[92m   Compiling[0m nf-testkit v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-testkit)
+[1m[92m   Compiling[0m nf-engine v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-engine)
+[1m[92m    Finished[0m `test` profile [optimized + debuginfo] target(s) in 9.80s
+[1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/nf_arbitrator-da941829774d4859)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests/compilefail.rs (target/debug/deps/compilefail-c6135474c730bde5)
+
+running 1 test
+[1m[92m    Checking[0m nf-protocol v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-protocol)
+[1m[92m    Checking[0m nf-arbitrator v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-arbitrator)
+[1m[92m    Checking[0m nf-transport v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-transport)
+[1m[92m    Checking[0m nf-recovery v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-recovery)
+[1m[92m    Checking[0m nf-testkit v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-testkit)
+[1m[92m    Checking[0m nf-arbitrator-tests v0.0.0 (/home/runner/work/HFT-Proj/HFT-Proj/target/tests/trybuild/nf-arbitrator)
+[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 0.35s
+
+
+test tests/ui/cf1_private_field_construction.rs ... wip
+
+NOTE: writing the following output to `tests/ui/cf1_private_field_construction.stderr`.
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+error[E0451]: field `gen` of struct `LiveFeedProof` is private
+ --> tests/ui/cf1_private_field_construction.rs:4:34
+  |
+4 |     let _proof = LiveFeedProof { gen: 0 };
+  |                                  ^^^ private field
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+
+test tests/ui/cf2_private_field_read.rs ... wip
+
+NOTE: writing the following output to `tests/ui/cf2_private_field_read.stderr`.
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+error[E0616]: field `gen` of struct `LiveFeedProof` is private
+ --> tests/ui/cf2_private_field_read.rs:4:19
+  |
+4 |     let _ = proof.gen;
+  |                   ^^^ private field
+  |
+help: a method `gen` also exists, call it with parentheses
+  |
+4 |     let _ = proof.gen();
+  |                      ++
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+
+test tests/ui/cf3_destructure.rs ... wip
+
+NOTE: writing the following output to `tests/ui/cf3_destructure.stderr`.
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+warning: unused variable: `gen`
+ --> tests/ui/cf3_destructure.rs:4:25
+  |
+4 |     let LiveFeedProof { gen } = *p;
+  |                         ^^^ help: try ignoring the field: `gen: _`
+  |
+  = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+error[E0451]: field `gen` of struct `LiveFeedProof` is private
+ --> tests/ui/cf3_destructure.rs:4:25
+  |
+4 |     let LiveFeedProof { gen } = *p;
+  |                         ^^^ private field
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+
+test tests/ui/cf4_lookalike_type.rs ... wip
+
+NOTE: writing the following output to `tests/ui/cf4_lookalike_type.stderr`.
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+error[E0308]: mismatched types
+  --> tests/ui/cf4_lookalike_type.rs:11:19
+   |
+11 |     consume_proof(&fake);
+   |     ------------- ^^^^^ expected `&LiveFeedProof`, found `&FakeProof`
+   |     |
+   |     arguments to this function are incorrect
+   |
+   = note: expected reference `&LiveFeedProof`
+              found reference `&FakeProof`
+note: function defined here
+  --> tests/ui/cf4_lookalike_type.rs:7:4
+   |
+ 7 | fn consume_proof(_proof: &LiveFeedProof) {}
+   |    ^^^^^^^^^^^^^ ----------------------
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+
+test tests/ui/cf5_hold_across_calls.rs ... wip
+
+NOTE: writing the following output to `tests/ui/cf5_hold_across_calls.stderr`.
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+error: lifetime may not live long enough
+  --> tests/ui/cf5_hold_across_calls.rs:11:9
+   |
+ 9 | impl<'a> Sink for StashingSink<'a> {
+   |      -- lifetime `'a` defined here
+10 |     fn on_msg(&mut self, proof: &LiveFeedProof, _seq: u64, _msg: &[u8]) {
+   |                                 - let's call the lifetime of this reference `'1`
+11 |         self.held_proof = Some(proof);
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ assignment requires that `'1` must outlive `'a`
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+
+test tests/ui/cf6_orphan_clone.rs ... wip
+
+NOTE: writing the following output to `tests/ui/cf6_orphan_clone.stderr`.
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+error[E0117]: only traits defined in the current crate can be implemented for types defined outside of the crate
+ --> tests/ui/cf6_orphan_clone.rs:3:1
+  |
+3 | impl Clone for LiveFeedProof {
+  | ^^^^^^^^^^^^^^^-------------
+  |                |
+  |                `LiveFeedProof` is not defined in the current crate
+  |
+  = note: impl doesn't have any local type before any uncovered type parameters
+  = note: for more information see https://doc.rust-lang.org/reference/items/implementations.html#orphan-rules
+  = note: define and implement a trait or new type instead
+
+error[E0507]: cannot move out of `*self` which is behind a shared reference
+ --> tests/ui/cf6_orphan_clone.rs:5:9
+  |
+5 |         *self
+  |         ^^^^^ move occurs because `*self` has type `LiveFeedProof`, which does not implement the `Copy` trait
+  |
+help: consider cloning the value if the performance cost is acceptable
+  |
+5 -         *self
+5 +         self.clone()
+  |
+┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈┈
+
+
+
+test test_compile_fail_suite ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.70s
+
+[1m[92m     Running[0m tests/sequencer_tests.rs (target/debug/deps/sequencer_tests-0041ac841e3fb9d0)
+
+running 14 tests
+test test_u10_gen_law ... ok
+test test_u11_seal ... ok
+test test_u12_recovery_intent ... ok
+test test_u1_dup_fast_path ... ok
+test test_u2_partial_overlap ... ok
+test test_u3_reorder_disorder ... ok
+test test_u4_window_clamp ... ok
+test test_u6_session_change ... ok
+test test_u7_heartbeat_gap ... ok
+test test_u8_eos_handling ... ok
+test test_u9_eos_then_data ... ok
+test test_u13_totality ... ok
+test test_u14_byte_identity ... ok
+test test_u_zombie_hazard ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests/split_watermark.rs (target/debug/deps/split_watermark-890113e105aa7d2c)
+
+running 1 test
+test test_a1_split_watermark_discriminator ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+
+[1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/nf_engine-889321ce684f5538)
+
+running 4 tests
+test histogram::tests::test_static_histogram_percentiles ... ok
+test tail_study::tests::test_p2_l1_unit_law_per_message_stamps ... ok
+test tests::test_audit_in_memory_stream ... ok
+test tests::test_audit_truncated_tail ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/audit.rs (target/debug/deps/audit-93c9b83236fb54af)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/bench.rs (target/debug/deps/bench-05445e541bb686d7)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/hft_bench.rs (target/debug/deps/hft_bench-45d5ad749190fc6a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/replay.rs (target/debug/deps/replay-f22dde291354d968)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests/xdp_tests.rs (target/debug/deps/xdp_tests-57fb6850b07d2b76)
+
+running 6 tests
+test test_x4_fill_ring_discipline ... ok
+test test_x1_xdp_smoke ... ok
+test test_x6_malicious_frames ... ok
+test test_x5_alloc_window_xdp ... ok
+test test_x3_scripted_dual_drop ... ok
+test test_x2_conformance_mini ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+[1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/nf_protocol-028e882a6c9b351d)
+
+running 19 tests
+test gates::tests::test_gates_tripwires_fail_on_bad_inputs ... ok
+test itch5::tests::t2_tv_it2_stock_directory ... ok
+test itch5::tests::t1_tv_it1_system_event ... ok
+test itch5::tests::t3_case_trap ... ok
+test itch5::tests::t4_synthetic_add_order ... ok
+test itch5::tests::t5_table_totality ... ok
+test itch5::tests::t6_error_paths ... ok
+test itch5::tests::t7_extended_overlays ... ok
+test moldudp64::tests::t11_span_calculation ... ok
+test moldudp64::tests::t1_tv1_golden ... ok
+test moldudp64::tests::t2_t3_heartbeat_and_eos ... ok
+test moldudp64::tests::t4_encode_request ... ok
+test moldudp64::tests::t5_truncated_frame ... ok
+test moldudp64::tests::t6_block_overrun ... ok
+test moldudp64::tests::t7_trailing_bytes ... ok
+test moldudp64::tests::t8_zero_length_message ... ok
+test packet::tests::test_validate_frame_synthetic ... ok
+test moldudp64::tests::t9_seq_overflow ... ok
+test moldudp64::tests::t10_round_trip_property ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+[1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/nf_recovery-edadecb0f2d6648f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests/recovery_tests.rs (target/debug/deps/recovery_tests-b0b8ab14b40ffc3d)
+
+running 17 tests
+test test_r10_session_boundary_during_recovery ... ok
+test test_r11_socket_disconnect ... ok
+test test_r12_vt_grace_stepping ... ok
+test test_r13_retry_counting_determinism ... ok
+test test_r14_state_transition_matrix ... ok
+test test_e2e_2b_split_dual_drop ... ok
+test test_r1_fakeserver_drop_request_fault ... ok
+test test_e2e_2c_double_run_confluence ... ok
+test test_r4_request_encode_from_intent ... ok
+test test_e2e_2a_canonical_dual_drop ... ok
+test test_r6_drop_request_dead ... ok
+test test_r7_silence_dead ... ok
+test test_r2_fakeserver_drop_response_fault ... ok
+test test_r3_inv_r5_wrong_session ... ok
+test test_r5_partial_fill_truncate_after ... ok
+test test_r9_dual_drop_repair ... ok
+test test_r8_duplicate_first ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
+
+[1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/nf_testkit-3e87268326f91d14)
+
+running 13 tests
+test tests::t10_max_rate_mode ... ok
+test tests::t3_packetization_modes ... ok
+test tests::t5_accounting_identity_guarantee_coverage ... ok
+test tests::t1_golden_walker_mini ... ok
+test tests::t4_render_round_trip ... ok
+test tests::t6_th1_structure ... ok
+test tests::t2_schedule_determinism ... ok
+test tests::t8_delay_distribution_sanity ... ok
+test tests::t7_session_split_invariance ... ok
+test tests::t9_full_mini_chaos_run ... ok
+test tests::test_e2e_1_mini_chaos_conformance ... ok
+test tests::test_e2e_1b_mini_chaos_determinism_double_run ... ok
+test tests::test_u5_w1_property_1m_ops ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
+
+[1m[92m     Running[0m unittests src/bin/diff_oracle.rs (target/debug/deps/diff_oracle-db6ba8d00d8b91b8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/fakeserver.rs (target/debug/deps/fakeserver-c64679d9d23b2b6e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/fuzz_campaign.rs (target/debug/deps/fuzz_campaign-068937af8b3a50cf)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/matrix_sweep.rs (target/debug/deps/matrix_sweep-6709bbcb9b3ee1fc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/spec_server.rs (target/debug/deps/spec_server-982501bd23c05a49)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/venue.rs (target/debug/deps/venue-1437ccb0ab6aa467)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/window_sweep.rs (target/debug/deps/window_sweep-19a682ec71e1b79b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/nf_transport-07436b22701079bc)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m   Doc-tests[0m nf_arbitrator
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m   Doc-tests[0m nf_engine
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m   Doc-tests[0m nf_protocol
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m   Doc-tests[0m nf_recovery
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m   Doc-tests[0m nf_testkit
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m   Doc-tests[0m nf_transport
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+=== 6. Full Day Audit & Histogram Diff ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/audit data/tests/sample-mini.itch`
+AUDIT file=data/tests/sample-mini.itch bytes=14999991 blocks=505849 violations=0 truncated_tail=true
+HIST 0x41 A len=36 count=180684 pct=35.72
+HIST 0x43 C len=36 count=20 pct=0.00
+HIST 0x44 D len=19 count=164385 pct=32.50
+HIST 0x45 E len=31 count=1507 pct=0.30
+HIST 0x46 F len=40 count=27934 pct=5.52
+HIST 0x48 H len=25 count=8900 pct=1.76
+HIST 0x4C L len=26 count=6171 pct=1.22
+HIST 0x4E N len=20 count=76670 pct=15.16
+HIST 0x50 P len=44 count=1544 pct=0.31
+HIST 0x52 R len=39 count=8906 pct=1.76
+HIST 0x53 S len=12 count=3 pct=0.00
+HIST 0x55 U len=35 count=18395 pct=3.64
+HIST 0x56 V len=35 count=1 pct=0.00
+HIST 0x58 X len=23 count=1821 pct=0.36
+HIST 0x59 Y len=20 count=8908 pct=1.76
+=== 7. Replay Conformance & Golden Hash Check ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/replay --config ci-mode1.toml`
+VERDICT hash=0xF6EF154EFDE905D8 count=505849 watermark=255850 violations=0
+=== 8. Zero-Allocation Window (ALLOC_DELTA=0) ===
+WINDOW_BEGIN
+WINDOW_END
+ALLOC_DELTA=0
+VERDICT hash=0xF6EF154EFDE905D8 count=505849 watermark=255850 violations=0
+=== 9. Kernel Syscall Strace Diff Probe ===
+VERDICT hash=0xF6EF154EFDE905D8 count=505849 watermark=255850 violations=0
+=== 10. Venue Sender & XDP Transport Smoke Check ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/venue --sample data/tests/sample-mini.itch`
+VENUE_SENDER starting: sending 101202 events
+VENUE_SENDER finished: 101202 packets transmitted
+=== 11. Benchmark & G12-T1 Tail Attribution Study ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --sample data/tests/sample-mini.itch --runs 5 --study`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.14 mark_overhead_cycles=52
+=== 1. PR-1 UN-INSTRUMENTED BURST THROUGHPUT EVALUATION ===
+BENCH mode=replay-burst-uninstrumented msgs=505849 rate=18400140 allocs=0 freq=2596.14MHz run=1
+BENCH mode=replay-burst-uninstrumented msgs=505849 rate=21890367 allocs=0 freq=2596.14MHz run=2
+BENCH mode=replay-burst-uninstrumented msgs=505849 rate=22487532 allocs=0 freq=2596.14MHz run=3
+BENCH mode=replay-burst-uninstrumented msgs=505849 rate=22434695 allocs=0 freq=2596.14MHz run=4
+BENCH mode=replay-burst-uninstrumented msgs=505849 rate=22218307 allocs=0 freq=2596.14MHz run=5
+BENCH_MEDIAN mode=replay-burst-uninstrumented rate=22218307
+=== 2. PR-1 SUSTAINED LOOP MODE (>= 5 SECONDS) ===
+BENCH mode=replay-sustained-5s total_msgs=113310176 duration=5.01s sustained_rate=22636258 msg/s allocs=0
+=== 3. SAMPLED MARKS EVALUATION (1-in-256) & PR-2 VERDICT ===
+BENCH mode=replay-core-sampled-256-fast msgs=505849 rate=36633266 p50=130 p99=338 mean=132.04 allocs=0 freq=2596.14MHz run=1
+BENCH mode=replay-core-sampled-256-fast msgs=505849 rate=36436629 p50=104 p99=286 mean=118.07 allocs=0 freq=2596.14MHz run=2
+BENCH mode=replay-core-sampled-256-fast msgs=505849 rate=36037116 p50=104 p99=338 mean=118.51 allocs=0 freq=2596.14MHz run=3
+BENCH mode=replay-core-sampled-256-fast msgs=505849 rate=36932898 p50=104 p99=312 mean=138.12 allocs=0 freq=2596.14MHz run=4
+BENCH mode=replay-core-sampled-256-fast msgs=505849 rate=36716002 p50=104 p99=338 mean=118.90 allocs=0 freq=2596.14MHz run=5
+PR2_SAMPLED_VERDICT rate=36633266 p50=104 p99=338 (tax=0.00%) -> p50 < 60: FAIL, p99 < 150: FAIL
+=== 4. H5 PACKET-SIZE SWEEP ===
+H5_SWEEP packetize=Fixed(1) packets=1011710 rep=1 p50=130 p99=208 p99.9=208
+H5_SWEEP packetize=Fixed(1) packets=1011710 rep=2 p50=130 p99=208 p99.9=208
+H5_SWEEP packetize=Fixed(16) packets=63258 rep=1 p50=130 p99=234 p99.9=676
+H5_SWEEP packetize=Fixed(16) packets=63258 rep=2 p50=130 p99=364 p99.9=1296
+H5_SWEEP packetize=MtuBound(1400) packets=21996 rep=1 p50=156 p99=338 p99.9=442
+H5_SWEEP packetize=MtuBound(1400) packets=21996 rep=2 p50=156 p99=416 p99.9=520
+=== 5. G12-T1 TAIL ATTRIBUTION STUDY PHASE 2 (PER-MESSAGE MEASUREMENT) ===
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=8994745 raw[p50=130 p90=182 p99=442 p99.99=1040 max=83564] adj[p50=78 p90=130 p99=390 p99.99=988 max=83512] allocs=0 freq=2596.14MHz run=1
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=8953981 raw[p50=130 p90=182 p99=468 p99.99=962 max=123110] adj[p50=78 p90=130 p99=416 p99.99=910 max=123058] allocs=0 freq=2596.14MHz run=2
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=8990881 raw[p50=130 p90=182 p99=442 p99.99=1040 max=66664] adj[p50=78 p90=130 p99=390 p99.99=988 max=66612] allocs=0 freq=2596.14MHz run=3
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=8944196 raw[p50=130 p90=182 p99=468 p99.99=988 max=42770] adj[p50=78 p90=130 p99=416 p99.99=936 max=42718] allocs=0 freq=2596.14MHz run=4
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=8962468 raw[p50=130 p90=182 p99=468 p99.99=988 max=61828] adj[p50=78 p90=130 p99=416 p99.99=936 max=61776] allocs=0 freq=2596.14MHz run=5
+T1_PHASE2 arm=cold rate=8962468 raw[p50=130 p90=182 p99=468 p99.9=702 p99.99=988 max=66664] adj[p50=78 p90=130 p99=416 p99.9=650 p99.99=936 max=66612] unknown_pct=0.00% (samples_above_p99=5156)
+BENCH mode=replay-core-msg arm=prefault msgs=505849 rate=8897103 raw[p50=130 p90=182 p99=468 p99.99=1014 max=45916] adj[p50=78 p90=130 p99=416 p99.99=962 max=45864] allocs=0 freq=2596.14MHz run=1
+BENCH mode=replay-core-msg arm=prefault msgs=505849 rate=8900502 raw[p50=130 p90=182 p99=468 p99.99=1216 max=63570] adj[p50=78 p90=130 p99=416 p99.99=1168 max=63518] allocs=0 freq=2596.14MHz run=2
+BENCH mode=replay-core-msg arm=prefault msgs=505849 rate=8920582 raw[p50=130 p90=182 p99=468 p99.99=962 max=62894] adj[p50=78 p90=130 p99=416 p99.99=910 max=62842] allocs=0 freq=2596.14MHz run=3
+BENCH mode=replay-core-msg arm=prefault msgs=505849 rate=8875310 raw[p50=130 p90=182 p99=468 p99.99=1014 max=98332] adj[p50=78 p90=130 p99=416 p99.99=962 max=98280] allocs=0 freq=2596.14MHz run=4
+BENCH mode=replay-core-msg arm=prefault msgs=505849 rate=8868908 raw[p50=130 p90=182 p99=468 p99.99=962 max=64064] adj[p50=78 p90=130 p99=416 p99.99=910 max=64012] allocs=0 freq=2596.14MHz run=5
+T1_PHASE2 arm=prefault rate=8897103 raw[p50=130 p90=182 p99=468 p99.9=728 p99.99=1014 max=63570] adj[p50=78 p90=130 p99=416 p99.9=676 p99.99=962 max=63518] unknown_pct=0.00% (samples_above_p99=6848)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=15020093 raw[p50=52 p90=78 p99=78 p99.99=104 max=83122] adj[p50=0 p90=26 p99=26 p99.99=52 max=83070] allocs=0 freq=2596.14MHz run=1
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14809351 raw[p50=52 p90=78 p99=78 p99.99=104 max=50180] adj[p50=0 p90=26 p99=26 p99.99=52 max=50128] allocs=0 freq=2596.14MHz run=2
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=15020493 raw[p50=52 p90=78 p99=78 p99.99=104 max=36816] adj[p50=0 p90=26 p99=26 p99.99=52 max=36764] allocs=0 freq=2596.14MHz run=3
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=15036373 raw[p50=52 p90=78 p99=78 p99.99=104 max=35438] adj[p50=0 p90=26 p99=26 p99.99=52 max=35386] allocs=0 freq=2596.14MHz run=4
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=15026275 raw[p50=52 p90=78 p99=78 p99.99=104 max=37804] adj[p50=0 p90=26 p99=26 p99.99=52 max=37752] allocs=0 freq=2596.14MHz run=5
+T1_PHASE2 arm=empty rate=15020493 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=37804] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=37752] unknown_pct=0.00% (samples_above_p99=177306)
+STUDY_REPORT written to docs/artifacts/tail-study/study-report.md
+=== 6. TARGET-1 PHASE A: 3-ARM SKELETON BASELINE SWEEP (20 RUNS) ===
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14851349 raw[p50=52 p90=78 p99=78 p99.99=104 max=59072] adj[p50=0 p90=26 p99=26 p99.99=52 max=59020] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14851349 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=59072] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=59020] unknown_pct=0.00% (samples_above_p99=177943)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14788497 raw[p50=52 p90=78 p99=78 p99.99=104 max=54912] adj[p50=0 p90=26 p99=26 p99.99=52 max=54860] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14788497 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=54912] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=54860] unknown_pct=0.00% (samples_above_p99=177606)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9054545 raw[p50=130 p90=182 p99=468 p99.99=1088 max=54912] adj[p50=78 p90=130 p99=416 p99.99=1040 max=54860] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9054545 raw[p50=130 p90=182 p99=468 p99.9=728 p99.99=1088 max=54912] adj[p50=78 p90=130 p99=416 p99.9=676 p99.99=1040 max=54860] unknown_pct=0.00% (samples_above_p99=5301)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14833515 raw[p50=52 p90=78 p99=78 p99.99=104 max=43550] adj[p50=0 p90=26 p99=26 p99.99=52 max=43498] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14833515 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=43550] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=43498] unknown_pct=0.00% (samples_above_p99=178079)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14780498 raw[p50=52 p90=78 p99=78 p99.99=104 max=42666] adj[p50=0 p90=26 p99=26 p99.99=52 max=42614] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14780498 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=42666] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=42614] unknown_pct=0.00% (samples_above_p99=177634)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9038336 raw[p50=130 p90=182 p99=442 p99.99=962 max=48542] adj[p50=78 p90=130 p99=390 p99.99=910 max=48490] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9038336 raw[p50=130 p90=182 p99=442 p99.9=702 p99.99=962 max=48542] adj[p50=78 p90=130 p99=390 p99.9=650 p99.99=910 max=48490] unknown_pct=0.00% (samples_above_p99=7989)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14853727 raw[p50=52 p90=78 p99=78 p99.99=104 max=50882] adj[p50=0 p90=26 p99=26 p99.99=52 max=50830] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14853727 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=50882] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=50830] unknown_pct=0.00% (samples_above_p99=177862)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14795285 raw[p50=52 p90=78 p99=78 p99.99=104 max=33176] adj[p50=0 p90=26 p99=26 p99.99=52 max=33124] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14795285 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=33176] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=33124] unknown_pct=0.00% (samples_above_p99=177876)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9072640 raw[p50=130 p90=182 p99=442 p99.99=910 max=58656] adj[p50=78 p90=130 p99=390 p99.99=858 max=58604] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9072640 raw[p50=130 p90=182 p99=442 p99.9=676 p99.99=910 max=58656] adj[p50=78 p90=130 p99=390 p99.9=624 p99.99=858 max=58604] unknown_pct=0.00% (samples_above_p99=7020)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14853360 raw[p50=52 p90=78 p99=78 p99.99=104 max=45786] adj[p50=0 p90=26 p99=26 p99.99=52 max=45734] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14853360 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=45786] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=45734] unknown_pct=0.00% (samples_above_p99=178097)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14784973 raw[p50=52 p90=78 p99=78 p99.99=78 max=40378] adj[p50=0 p90=26 p99=26 p99.99=26 max=40326] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14784973 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=78 max=40378] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=26 max=40326] unknown_pct=0.00% (samples_above_p99=177787)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9056313 raw[p50=130 p90=182 p99=442 p99.99=936 max=74802] adj[p50=78 p90=130 p99=390 p99.99=884 max=74750] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9056313 raw[p50=130 p90=182 p99=442 p99.9=676 p99.99=936 max=74802] adj[p50=78 p90=130 p99=390 p99.9=624 p99.99=884 max=74750] unknown_pct=0.00% (samples_above_p99=7610)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14824905 raw[p50=52 p90=78 p99=78 p99.99=104 max=59722] adj[p50=0 p90=26 p99=26 p99.99=52 max=59670] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14824905 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=59722] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=59670] unknown_pct=0.00% (samples_above_p99=177655)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14752974 raw[p50=52 p90=78 p99=78 p99.99=104 max=44044] adj[p50=0 p90=26 p99=26 p99.99=52 max=43992] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14752974 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=44044] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=43992] unknown_pct=0.00% (samples_above_p99=178234)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9066824 raw[p50=130 p90=182 p99=442 p99.99=988 max=59072] adj[p50=78 p90=130 p99=390 p99.99=936 max=59020] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9066824 raw[p50=130 p90=182 p99=442 p99.9=650 p99.99=988 max=59072] adj[p50=78 p90=130 p99=390 p99.9=598 p99.99=936 max=59020] unknown_pct=0.00% (samples_above_p99=6403)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14834567 raw[p50=52 p90=78 p99=78 p99.99=104 max=54652] adj[p50=0 p90=26 p99=26 p99.99=52 max=54600] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14834567 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=54652] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=54600] unknown_pct=0.00% (samples_above_p99=177858)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14796744 raw[p50=52 p90=78 p99=78 p99.99=104 max=46566] adj[p50=0 p90=26 p99=26 p99.99=52 max=46514] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14796744 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=46566] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=46514] unknown_pct=0.00% (samples_above_p99=177910)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9021671 raw[p50=130 p90=182 p99=442 p99.99=1136 max=47944] adj[p50=78 p90=130 p99=390 p99.99=1088 max=47892] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9021671 raw[p50=130 p90=182 p99=442 p99.9=676 p99.99=1136 max=47944] adj[p50=78 p90=130 p99=390 p99.9=624 p99.99=1088 max=47892] unknown_pct=0.00% (samples_above_p99=7393)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14842991 raw[p50=52 p90=78 p99=78 p99.99=104 max=43186] adj[p50=0 p90=26 p99=26 p99.99=52 max=43134] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14842991 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=43186] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=43134] unknown_pct=0.00% (samples_above_p99=177823)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14785408 raw[p50=52 p90=78 p99=78 p99.99=104 max=37284] adj[p50=0 p90=26 p99=26 p99.99=52 max=37232] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14785408 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=37284] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=37232] unknown_pct=0.00% (samples_above_p99=177691)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9056499 raw[p50=130 p90=182 p99=442 p99.99=936 max=62712] adj[p50=78 p90=130 p99=390 p99.99=884 max=62660] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9056499 raw[p50=130 p90=182 p99=442 p99.9=650 p99.99=936 max=62712] adj[p50=78 p90=130 p99=390 p99.9=598 p99.99=884 max=62660] unknown_pct=0.00% (samples_above_p99=6937)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14826574 raw[p50=52 p90=78 p99=78 p99.99=104 max=57824] adj[p50=0 p90=26 p99=26 p99.99=52 max=57772] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14826574 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=57824] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=57772] unknown_pct=0.00% (samples_above_p99=177416)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14792345 raw[p50=52 p90=78 p99=78 p99.99=104 max=46124] adj[p50=0 p90=26 p99=26 p99.99=52 max=46072] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14792345 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=46124] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=46072] unknown_pct=0.00% (samples_above_p99=177907)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9024369 raw[p50=130 p90=182 p99=442 p99.99=988 max=48438] adj[p50=78 p90=130 p99=390 p99.99=936 max=48386] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9024369 raw[p50=130 p90=182 p99=442 p99.9=676 p99.99=988 max=48438] adj[p50=78 p90=130 p99=390 p99.9=624 p99.99=936 max=48386] unknown_pct=0.00% (samples_above_p99=7673)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14852825 raw[p50=52 p90=78 p99=78 p99.99=104 max=54652] adj[p50=0 p90=26 p99=26 p99.99=52 max=54600] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14852825 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=54652] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=54600] unknown_pct=0.00% (samples_above_p99=177389)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14739507 raw[p50=52 p90=78 p99=78 p99.99=104 max=60424] adj[p50=0 p90=26 p99=26 p99.99=52 max=60372] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14739507 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=60424] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=60372] unknown_pct=0.00% (samples_above_p99=179830)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9021079 raw[p50=130 p90=182 p99=442 p99.99=1014 max=46124] adj[p50=78 p90=130 p99=390 p99.99=962 max=46072] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9021079 raw[p50=130 p90=182 p99=442 p99.9=676 p99.99=1014 max=46124] adj[p50=78 p90=130 p99=390 p99.9=624 p99.99=962 max=46072] unknown_pct=0.00% (samples_above_p99=7871)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14853166 raw[p50=52 p90=78 p99=78 p99.99=104 max=57330] adj[p50=0 p90=26 p99=26 p99.99=52 max=57278] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14853166 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=57330] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=57278] unknown_pct=0.00% (samples_above_p99=177869)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14801450 raw[p50=52 p90=78 p99=78 p99.99=104 max=38454] adj[p50=0 p90=26 p99=26 p99.99=52 max=38402] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14801450 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=38454] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=38402] unknown_pct=0.00% (samples_above_p99=178006)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9030754 raw[p50=130 p90=182 p99=468 p99.99=1040 max=50388] adj[p50=78 p90=130 p99=416 p99.99=988 max=50336] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9030754 raw[p50=130 p90=182 p99=468 p99.9=728 p99.99=1040 max=50388] adj[p50=78 p90=130 p99=416 p99.9=676 p99.99=988 max=50336] unknown_pct=0.00% (samples_above_p99=5255)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14857185 raw[p50=52 p90=78 p99=78 p99.99=104 max=50050] adj[p50=0 p90=26 p99=26 p99.99=52 max=49998] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14857185 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=50050] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=49998] unknown_pct=0.00% (samples_above_p99=177658)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14761718 raw[p50=52 p90=78 p99=78 p99.99=104 max=47502] adj[p50=0 p90=26 p99=26 p99.99=52 max=47450] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14761718 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=47502] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=47450] unknown_pct=0.00% (samples_above_p99=177952)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=8930495 raw[p50=130 p90=182 p99=468 p99.99=962 max=81718] adj[p50=78 p90=130 p99=416 p99.99=910 max=81666] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=8930495 raw[p50=130 p90=182 p99=468 p99.9=702 p99.99=962 max=81718] adj[p50=78 p90=130 p99=416 p99.9=650 p99.99=910 max=81666] unknown_pct=0.00% (samples_above_p99=5490)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14863444 raw[p50=52 p90=78 p99=78 p99.99=104 max=50570] adj[p50=0 p90=26 p99=26 p99.99=52 max=50518] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14863444 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=50570] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=50518] unknown_pct=0.00% (samples_above_p99=177725)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14779068 raw[p50=52 p90=78 p99=78 p99.99=104 max=46306] adj[p50=0 p90=26 p99=26 p99.99=52 max=46254] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14779068 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=46306] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=46254] unknown_pct=0.00% (samples_above_p99=177998)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9021429 raw[p50=130 p90=182 p99=468 p99.99=962 max=123864] adj[p50=78 p90=130 p99=416 p99.99=910 max=123812] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9021429 raw[p50=130 p90=182 p99=468 p99.9=702 p99.99=962 max=123864] adj[p50=78 p90=130 p99=416 p99.9=650 p99.99=910 max=123812] unknown_pct=0.00% (samples_above_p99=5654)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14862116 raw[p50=52 p90=78 p99=78 p99.99=104 max=33852] adj[p50=0 p90=26 p99=26 p99.99=52 max=33800] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14862116 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=33852] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=33800] unknown_pct=0.00% (samples_above_p99=177933)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14804565 raw[p50=52 p90=78 p99=78 p99.99=104 max=64298] adj[p50=0 p90=26 p99=26 p99.99=52 max=64246] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14804565 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=64298] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=64246] unknown_pct=0.00% (samples_above_p99=177570)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=8542640 raw[p50=156 p90=182 p99=468 p99.99=988 max=62868] adj[p50=104 p90=130 p99=416 p99.99=936 max=62816] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=8542640 raw[p50=156 p90=182 p99=468 p99.9=702 p99.99=988 max=62868] adj[p50=104 p90=130 p99=416 p99.9=650 p99.99=936 max=62816] unknown_pct=0.00% (samples_above_p99=5585)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14828705 raw[p50=52 p90=78 p99=78 p99.99=104 max=124410] adj[p50=0 p90=26 p99=26 p99.99=52 max=124358] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14828705 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=124410] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=124358] unknown_pct=0.00% (samples_above_p99=177524)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14784887 raw[p50=52 p90=78 p99=78 p99.99=104 max=43550] adj[p50=0 p90=26 p99=26 p99.99=52 max=43498] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14784887 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=43550] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=43498] unknown_pct=0.00% (samples_above_p99=177742)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9032380 raw[p50=130 p90=182 p99=442 p99.99=988 max=54808] adj[p50=78 p90=130 p99=390 p99.99=936 max=54756] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9032380 raw[p50=130 p90=182 p99=442 p99.9=702 p99.99=988 max=54808] adj[p50=78 p90=130 p99=390 p99.9=650 p99.99=936 max=54756] unknown_pct=0.00% (samples_above_p99=7760)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14827486 raw[p50=52 p90=78 p99=78 p99.99=104 max=29120] adj[p50=0 p90=26 p99=26 p99.99=52 max=29068] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14827486 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=29120] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=29068] unknown_pct=0.00% (samples_above_p99=177824)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14776180 raw[p50=52 p90=78 p99=78 p99.99=104 max=44044] adj[p50=0 p90=26 p99=26 p99.99=52 max=43992] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14776180 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=44044] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=43992] unknown_pct=0.00% (samples_above_p99=177872)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9013439 raw[p50=130 p90=182 p99=442 p99.99=1014 max=69290] adj[p50=78 p90=130 p99=390 p99.99=962 max=69238] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9013439 raw[p50=130 p90=182 p99=442 p99.9=676 p99.99=1014 max=69290] adj[p50=78 p90=130 p99=390 p99.9=624 p99.99=962 max=69238] unknown_pct=0.00% (samples_above_p99=7741)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14857570 raw[p50=52 p90=78 p99=78 p99.99=104 max=79482] adj[p50=0 p90=26 p99=26 p99.99=52 max=79430] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14857570 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=79482] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=79430] unknown_pct=0.00% (samples_above_p99=177810)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14790766 raw[p50=52 p90=78 p99=78 p99.99=104 max=32812] adj[p50=0 p90=26 p99=26 p99.99=52 max=32760] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14790766 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=32812] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=32760] unknown_pct=0.00% (samples_above_p99=177705)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9013536 raw[p50=130 p90=182 p99=442 p99.99=1014 max=48282] adj[p50=78 p90=130 p99=390 p99.99=962 max=48230] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9013536 raw[p50=130 p90=182 p99=442 p99.9=676 p99.99=1014 max=48282] adj[p50=78 p90=130 p99=390 p99.9=624 p99.99=962 max=48230] unknown_pct=0.00% (samples_above_p99=7697)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14866219 raw[p50=52 p90=78 p99=78 p99.99=104 max=50804] adj[p50=0 p90=26 p99=26 p99.99=52 max=50752] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14866219 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=50804] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=50752] unknown_pct=0.00% (samples_above_p99=177577)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14795848 raw[p50=52 p90=78 p99=78 p99.99=104 max=44590] adj[p50=0 p90=26 p99=26 p99.99=52 max=44538] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14795848 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=44590] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=44538] unknown_pct=0.00% (samples_above_p99=177849)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9061268 raw[p50=130 p90=182 p99=442 p99.99=1014 max=44798] adj[p50=78 p90=130 p99=390 p99.99=962 max=44746] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9061268 raw[p50=130 p90=182 p99=442 p99.9=676 p99.99=1014 max=44798] adj[p50=78 p90=130 p99=390 p99.9=624 p99.99=962 max=44746] unknown_pct=0.00% (samples_above_p99=7360)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14860986 raw[p50=52 p90=78 p99=78 p99.99=104 max=42094] adj[p50=0 p90=26 p99=26 p99.99=52 max=42042] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14860986 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=42094] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=42042] unknown_pct=0.00% (samples_above_p99=178081)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14808990 raw[p50=52 p90=78 p99=78 p99.99=104 max=29744] adj[p50=0 p90=26 p99=26 p99.99=52 max=29692] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14808990 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=29744] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=29692] unknown_pct=0.00% (samples_above_p99=177627)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9040518 raw[p50=130 p90=182 p99=442 p99.99=988 max=47736] adj[p50=78 p90=130 p99=390 p99.99=936 max=47684] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9040518 raw[p50=130 p90=182 p99=442 p99.9=650 p99.99=988 max=47736] adj[p50=78 p90=130 p99=390 p99.9=598 p99.99=936 max=47684] unknown_pct=0.00% (samples_above_p99=7230)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14858995 raw[p50=52 p90=78 p99=78 p99.99=104 max=42692] adj[p50=0 p90=26 p99=26 p99.99=52 max=42640] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14858995 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=42692] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=42640] unknown_pct=0.00% (samples_above_p99=178038)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14768565 raw[p50=52 p90=78 p99=78 p99.99=104 max=39208] adj[p50=0 p90=26 p99=26 p99.99=52 max=39156] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14768565 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=39208] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=39156] unknown_pct=0.00% (samples_above_p99=177480)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9030048 raw[p50=130 p90=182 p99=442 p99.99=1014 max=54262] adj[p50=78 p90=130 p99=390 p99.99=962 max=54210] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9030048 raw[p50=130 p90=182 p99=442 p99.9=702 p99.99=1014 max=54262] adj[p50=78 p90=130 p99=390 p99.9=650 p99.99=962 max=54210] unknown_pct=0.00% (samples_above_p99=7705)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14848326 raw[p50=52 p90=78 p99=78 p99.99=104 max=57252] adj[p50=0 p90=26 p99=26 p99.99=52 max=57200] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14848326 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=57252] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=57200] unknown_pct=0.00% (samples_above_p99=178246)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14804615 raw[p50=52 p90=78 p99=78 p99.99=104 max=50700] adj[p50=0 p90=26 p99=26 p99.99=52 max=50648] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14804615 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=50700] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=50648] unknown_pct=0.00% (samples_above_p99=177465)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9020177 raw[p50=130 p90=182 p99=468 p99.99=1014 max=42770] adj[p50=78 p90=130 p99=416 p99.99=962 max=42718] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9020177 raw[p50=130 p90=182 p99=468 p99.9=702 p99.99=1014 max=42770] adj[p50=78 p90=130 p99=416 p99.9=650 p99.99=962 max=42718] unknown_pct=0.00% (samples_above_p99=5069)
+TARGET1_PHASE_A empty_p50=52 cyc (spread=0 cyc) loop_p50=52 cyc (spread=0 cyc) full_p50=130 cyc (spread=26 cyc) loop_cost=0 cyc work_residual=78 cyc VERDICT=PASS
+=== 7. DOSE-RESPONSE VALIDATION SWEEP (Law A-1d) ===
+DOSE_RESPONSE_POINT K=0 p50=52 cyc
+DOSE_RESPONSE_POINT K=10 p50=78 cyc
+DOSE_RESPONSE_POINT K=20 p50=78 cyc
+DOSE_RESPONSE_POINT K=50 p50=78 cyc
+DOSE_RESPONSE_POINT K=100 p50=104 cyc
+DOSE_RESPONSE_VERDICT K0=52 K10=78 K20=78 K50=78 K100=104 slope=0.520 cyc/unit VERDICT=PASS
+=== 7b. LAW B-3b (i) SAMPLING BIAS PROBE (1-IN-4 DENSE vs 1-IN-256 SPARSE) ===
+BIAS_PROBE dense_mean=102.55 cyc sparse_mean=98.38 cyc bias=4.07% VERDICT=FAIL
+=== 7c. LAW B-3b (ii) INTER-BRACKET GAP PROBE ===
+GAP_PROBE sampled_intervals=1974 total_period_cyc=34714498 sparse_period_est=68.69 cyc
+=== 8. PHASE B-REDO: STRICT 8-ARM STAGE-ECTOMY DECOMPOSITION (20 RUNS EACH) ===
+RUNNER_IDENTITY cpu="AMD EPYC 9V74 80-Core Processor" freq_mhz=2596.14
+STAGE_ECTOMY_RATES CONFIG_TAG="clean_replay" sampling="none" r0_hash=22.45M r0_fast=39.63M r0_disp=135.38M r1_count=131.78M r2_noproof=135.60M r3_noseq=721.16M r4_noitch=699.87M r5_noblock=1439.14M r6_poll=1498.71M
+STAGE_ECTOMY_CYCLES CONFIG_TAG="clean_replay" c0=115.63 c0_fast=65.51 c0_disp=19.18 c1=19.70 c2=19.15 c3=3.60 c4=3.71 c5=1.80 c6=1.73
+PR2_PROD_VERDICT rate=39628620 c0_fast=65.51 cyc fast_hash=46.34 cyc -> p50 < 60: FAIL
+H10_SINK_SPLIT total_sink=95.93 cyc fnv_math=96.46 cyc (100.5%) sink_dispatch=0.00 cyc (0.0%) H10_VERDICT=REFUTED
+STAGE_ECTOMY_DECOMPOSITION delta_hash_total=95.93 (fnv=96.46, disp=0.00) delta_proof=0.56 (< 1.00 cyc bounded) delta_seq=15.55 delta_itch=0.00 (< 1.00 cyc bounded) delta_block=1.91 delta_header=0.07 poll_base=1.73
+RECONCILIATION_COMPOSITE rate_total_c0=115.63 cyc bracket_mean=118.90 cyc sparse_period_est=68.69 cyc diff_rate_bracket=2.83% diff_bracket_gap=42.23% composite_residual=42.23% VERDICT=FAIL
+=== 9. H9 REPETITION OVERHEAD SWEEP ===
+H9_POINT limit=10000 msgs rate=14.92M msg/s cyc_msg=173.99
+H9_POINT limit=50000 msgs rate=20.87M msg/s cyc_msg=124.39
+H9_POINT limit=250000 msgs rate=21.38M msg/s cyc_msg=121.45
+H9_POINT limit=505849 msgs rate=20.39M msg/s cyc_msg=127.33
+=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D8) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/diff_oracle`
+=== RUNNING G12-T3 REFERENCE ARBITRATOR & DIFFERENTIAL SUITE (D1..D9) ===
+=== D3-REDO: Oracle Validation by Sequencer-Logic Bug Injections ===
+D3_DIVERGENCE_DUMP mutation="DisableClearOnAdvance" detected=true seq_wm=1231 ref_wm=1224 seq_hash=0x473C5B1BF49F1C91 ref_hash=0xCFE76D07416B4CA5
+D3_DIVERGENCE_DUMP mutation="OffByOneClamp" detected=true seq_wm=600 ref_wm=601 seq_hash=0xB1C1F8344636F511 ref_hash=0x972FEC36E88A4C25
+D3_DIVERGENCE_DUMP mutation="DropStagedAtEos" detected=true seq_wm=10 ref_wm=13 seq_hash=0xF0B1A3FF15503051 ref_hash=0x9D6D68BF10C6C3A5
+D3 ALL_SEQUENCER_LOGIC_MUTATIONS_DETECTED: Oracle caught all 3 sequencer mutations with divergence dumps.
+=== D1: Full 17-Cell Matrix Differential Verification ===
+D1 cell="M1 (Baseline MTU contiguous)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M2 (Fixed 1 msg)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M3 (Fixed 16 msgs)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M4 (Gaussian delay jitter)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M5 (Bernoulli loss with dual feed)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M6 (Gilbert-Elliott burst loss)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M7 (Pathological split: 1B to MTU)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M8 (Feed A only lossless)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M9 (Feed B only lossless)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M10 (Heavy reorder jitter)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M11 (Deep out-of-order window)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M12 (Max-rate unconstrained)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M13 (M-LATE: Staged arrival edge)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M14 (M-BURST: Burst packet arrival)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M15 (M-STARVE: Feed A silent for 2s)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M16 (M-DUP2: Overlapping dual feed)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M17 (M-DROPRESP / Session Boundary)" seq_wm=255850 ref_wm=255850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 ALL_17_CELLS_PASSED: Triple equality verified across all 17 matrix cells.
+=== D2: 100 Seeded Random Configs Differential Test ===
+D2 100_RANDOM_CONFIGS_PASSED: Triple equality verified across 100 random configs.
+=== D4: Duplicate Ordering (First-Received Wins) ===
+D4 DUPLICATE_ORDERING_PASSED: seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8
+=== D5: Session Splits Verification ===
+D5 SESSION_SPLITS_PASSED: Watermarks and hashes match across session boundaries.
+=== D6: Unclean Death (Scripted Drops) Verification ===
+D6 UNCLEAN_DEATH_PASSED: State matches reference final state.
+=== D7/D8: Watchdog & Double-Run Determinism ===
+D7/D8 WATCHDOG_AND_DETERMINISM_PASSED: elapsed=0.49s run1=(505850, 505850, 505849, 17793464081775658456) run2=(505850, 505850, 505849, 17793464081775658456)
+=== D9: Indexed-Ingest Equivalence (classic == indexed) ===
+D9 INDEXED_EQUIVALENCE_PASSED: 12 cells (3 configs x 4 mutations) classic==indexed
+=== ALL D1..D8 DIFFERENTIAL ORACLE CHECKS PASSED SUCCESSFULLY ===
+=== 13. T2 Window Sweep & Full 17-Cell Matrix Confluence Campaign ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/window_sweep`
+=== RUNNING T2 WINDOW SIZE SWEEP (256..4096 x M1, M11) ===
+WINDOW_SWEEP slots=256  arena= 16640 B l1_fit=Fits 32K L1D                   M1_rate=21.69M golden_M1=true M11_rate=18.41M golden_M11=true max_staged=0 beyond_drops=0
+WINDOW_SWEEP slots=512  arena= 33280 B l1_fit=Fits 64K L1D                   M1_rate=21.71M golden_M1=true M11_rate=18.35M golden_M11=true max_staged=0 beyond_drops=0
+WINDOW_SWEEP slots=1024 arena= 66560 B l1_fit=Exceeds L1D (L2 Cache resident) M1_rate=21.69M golden_M1=true M11_rate=18.41M golden_M11=true max_staged=0 beyond_drops=0
+WINDOW_SWEEP slots=2048 arena=133120 B l1_fit=Exceeds L1D (L2 Cache resident) M1_rate=22.15M golden_M1=true M11_rate=18.37M golden_M11=true max_staged=0 beyond_drops=0
+WINDOW_SWEEP slots=4096 arena=266240 B l1_fit=Exceeds L1D (L2 Cache resident) M1_rate=21.86M golden_M1=true M11_rate=18.35M golden_M11=true max_staged=0 beyond_drops=0
+
+=== T2 WINDOW SWEEP KNEE TABLE ===
+| Window Slots | Arena Footprint | Cache Residency | M1 Rate | M11 Rate | Max Staged | Beyond Drops | Confluence Verdict |
+|---|---|---|---|---|---|---|---|
+| 256  |  16640 B ( 16.2 KiB) | Fits 32K L1D                 | 21.69M msg/s | 18.41M msg/s | 0          | 0            | **PASS** |
+| 512  |  33280 B ( 32.5 KiB) | Fits 64K L1D                 | 21.71M msg/s | 18.35M msg/s | 0          | 0            | **PASS** |
+| 1024 |  66560 B ( 65.0 KiB) | Exceeds L1D (L2 Cache resident) | 21.69M msg/s | 18.41M msg/s | 0          | 0            | **PASS** |
+| 2048 | 133120 B (130.0 KiB) | Exceeds L1D (L2 Cache resident) | 22.15M msg/s | 18.37M msg/s | 0          | 0            | **PASS** |
+| 4096 | 266240 B (260.0 KiB) | Exceeds L1D (L2 Cache resident) | 21.86M msg/s | 18.35M msg/s | 0          | 0            | **PASS** |
+=== T2 WINDOW SWEEP COMPLETED SUCCESSFULLY ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/matrix_sweep`
+=== EXECUTING COMPLETE 17-CELL MATRIX CONFLUENCE CAMPAIGN (M1..M17) ===
+MATRIX_CELL name="M1 (Baseline MTU contiguous)       " rate= 3.64M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M2 (Fixed 1 msg)                   " rate= 3.70M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M3 (Fixed 16 msgs)                 " rate= 4.24M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M4 (Gaussian delay jitter)         " rate= 4.25M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M5 (Bernoulli loss with dual feed) " rate= 4.34M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M6 (Gilbert-Elliott burst loss)    " rate= 4.43M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M7 (Pathological split: 1B to MTU) " rate= 4.23M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M8 (Feed A only lossless)          " rate= 5.49M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M9 (Feed B only lossless)          " rate= 5.50M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M10 (Heavy reorder jitter)         " rate= 4.24M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M11 (Deep out-of-order window)     " rate= 3.90M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M12 (Max-rate unconstrained)       " rate= 4.25M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M13 (M-LATE: Staged arrival edge)  " rate= 4.23M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M14 (M-BURST: Burst packet arrival)" rate= 4.26M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M15 (M-STARVE: Feed A silent for 2s)" rate= 4.19M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M16 (M-DUP2: Overlapping dual feed)" rate= 4.23M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M17 (M-DROPRESP / Session Boundary)" rate= 4.37M msg/s count=505849 wm=255850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+
+=== COMPLETE 17-CELL MATRIX SUMMARY TABLE ===
+| Cell ID | Matrix Scenario | Throughput | Emitted Messages | Final Watermark | Canonical FNV Hash | Oracle Confluence Verdict |
+|---|---|---|---|---|---|---|
+| M1  | M1 (Baseline MTU contiguous)        |  3.64M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M2  | M2 (Fixed 1 msg)                    |  3.70M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M3  | M3 (Fixed 16 msgs)                  |  4.24M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M4  | M4 (Gaussian delay jitter)          |  4.25M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M5  | M5 (Bernoulli loss with dual feed)  |  4.34M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M6  | M6 (Gilbert-Elliott burst loss)     |  4.43M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M7  | M7 (Pathological split: 1B to MTU)  |  4.23M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M8  | M8 (Feed A only lossless)           |  5.49M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M9  | M9 (Feed B only lossless)           |  5.50M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M10 | M10 (Heavy reorder jitter)          |  4.24M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M11 | M11 (Deep out-of-order window)      |  3.90M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M12 | M12 (Max-rate unconstrained)        |  4.25M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M13 | M13 (M-LATE: Staged arrival edge)   |  4.23M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M14 | M14 (M-BURST: Burst packet arrival) |  4.26M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M15 | M15 (M-STARVE: Feed A silent for 2s) |  4.19M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M16 | M16 (M-DUP2: Overlapping dual feed) |  4.23M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M17 | M17 (M-DROPRESP / Session Boundary) |  4.37M msg/s | 505849 | 255850 | 0xF6EF154EFDE905D8 | **PASS** |
+=== ALL 17 MATRIX CELLS VERIFIED 100% GREEN ===
+=== 14. VR-4 Hostile Frame & Fuzz Campaign (3 Harnesses) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/fuzz_campaign`
+=== VR-4 EXTENDED FUZZ CAMPAIGN (3 HARNESSES x 1,000,000 ITERATIONS) ===
+FUZZ_CAMPAIGN_REPORT total_execs=1000000 elapsed=0.159s data_frames=0 heartbeats=114 eos_frames=85 distinct_itch_types_validated=22/23 lsan_status=CLEAN panics=0
+VR-4 FUZZ CAMPAIGN 100% COMPLETE AND VERIFIED (1,000,000 EXECS).
+=== 15. Spec-Only Retransmission Server Clean-Room Validation (doc 14 §3.2 / F-31) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/spec_server`
+=== SPEC-ONLY SERVER CLEAN-ROOM VALIDATION (doc 14 §3.2 / F-31) ===
+Spec server spawned on UDP port 53782
+SPEC_SERVER_RESPONSE: session="SPECSESS01" start_seq=10 count=25 bytes_received=645
+=== SPEC-ONLY SERVER CLEAN-ROOM VALIDATION PASSED (F-31 CLOSED) ===
+=== 16. HFT-Verify Statistical Gate (nano/constr1.1.md §1: 30 runs + warmup 5 + JSON) ===
+info: downloading component rust-std
+Selecting previously unselected package musl:amd64.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 203433 files and directories currently installed.)
+Preparing to unpack .../musl_1.2.4-2_amd64.deb ...
+Unpacking musl:amd64 (1.2.4-2) ...
+Selecting previously unselected package musl-dev:amd64.
+Preparing to unpack .../musl-dev_1.2.4-2_amd64.deb ...
+Unpacking musl-dev:amd64 (1.2.4-2) ...
+Selecting previously unselected package musl-tools.
+Preparing to unpack .../musl-tools_1.2.4-2_amd64.deb ...
+Unpacking musl-tools (1.2.4-2) ...
+Setting up musl:amd64 (1.2.4-2) ...
+Setting up musl-dev:amd64 (1.2.4-2) ...
+Setting up musl-tools (1.2.4-2) ...
+Processing triggers for man-db (2.12.0-4build2) ...
+Not building database; man-db/auto-update is not 'true'.
+
+Running kernel seems to be up-to-date.
+
+No services need to be restarted.
+
+No containers need to be restarted.
+
+No user sessions are running outdated binaries.
+
+No VM guests are running outdated hypervisor (qemu) binaries on this host.
+MUSL_BUILD_OK static target
+HFT_BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.14 mark_overhead_cycles=52 target_env=musl
+HFT_BENCH_WARMUP 1/5 rate=114893351
+HFT_BENCH_WARMUP 2/5 rate=124034674
+HFT_BENCH_WARMUP 3/5 rate=126165571
+HFT_BENCH_WARMUP 4/5 rate=124940042
+HFT_BENCH_WARMUP 5/5 rate=126513203
+HFT_BENCH_RUN 1/30 rate=128320133 cyc=20.23
+HFT_BENCH_RUN 2/30 rate=129088523 cyc=20.11
+HFT_BENCH_RUN 3/30 rate=128232207 cyc=20.25
+HFT_BENCH_RUN 4/30 rate=127118499 cyc=20.42
+HFT_BENCH_RUN 5/30 rate=130554648 cyc=19.89
+HFT_BENCH_RUN 6/30 rate=131375735 cyc=19.76
+HFT_BENCH_RUN 7/30 rate=124417173 cyc=20.87
+HFT_BENCH_RUN 8/30 rate=128102766 cyc=20.27
+HFT_BENCH_RUN 9/30 rate=130050740 cyc=19.96
+HFT_BENCH_RUN 10/30 rate=133238809 cyc=19.48
+HFT_BENCH_RUN 11/30 rate=132088631 cyc=19.65
+HFT_BENCH_RUN 12/30 rate=133472950 cyc=19.45
+HFT_BENCH_RUN 13/30 rate=136743849 cyc=18.99
+HFT_BENCH_RUN 14/30 rate=138670905 cyc=18.72
+HFT_BENCH_RUN 15/30 rate=137926455 cyc=18.82
+HFT_BENCH_RUN 16/30 rate=138571986 cyc=18.73
+HFT_BENCH_RUN 17/30 rate=138994134 cyc=18.68
+HFT_BENCH_RUN 18/30 rate=140013219 cyc=18.54
+HFT_BENCH_RUN 19/30 rate=137632504 cyc=18.86
+HFT_BENCH_RUN 20/30 rate=130022627 cyc=19.97
+HFT_BENCH_RUN 21/30 rate=133726295 cyc=19.41
+HFT_BENCH_RUN 22/30 rate=132559385 cyc=19.58
+HFT_BENCH_RUN 23/30 rate=128354744 cyc=20.23
+HFT_BENCH_RUN 24/30 rate=130370631 cyc=19.91
+HFT_BENCH_RUN 25/30 rate=131385972 cyc=19.76
+HFT_BENCH_RUN 26/30 rate=131986099 cyc=19.67
+HFT_BENCH_RUN 27/30 rate=125036551 cyc=20.76
+HFT_BENCH_RUN 28/30 rate=124485574 cyc=20.85
+HFT_BENCH_RUN 29/30 rate=126250433 cyc=20.56
+HFT_BENCH_RUN 30/30 rate=131797031 cyc=19.70
+{
+  "median_cycles": 19.7604,
+  "p95_cycles": 20.8549,
+  "p99_cycles": 20.8664,
+  "stddev": 0.6605,
+  "cv_percent": 3.3426,
+  "runs": 30,
+  "warmup": 5,
+  "cpu_model": "AMD EPYC 9V74 80-Core Processor",
+  "freq_mhz": 2596.14,
+  "target": "x86_64-unknown-linux-musl",
+  "sink": "count",
+  "sample": "data/tests/sample-mini.itch"
+}
+ALL CONSTRAINTS PASSED
+=== ALL CHECKS PASSED SUCCESSFULLY ===

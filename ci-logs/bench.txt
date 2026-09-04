@@ -1,0 +1,190 @@
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.14 mark_overhead_cycles=52
+=== 1. PR-1 UN-INSTRUMENTED BURST THROUGHPUT EVALUATION ===
+BENCH mode=replay-burst-uninstrumented msgs=505849 rate=18400140 allocs=0 freq=2596.14MHz run=1
+BENCH mode=replay-burst-uninstrumented msgs=505849 rate=21890367 allocs=0 freq=2596.14MHz run=2
+BENCH mode=replay-burst-uninstrumented msgs=505849 rate=22487532 allocs=0 freq=2596.14MHz run=3
+BENCH mode=replay-burst-uninstrumented msgs=505849 rate=22434695 allocs=0 freq=2596.14MHz run=4
+BENCH mode=replay-burst-uninstrumented msgs=505849 rate=22218307 allocs=0 freq=2596.14MHz run=5
+BENCH_MEDIAN mode=replay-burst-uninstrumented rate=22218307
+=== 2. PR-1 SUSTAINED LOOP MODE (>= 5 SECONDS) ===
+BENCH mode=replay-sustained-5s total_msgs=113310176 duration=5.01s sustained_rate=22636258 msg/s allocs=0
+=== 3. SAMPLED MARKS EVALUATION (1-in-256) & PR-2 VERDICT ===
+BENCH mode=replay-core-sampled-256-fast msgs=505849 rate=36633266 p50=130 p99=338 mean=132.04 allocs=0 freq=2596.14MHz run=1
+BENCH mode=replay-core-sampled-256-fast msgs=505849 rate=36436629 p50=104 p99=286 mean=118.07 allocs=0 freq=2596.14MHz run=2
+BENCH mode=replay-core-sampled-256-fast msgs=505849 rate=36037116 p50=104 p99=338 mean=118.51 allocs=0 freq=2596.14MHz run=3
+BENCH mode=replay-core-sampled-256-fast msgs=505849 rate=36932898 p50=104 p99=312 mean=138.12 allocs=0 freq=2596.14MHz run=4
+BENCH mode=replay-core-sampled-256-fast msgs=505849 rate=36716002 p50=104 p99=338 mean=118.90 allocs=0 freq=2596.14MHz run=5
+PR2_SAMPLED_VERDICT rate=36633266 p50=104 p99=338 (tax=0.00%) -> p50 < 60: FAIL, p99 < 150: FAIL
+=== 4. H5 PACKET-SIZE SWEEP ===
+H5_SWEEP packetize=Fixed(1) packets=1011710 rep=1 p50=130 p99=208 p99.9=208
+H5_SWEEP packetize=Fixed(1) packets=1011710 rep=2 p50=130 p99=208 p99.9=208
+H5_SWEEP packetize=Fixed(16) packets=63258 rep=1 p50=130 p99=234 p99.9=676
+H5_SWEEP packetize=Fixed(16) packets=63258 rep=2 p50=130 p99=364 p99.9=1296
+H5_SWEEP packetize=MtuBound(1400) packets=21996 rep=1 p50=156 p99=338 p99.9=442
+H5_SWEEP packetize=MtuBound(1400) packets=21996 rep=2 p50=156 p99=416 p99.9=520
+=== 5. G12-T1 TAIL ATTRIBUTION STUDY PHASE 2 (PER-MESSAGE MEASUREMENT) ===
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=8994745 raw[p50=130 p90=182 p99=442 p99.99=1040 max=83564] adj[p50=78 p90=130 p99=390 p99.99=988 max=83512] allocs=0 freq=2596.14MHz run=1
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=8953981 raw[p50=130 p90=182 p99=468 p99.99=962 max=123110] adj[p50=78 p90=130 p99=416 p99.99=910 max=123058] allocs=0 freq=2596.14MHz run=2
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=8990881 raw[p50=130 p90=182 p99=442 p99.99=1040 max=66664] adj[p50=78 p90=130 p99=390 p99.99=988 max=66612] allocs=0 freq=2596.14MHz run=3
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=8944196 raw[p50=130 p90=182 p99=468 p99.99=988 max=42770] adj[p50=78 p90=130 p99=416 p99.99=936 max=42718] allocs=0 freq=2596.14MHz run=4
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=8962468 raw[p50=130 p90=182 p99=468 p99.99=988 max=61828] adj[p50=78 p90=130 p99=416 p99.99=936 max=61776] allocs=0 freq=2596.14MHz run=5
+T1_PHASE2 arm=cold rate=8962468 raw[p50=130 p90=182 p99=468 p99.9=702 p99.99=988 max=66664] adj[p50=78 p90=130 p99=416 p99.9=650 p99.99=936 max=66612] unknown_pct=0.00% (samples_above_p99=5156)
+BENCH mode=replay-core-msg arm=prefault msgs=505849 rate=8897103 raw[p50=130 p90=182 p99=468 p99.99=1014 max=45916] adj[p50=78 p90=130 p99=416 p99.99=962 max=45864] allocs=0 freq=2596.14MHz run=1
+BENCH mode=replay-core-msg arm=prefault msgs=505849 rate=8900502 raw[p50=130 p90=182 p99=468 p99.99=1216 max=63570] adj[p50=78 p90=130 p99=416 p99.99=1168 max=63518] allocs=0 freq=2596.14MHz run=2
+BENCH mode=replay-core-msg arm=prefault msgs=505849 rate=8920582 raw[p50=130 p90=182 p99=468 p99.99=962 max=62894] adj[p50=78 p90=130 p99=416 p99.99=910 max=62842] allocs=0 freq=2596.14MHz run=3
+BENCH mode=replay-core-msg arm=prefault msgs=505849 rate=8875310 raw[p50=130 p90=182 p99=468 p99.99=1014 max=98332] adj[p50=78 p90=130 p99=416 p99.99=962 max=98280] allocs=0 freq=2596.14MHz run=4
+BENCH mode=replay-core-msg arm=prefault msgs=505849 rate=8868908 raw[p50=130 p90=182 p99=468 p99.99=962 max=64064] adj[p50=78 p90=130 p99=416 p99.99=910 max=64012] allocs=0 freq=2596.14MHz run=5
+T1_PHASE2 arm=prefault rate=8897103 raw[p50=130 p90=182 p99=468 p99.9=728 p99.99=1014 max=63570] adj[p50=78 p90=130 p99=416 p99.9=676 p99.99=962 max=63518] unknown_pct=0.00% (samples_above_p99=6848)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=15020093 raw[p50=52 p90=78 p99=78 p99.99=104 max=83122] adj[p50=0 p90=26 p99=26 p99.99=52 max=83070] allocs=0 freq=2596.14MHz run=1
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14809351 raw[p50=52 p90=78 p99=78 p99.99=104 max=50180] adj[p50=0 p90=26 p99=26 p99.99=52 max=50128] allocs=0 freq=2596.14MHz run=2
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=15020493 raw[p50=52 p90=78 p99=78 p99.99=104 max=36816] adj[p50=0 p90=26 p99=26 p99.99=52 max=36764] allocs=0 freq=2596.14MHz run=3
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=15036373 raw[p50=52 p90=78 p99=78 p99.99=104 max=35438] adj[p50=0 p90=26 p99=26 p99.99=52 max=35386] allocs=0 freq=2596.14MHz run=4
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=15026275 raw[p50=52 p90=78 p99=78 p99.99=104 max=37804] adj[p50=0 p90=26 p99=26 p99.99=52 max=37752] allocs=0 freq=2596.14MHz run=5
+T1_PHASE2 arm=empty rate=15020493 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=37804] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=37752] unknown_pct=0.00% (samples_above_p99=177306)
+STUDY_REPORT written to docs/artifacts/tail-study/study-report.md
+=== 6. TARGET-1 PHASE A: 3-ARM SKELETON BASELINE SWEEP (20 RUNS) ===
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14851349 raw[p50=52 p90=78 p99=78 p99.99=104 max=59072] adj[p50=0 p90=26 p99=26 p99.99=52 max=59020] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14851349 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=59072] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=59020] unknown_pct=0.00% (samples_above_p99=177943)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14788497 raw[p50=52 p90=78 p99=78 p99.99=104 max=54912] adj[p50=0 p90=26 p99=26 p99.99=52 max=54860] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14788497 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=54912] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=54860] unknown_pct=0.00% (samples_above_p99=177606)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9054545 raw[p50=130 p90=182 p99=468 p99.99=1088 max=54912] adj[p50=78 p90=130 p99=416 p99.99=1040 max=54860] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9054545 raw[p50=130 p90=182 p99=468 p99.9=728 p99.99=1088 max=54912] adj[p50=78 p90=130 p99=416 p99.9=676 p99.99=1040 max=54860] unknown_pct=0.00% (samples_above_p99=5301)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14833515 raw[p50=52 p90=78 p99=78 p99.99=104 max=43550] adj[p50=0 p90=26 p99=26 p99.99=52 max=43498] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14833515 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=43550] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=43498] unknown_pct=0.00% (samples_above_p99=178079)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14780498 raw[p50=52 p90=78 p99=78 p99.99=104 max=42666] adj[p50=0 p90=26 p99=26 p99.99=52 max=42614] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14780498 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=42666] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=42614] unknown_pct=0.00% (samples_above_p99=177634)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9038336 raw[p50=130 p90=182 p99=442 p99.99=962 max=48542] adj[p50=78 p90=130 p99=390 p99.99=910 max=48490] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9038336 raw[p50=130 p90=182 p99=442 p99.9=702 p99.99=962 max=48542] adj[p50=78 p90=130 p99=390 p99.9=650 p99.99=910 max=48490] unknown_pct=0.00% (samples_above_p99=7989)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14853727 raw[p50=52 p90=78 p99=78 p99.99=104 max=50882] adj[p50=0 p90=26 p99=26 p99.99=52 max=50830] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14853727 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=50882] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=50830] unknown_pct=0.00% (samples_above_p99=177862)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14795285 raw[p50=52 p90=78 p99=78 p99.99=104 max=33176] adj[p50=0 p90=26 p99=26 p99.99=52 max=33124] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14795285 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=33176] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=33124] unknown_pct=0.00% (samples_above_p99=177876)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9072640 raw[p50=130 p90=182 p99=442 p99.99=910 max=58656] adj[p50=78 p90=130 p99=390 p99.99=858 max=58604] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9072640 raw[p50=130 p90=182 p99=442 p99.9=676 p99.99=910 max=58656] adj[p50=78 p90=130 p99=390 p99.9=624 p99.99=858 max=58604] unknown_pct=0.00% (samples_above_p99=7020)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14853360 raw[p50=52 p90=78 p99=78 p99.99=104 max=45786] adj[p50=0 p90=26 p99=26 p99.99=52 max=45734] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14853360 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=45786] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=45734] unknown_pct=0.00% (samples_above_p99=178097)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14784973 raw[p50=52 p90=78 p99=78 p99.99=78 max=40378] adj[p50=0 p90=26 p99=26 p99.99=26 max=40326] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14784973 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=78 max=40378] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=26 max=40326] unknown_pct=0.00% (samples_above_p99=177787)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9056313 raw[p50=130 p90=182 p99=442 p99.99=936 max=74802] adj[p50=78 p90=130 p99=390 p99.99=884 max=74750] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9056313 raw[p50=130 p90=182 p99=442 p99.9=676 p99.99=936 max=74802] adj[p50=78 p90=130 p99=390 p99.9=624 p99.99=884 max=74750] unknown_pct=0.00% (samples_above_p99=7610)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14824905 raw[p50=52 p90=78 p99=78 p99.99=104 max=59722] adj[p50=0 p90=26 p99=26 p99.99=52 max=59670] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14824905 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=59722] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=59670] unknown_pct=0.00% (samples_above_p99=177655)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14752974 raw[p50=52 p90=78 p99=78 p99.99=104 max=44044] adj[p50=0 p90=26 p99=26 p99.99=52 max=43992] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14752974 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=44044] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=43992] unknown_pct=0.00% (samples_above_p99=178234)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9066824 raw[p50=130 p90=182 p99=442 p99.99=988 max=59072] adj[p50=78 p90=130 p99=390 p99.99=936 max=59020] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9066824 raw[p50=130 p90=182 p99=442 p99.9=650 p99.99=988 max=59072] adj[p50=78 p90=130 p99=390 p99.9=598 p99.99=936 max=59020] unknown_pct=0.00% (samples_above_p99=6403)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14834567 raw[p50=52 p90=78 p99=78 p99.99=104 max=54652] adj[p50=0 p90=26 p99=26 p99.99=52 max=54600] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14834567 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=54652] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=54600] unknown_pct=0.00% (samples_above_p99=177858)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14796744 raw[p50=52 p90=78 p99=78 p99.99=104 max=46566] adj[p50=0 p90=26 p99=26 p99.99=52 max=46514] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14796744 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=46566] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=46514] unknown_pct=0.00% (samples_above_p99=177910)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9021671 raw[p50=130 p90=182 p99=442 p99.99=1136 max=47944] adj[p50=78 p90=130 p99=390 p99.99=1088 max=47892] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9021671 raw[p50=130 p90=182 p99=442 p99.9=676 p99.99=1136 max=47944] adj[p50=78 p90=130 p99=390 p99.9=624 p99.99=1088 max=47892] unknown_pct=0.00% (samples_above_p99=7393)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14842991 raw[p50=52 p90=78 p99=78 p99.99=104 max=43186] adj[p50=0 p90=26 p99=26 p99.99=52 max=43134] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14842991 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=43186] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=43134] unknown_pct=0.00% (samples_above_p99=177823)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14785408 raw[p50=52 p90=78 p99=78 p99.99=104 max=37284] adj[p50=0 p90=26 p99=26 p99.99=52 max=37232] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14785408 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=37284] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=37232] unknown_pct=0.00% (samples_above_p99=177691)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9056499 raw[p50=130 p90=182 p99=442 p99.99=936 max=62712] adj[p50=78 p90=130 p99=390 p99.99=884 max=62660] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9056499 raw[p50=130 p90=182 p99=442 p99.9=650 p99.99=936 max=62712] adj[p50=78 p90=130 p99=390 p99.9=598 p99.99=884 max=62660] unknown_pct=0.00% (samples_above_p99=6937)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14826574 raw[p50=52 p90=78 p99=78 p99.99=104 max=57824] adj[p50=0 p90=26 p99=26 p99.99=52 max=57772] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14826574 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=57824] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=57772] unknown_pct=0.00% (samples_above_p99=177416)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14792345 raw[p50=52 p90=78 p99=78 p99.99=104 max=46124] adj[p50=0 p90=26 p99=26 p99.99=52 max=46072] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14792345 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=46124] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=46072] unknown_pct=0.00% (samples_above_p99=177907)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9024369 raw[p50=130 p90=182 p99=442 p99.99=988 max=48438] adj[p50=78 p90=130 p99=390 p99.99=936 max=48386] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9024369 raw[p50=130 p90=182 p99=442 p99.9=676 p99.99=988 max=48438] adj[p50=78 p90=130 p99=390 p99.9=624 p99.99=936 max=48386] unknown_pct=0.00% (samples_above_p99=7673)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14852825 raw[p50=52 p90=78 p99=78 p99.99=104 max=54652] adj[p50=0 p90=26 p99=26 p99.99=52 max=54600] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14852825 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=54652] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=54600] unknown_pct=0.00% (samples_above_p99=177389)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14739507 raw[p50=52 p90=78 p99=78 p99.99=104 max=60424] adj[p50=0 p90=26 p99=26 p99.99=52 max=60372] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14739507 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=60424] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=60372] unknown_pct=0.00% (samples_above_p99=179830)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9021079 raw[p50=130 p90=182 p99=442 p99.99=1014 max=46124] adj[p50=78 p90=130 p99=390 p99.99=962 max=46072] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9021079 raw[p50=130 p90=182 p99=442 p99.9=676 p99.99=1014 max=46124] adj[p50=78 p90=130 p99=390 p99.9=624 p99.99=962 max=46072] unknown_pct=0.00% (samples_above_p99=7871)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14853166 raw[p50=52 p90=78 p99=78 p99.99=104 max=57330] adj[p50=0 p90=26 p99=26 p99.99=52 max=57278] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14853166 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=57330] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=57278] unknown_pct=0.00% (samples_above_p99=177869)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14801450 raw[p50=52 p90=78 p99=78 p99.99=104 max=38454] adj[p50=0 p90=26 p99=26 p99.99=52 max=38402] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14801450 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=38454] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=38402] unknown_pct=0.00% (samples_above_p99=178006)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9030754 raw[p50=130 p90=182 p99=468 p99.99=1040 max=50388] adj[p50=78 p90=130 p99=416 p99.99=988 max=50336] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9030754 raw[p50=130 p90=182 p99=468 p99.9=728 p99.99=1040 max=50388] adj[p50=78 p90=130 p99=416 p99.9=676 p99.99=988 max=50336] unknown_pct=0.00% (samples_above_p99=5255)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14857185 raw[p50=52 p90=78 p99=78 p99.99=104 max=50050] adj[p50=0 p90=26 p99=26 p99.99=52 max=49998] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14857185 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=50050] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=49998] unknown_pct=0.00% (samples_above_p99=177658)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14761718 raw[p50=52 p90=78 p99=78 p99.99=104 max=47502] adj[p50=0 p90=26 p99=26 p99.99=52 max=47450] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14761718 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=47502] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=47450] unknown_pct=0.00% (samples_above_p99=177952)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=8930495 raw[p50=130 p90=182 p99=468 p99.99=962 max=81718] adj[p50=78 p90=130 p99=416 p99.99=910 max=81666] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=8930495 raw[p50=130 p90=182 p99=468 p99.9=702 p99.99=962 max=81718] adj[p50=78 p90=130 p99=416 p99.9=650 p99.99=910 max=81666] unknown_pct=0.00% (samples_above_p99=5490)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14863444 raw[p50=52 p90=78 p99=78 p99.99=104 max=50570] adj[p50=0 p90=26 p99=26 p99.99=52 max=50518] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14863444 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=50570] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=50518] unknown_pct=0.00% (samples_above_p99=177725)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14779068 raw[p50=52 p90=78 p99=78 p99.99=104 max=46306] adj[p50=0 p90=26 p99=26 p99.99=52 max=46254] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14779068 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=46306] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=46254] unknown_pct=0.00% (samples_above_p99=177998)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9021429 raw[p50=130 p90=182 p99=468 p99.99=962 max=123864] adj[p50=78 p90=130 p99=416 p99.99=910 max=123812] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9021429 raw[p50=130 p90=182 p99=468 p99.9=702 p99.99=962 max=123864] adj[p50=78 p90=130 p99=416 p99.9=650 p99.99=910 max=123812] unknown_pct=0.00% (samples_above_p99=5654)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14862116 raw[p50=52 p90=78 p99=78 p99.99=104 max=33852] adj[p50=0 p90=26 p99=26 p99.99=52 max=33800] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14862116 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=33852] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=33800] unknown_pct=0.00% (samples_above_p99=177933)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14804565 raw[p50=52 p90=78 p99=78 p99.99=104 max=64298] adj[p50=0 p90=26 p99=26 p99.99=52 max=64246] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14804565 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=64298] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=64246] unknown_pct=0.00% (samples_above_p99=177570)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=8542640 raw[p50=156 p90=182 p99=468 p99.99=988 max=62868] adj[p50=104 p90=130 p99=416 p99.99=936 max=62816] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=8542640 raw[p50=156 p90=182 p99=468 p99.9=702 p99.99=988 max=62868] adj[p50=104 p90=130 p99=416 p99.9=650 p99.99=936 max=62816] unknown_pct=0.00% (samples_above_p99=5585)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14828705 raw[p50=52 p90=78 p99=78 p99.99=104 max=124410] adj[p50=0 p90=26 p99=26 p99.99=52 max=124358] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14828705 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=124410] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=124358] unknown_pct=0.00% (samples_above_p99=177524)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14784887 raw[p50=52 p90=78 p99=78 p99.99=104 max=43550] adj[p50=0 p90=26 p99=26 p99.99=52 max=43498] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14784887 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=43550] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=43498] unknown_pct=0.00% (samples_above_p99=177742)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9032380 raw[p50=130 p90=182 p99=442 p99.99=988 max=54808] adj[p50=78 p90=130 p99=390 p99.99=936 max=54756] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9032380 raw[p50=130 p90=182 p99=442 p99.9=702 p99.99=988 max=54808] adj[p50=78 p90=130 p99=390 p99.9=650 p99.99=936 max=54756] unknown_pct=0.00% (samples_above_p99=7760)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14827486 raw[p50=52 p90=78 p99=78 p99.99=104 max=29120] adj[p50=0 p90=26 p99=26 p99.99=52 max=29068] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14827486 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=29120] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=29068] unknown_pct=0.00% (samples_above_p99=177824)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14776180 raw[p50=52 p90=78 p99=78 p99.99=104 max=44044] adj[p50=0 p90=26 p99=26 p99.99=52 max=43992] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14776180 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=44044] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=43992] unknown_pct=0.00% (samples_above_p99=177872)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9013439 raw[p50=130 p90=182 p99=442 p99.99=1014 max=69290] adj[p50=78 p90=130 p99=390 p99.99=962 max=69238] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9013439 raw[p50=130 p90=182 p99=442 p99.9=676 p99.99=1014 max=69290] adj[p50=78 p90=130 p99=390 p99.9=624 p99.99=962 max=69238] unknown_pct=0.00% (samples_above_p99=7741)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14857570 raw[p50=52 p90=78 p99=78 p99.99=104 max=79482] adj[p50=0 p90=26 p99=26 p99.99=52 max=79430] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14857570 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=79482] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=79430] unknown_pct=0.00% (samples_above_p99=177810)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14790766 raw[p50=52 p90=78 p99=78 p99.99=104 max=32812] adj[p50=0 p90=26 p99=26 p99.99=52 max=32760] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14790766 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=32812] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=32760] unknown_pct=0.00% (samples_above_p99=177705)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9013536 raw[p50=130 p90=182 p99=442 p99.99=1014 max=48282] adj[p50=78 p90=130 p99=390 p99.99=962 max=48230] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9013536 raw[p50=130 p90=182 p99=442 p99.9=676 p99.99=1014 max=48282] adj[p50=78 p90=130 p99=390 p99.9=624 p99.99=962 max=48230] unknown_pct=0.00% (samples_above_p99=7697)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14866219 raw[p50=52 p90=78 p99=78 p99.99=104 max=50804] adj[p50=0 p90=26 p99=26 p99.99=52 max=50752] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14866219 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=50804] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=50752] unknown_pct=0.00% (samples_above_p99=177577)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14795848 raw[p50=52 p90=78 p99=78 p99.99=104 max=44590] adj[p50=0 p90=26 p99=26 p99.99=52 max=44538] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14795848 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=44590] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=44538] unknown_pct=0.00% (samples_above_p99=177849)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9061268 raw[p50=130 p90=182 p99=442 p99.99=1014 max=44798] adj[p50=78 p90=130 p99=390 p99.99=962 max=44746] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9061268 raw[p50=130 p90=182 p99=442 p99.9=676 p99.99=1014 max=44798] adj[p50=78 p90=130 p99=390 p99.9=624 p99.99=962 max=44746] unknown_pct=0.00% (samples_above_p99=7360)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14860986 raw[p50=52 p90=78 p99=78 p99.99=104 max=42094] adj[p50=0 p90=26 p99=26 p99.99=52 max=42042] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14860986 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=42094] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=42042] unknown_pct=0.00% (samples_above_p99=178081)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14808990 raw[p50=52 p90=78 p99=78 p99.99=104 max=29744] adj[p50=0 p90=26 p99=26 p99.99=52 max=29692] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14808990 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=29744] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=29692] unknown_pct=0.00% (samples_above_p99=177627)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9040518 raw[p50=130 p90=182 p99=442 p99.99=988 max=47736] adj[p50=78 p90=130 p99=390 p99.99=936 max=47684] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9040518 raw[p50=130 p90=182 p99=442 p99.9=650 p99.99=988 max=47736] adj[p50=78 p90=130 p99=390 p99.9=598 p99.99=936 max=47684] unknown_pct=0.00% (samples_above_p99=7230)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14858995 raw[p50=52 p90=78 p99=78 p99.99=104 max=42692] adj[p50=0 p90=26 p99=26 p99.99=52 max=42640] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14858995 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=42692] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=42640] unknown_pct=0.00% (samples_above_p99=178038)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14768565 raw[p50=52 p90=78 p99=78 p99.99=104 max=39208] adj[p50=0 p90=26 p99=26 p99.99=52 max=39156] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14768565 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=39208] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=39156] unknown_pct=0.00% (samples_above_p99=177480)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9030048 raw[p50=130 p90=182 p99=442 p99.99=1014 max=54262] adj[p50=78 p90=130 p99=390 p99.99=962 max=54210] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9030048 raw[p50=130 p90=182 p99=442 p99.9=702 p99.99=1014 max=54262] adj[p50=78 p90=130 p99=390 p99.9=650 p99.99=962 max=54210] unknown_pct=0.00% (samples_above_p99=7705)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=14848326 raw[p50=52 p90=78 p99=78 p99.99=104 max=57252] adj[p50=0 p90=26 p99=26 p99.99=52 max=57200] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=empty rate=14848326 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=57252] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=57200] unknown_pct=0.00% (samples_above_p99=178246)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=14804615 raw[p50=52 p90=78 p99=78 p99.99=104 max=50700] adj[p50=0 p90=26 p99=26 p99.99=52 max=50648] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=loop rate=14804615 raw[p50=52 p90=78 p99=78 p99.9=78 p99.99=104 max=50700] adj[p50=0 p90=26 p99=26 p99.9=26 p99.99=52 max=50648] unknown_pct=0.00% (samples_above_p99=177465)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=9020177 raw[p50=130 p90=182 p99=468 p99.99=1014 max=42770] adj[p50=78 p90=130 p99=416 p99.99=962 max=42718] allocs=0 freq=2596.14MHz run=1
+T1_PHASE2 arm=cold rate=9020177 raw[p50=130 p90=182 p99=468 p99.9=702 p99.99=1014 max=42770] adj[p50=78 p90=130 p99=416 p99.9=650 p99.99=962 max=42718] unknown_pct=0.00% (samples_above_p99=5069)
+TARGET1_PHASE_A empty_p50=52 cyc (spread=0 cyc) loop_p50=52 cyc (spread=0 cyc) full_p50=130 cyc (spread=26 cyc) loop_cost=0 cyc work_residual=78 cyc VERDICT=PASS
+=== 7. DOSE-RESPONSE VALIDATION SWEEP (Law A-1d) ===
+DOSE_RESPONSE_POINT K=0 p50=52 cyc
+DOSE_RESPONSE_POINT K=10 p50=78 cyc
+DOSE_RESPONSE_POINT K=20 p50=78 cyc
+DOSE_RESPONSE_POINT K=50 p50=78 cyc
+DOSE_RESPONSE_POINT K=100 p50=104 cyc
+DOSE_RESPONSE_VERDICT K0=52 K10=78 K20=78 K50=78 K100=104 slope=0.520 cyc/unit VERDICT=PASS
+=== 7b. LAW B-3b (i) SAMPLING BIAS PROBE (1-IN-4 DENSE vs 1-IN-256 SPARSE) ===
+BIAS_PROBE dense_mean=102.55 cyc sparse_mean=98.38 cyc bias=4.07% VERDICT=FAIL
+=== 7c. LAW B-3b (ii) INTER-BRACKET GAP PROBE ===
+GAP_PROBE sampled_intervals=1974 total_period_cyc=34714498 sparse_period_est=68.69 cyc
+=== 8. PHASE B-REDO: STRICT 8-ARM STAGE-ECTOMY DECOMPOSITION (20 RUNS EACH) ===
+RUNNER_IDENTITY cpu="AMD EPYC 9V74 80-Core Processor" freq_mhz=2596.14
+STAGE_ECTOMY_RATES CONFIG_TAG="clean_replay" sampling="none" r0_hash=22.45M r0_fast=39.63M r0_disp=135.38M r1_count=131.78M r2_noproof=135.60M r3_noseq=721.16M r4_noitch=699.87M r5_noblock=1439.14M r6_poll=1498.71M
+STAGE_ECTOMY_CYCLES CONFIG_TAG="clean_replay" c0=115.63 c0_fast=65.51 c0_disp=19.18 c1=19.70 c2=19.15 c3=3.60 c4=3.71 c5=1.80 c6=1.73
+PR2_PROD_VERDICT rate=39628620 c0_fast=65.51 cyc fast_hash=46.34 cyc -> p50 < 60: FAIL
+H10_SINK_SPLIT total_sink=95.93 cyc fnv_math=96.46 cyc (100.5%) sink_dispatch=0.00 cyc (0.0%) H10_VERDICT=REFUTED
+STAGE_ECTOMY_DECOMPOSITION delta_hash_total=95.93 (fnv=96.46, disp=0.00) delta_proof=0.56 (< 1.00 cyc bounded) delta_seq=15.55 delta_itch=0.00 (< 1.00 cyc bounded) delta_block=1.91 delta_header=0.07 poll_base=1.73
+RECONCILIATION_COMPOSITE rate_total_c0=115.63 cyc bracket_mean=118.90 cyc sparse_period_est=68.69 cyc diff_rate_bracket=2.83% diff_bracket_gap=42.23% composite_residual=42.23% VERDICT=FAIL
+=== 9. H9 REPETITION OVERHEAD SWEEP ===
+H9_POINT limit=10000 msgs rate=14.92M msg/s cyc_msg=173.99
+H9_POINT limit=50000 msgs rate=20.87M msg/s cyc_msg=124.39
+H9_POINT limit=250000 msgs rate=21.38M msg/s cyc_msg=121.45
+H9_POINT limit=505849 msgs rate=20.39M msg/s cyc_msg=127.33

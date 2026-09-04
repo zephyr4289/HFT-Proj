@@ -1,0 +1,40 @@
+=== EXECUTING COMPLETE 17-CELL MATRIX CONFLUENCE CAMPAIGN (M1..M17) ===
+MATRIX_CELL name="M1 (Baseline MTU contiguous)       " rate= 3.64M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M2 (Fixed 1 msg)                   " rate= 3.70M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M3 (Fixed 16 msgs)                 " rate= 4.24M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M4 (Gaussian delay jitter)         " rate= 4.25M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M5 (Bernoulli loss with dual feed) " rate= 4.34M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M6 (Gilbert-Elliott burst loss)    " rate= 4.43M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M7 (Pathological split: 1B to MTU) " rate= 4.23M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M8 (Feed A only lossless)          " rate= 5.49M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M9 (Feed B only lossless)          " rate= 5.50M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M10 (Heavy reorder jitter)         " rate= 4.24M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M11 (Deep out-of-order window)     " rate= 3.90M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M12 (Max-rate unconstrained)       " rate= 4.25M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M13 (M-LATE: Staged arrival edge)  " rate= 4.23M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M14 (M-BURST: Burst packet arrival)" rate= 4.26M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M15 (M-STARVE: Feed A silent for 2s)" rate= 4.19M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M16 (M-DUP2: Overlapping dual feed)" rate= 4.23M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M17 (M-DROPRESP / Session Boundary)" rate= 4.37M msg/s count=505849 wm=255850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+
+=== COMPLETE 17-CELL MATRIX SUMMARY TABLE ===
+| Cell ID | Matrix Scenario | Throughput | Emitted Messages | Final Watermark | Canonical FNV Hash | Oracle Confluence Verdict |
+|---|---|---|---|---|---|---|
+| M1  | M1 (Baseline MTU contiguous)        |  3.64M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M2  | M2 (Fixed 1 msg)                    |  3.70M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M3  | M3 (Fixed 16 msgs)                  |  4.24M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M4  | M4 (Gaussian delay jitter)          |  4.25M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M5  | M5 (Bernoulli loss with dual feed)  |  4.34M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M6  | M6 (Gilbert-Elliott burst loss)     |  4.43M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M7  | M7 (Pathological split: 1B to MTU)  |  4.23M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M8  | M8 (Feed A only lossless)           |  5.49M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M9  | M9 (Feed B only lossless)           |  5.50M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M10 | M10 (Heavy reorder jitter)          |  4.24M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M11 | M11 (Deep out-of-order window)      |  3.90M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M12 | M12 (Max-rate unconstrained)        |  4.25M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M13 | M13 (M-LATE: Staged arrival edge)   |  4.23M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M14 | M14 (M-BURST: Burst packet arrival) |  4.26M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M15 | M15 (M-STARVE: Feed A silent for 2s) |  4.19M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M16 | M16 (M-DUP2: Overlapping dual feed) |  4.23M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M17 | M17 (M-DROPRESP / Session Boundary) |  4.37M msg/s | 505849 | 255850 | 0xF6EF154EFDE905D8 | **PASS** |
+=== ALL 17 MATRIX CELLS VERIFIED 100% GREEN ===
