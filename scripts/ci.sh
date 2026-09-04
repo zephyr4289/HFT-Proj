@@ -28,6 +28,35 @@ else
   export HFT_TASKSET=""
 fi
 
+# P10 constr1.1 §6: CPU isolation + performance governor (best-effort).
+# GH guests may deny cgroup creation or cpufreq writes — every step is guarded
+# and falls back silently, so this can never redden the build. When the cgroup
+# path succeeds, bench commands run inside it (cpuset 2-3) pinned to cpu 2.
+export HFT_CGEXEC=""
+if command -v sudo >/dev/null 2>&1; then
+  for gov in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+    echo performance | sudo tee "$gov" >/dev/null 2>&1 || true
+  done
+  echo "GOVERNOR: $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>&1 || echo unavailable)"
+  if ! command -v cgcreate >/dev/null 2>&1; then
+    sudo apt-get install -y -qq cgroup-tools >/dev/null 2>&1 || true
+  fi
+  if sudo cgcreate -g cpu:/benchmark 2>/dev/null \
+    && sudo cgset -r cpu.cpus=2-3 benchmark 2>/dev/null \
+    && sudo cgset -r cpu.mems=0 benchmark 2>/dev/null \
+    && sudo cgexec -g cpu:benchmark true 2>/dev/null; then
+    echo "CGROUP: isolated cpuset 2-3 for benchmarks"
+    export HFT_CGEXEC="sudo cgexec -g cpu:benchmark"
+    export HFT_TASKSET="taskset -c 2"
+  else
+    echo "CGROUP: unavailable (taskset-only fallback)"
+  fi
+  # Thermal-throttle evidence (informational only, never fails).
+  grep -r . /sys/devices/system/cpu/cpu*/thermal_throttle/ 2>/dev/null | head -n 5 || echo "THROTTLE: counters unavailable"
+else
+  echo "CGROUP/GOVERNOR: no sudo (unpinned fallback)"
+fi
+
 LOGDIR="${RUNNER_TEMP:-/tmp}/ci-logs"
 mkdir -p "$LOGDIR"
 
@@ -72,8 +101,8 @@ cargo run --release -p nf-testkit --bin venue -- --sample data/tests/sample-mini
 
 echo "=== 11. Benchmark & G12-T1 Tail Attribution Study ==="
 # P5 warmup: single cold-arm run discards page-fault + freq-ramp noise (H1/H3), ~seconds.
-cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --runs 1 --arm cold > /dev/null 2>&1 || true
-$HFT_TASKSET cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --runs 5 --study | tee /tmp/bench.txt
+$HFT_CGEXEC $HFT_TASKSET cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --runs 1 --arm cold > /dev/null 2>&1 || true
+$HFT_CGEXEC $HFT_TASKSET cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --runs 5 --study | tee /tmp/bench.txt
 grep -q "STUDY_REPORT written to" /tmp/bench.txt
 grep -q "allocs=0" /tmp/bench.txt
 grep -q "PR2_PROD_VERDICT" /tmp/bench.txt
@@ -115,7 +144,7 @@ else
   tail -n 20 /tmp/musl_build.log || true
   echo "MUSL_BUILD_FAILED fallback gnu" > /tmp/musl_build.log
 fi
-$HFT_TASKSET "$HFT_BIN" --sample data/tests/sample-mini.itch --runs 30 --warmup 5 --output-format json | tee /tmp/bench_results.json
+$HFT_CGEXEC $HFT_TASKSET "$HFT_BIN" --sample data/tests/sample-mini.itch --runs 30 --warmup 5 --output-format json | tee /tmp/bench_results.json
 grep -q "median_cycles" /tmp/bench_results.json
 python3 - <<'PYEOF'
 import json, sys
