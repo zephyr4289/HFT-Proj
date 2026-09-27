@@ -87,6 +87,12 @@ pub struct ReplayTransport {
     batch_event_len: usize,
     session: [u8; 10],
     clock_clamp: Option<u64>,
+    /// R6: when false, poll() skips the frame-BODY prefetch (workers read
+    /// bodies on their own cores and issue their own head-start prefetch —
+    /// main-side body prefetch is pure overhead in fabric mode). The block
+    /// TRIPLE prefetch stays on: the main-thread ingest reads triples[0]
+    /// and triples[n-1] of every frame. Not semantically observable.
+    body_prefetch: bool,
 }
 
 impl ReplayTransport {
@@ -255,7 +261,15 @@ impl ReplayTransport {
             batch_event_len: 0,
             session,
             clock_clamp: None,
+            body_prefetch: true,
         }
+    }
+
+    /// R6: control main-side frame-body prefetching in poll() (see field
+    /// doc). Default ON (single-core TITAN behavior preserved bit-for-bit).
+    #[inline]
+    pub fn set_body_prefetch(&mut self, on: bool) {
+        self.body_prefetch = on;
     }
 
     #[inline]
@@ -337,6 +351,9 @@ impl ReplayTransport {
             // of duplicate frames the sequencer will never read. With bodies
             // at ~12 lines each, warming 4 events ahead covers L3/DRAM latency
             // at streaming cost — turning latency stalls into bandwidth.
+            // R6: body prefetch gated (workers prefetch their own bodies in
+            // fabric mode); triple prefetch stays (main-thread ingest reads
+            // triples[0]/triples[n-1] per frame).
             #[cfg(target_arch = "x86_64")]
             for k in 1..=4usize {
                 let ahead = self.event_idx + k - 1;
@@ -348,10 +365,12 @@ impl ReplayTransport {
                         // pushed only for rendered frames); prefetcht0 accepts
                         // any readable address and faults never.
                         unsafe {
-                            std::arch::x86_64::_mm_prefetch(
-                                self.frames.as_ptr().add(base) as *const i8,
-                                std::arch::x86_64::_MM_HINT_T0,
-                            );
+                            if self.body_prefetch {
+                                std::arch::x86_64::_mm_prefetch(
+                                    self.frames.as_ptr().add(base) as *const i8,
+                                    std::arch::x86_64::_MM_HINT_T0,
+                                );
+                            }
                             if mk.blk_count > 0 {
                                 std::arch::x86_64::_mm_prefetch(
                                     self.triples.as_ptr()
