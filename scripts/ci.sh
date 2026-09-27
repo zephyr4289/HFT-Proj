@@ -81,6 +81,22 @@ grep -q "PR2_PROD_VERDICT" /tmp/bench.txt
 grep -q "PR1_TITAN_VERDICT.*-> PASS" /tmp/bench.txt
 grep -q "PR1_TITAN_SUSTAINED_VERDICT.*-> PASS" /tmp/bench.txt
 
+echo "=== 11b. R6: PR-1 HYDRA Bit-Exact Multi-Core Span Conformance (UNPINNED) ==="
+# R6: the HYDRA fabric spans the runner's vCPUs — MUST run unpinned (a
+# single-core taskset would collapse it to inline mode). Warmup first
+# (thread spawn + page warm + scheduler settling), then the gate arms.
+# The arm itself asserts, on EVERY run: (a) hydra == sequential
+# SpanConformanceSink bit parity, (b) measured == reference pass,
+# (c) ALLOC_DELTA == 0. Gates-as-Code: PR1_HYDRA_MIN_MSG_PER_SEC (gates.rs)
+# is the single threshold source — see docs/20-hydra.md for the topology
+# guidance (4-vCPU runner; adjust the constant if the pool's silicon differs).
+cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --hydra-only --runs 1 > /dev/null 2>&1 || true
+cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --hydra-only --runs 7 | tee /tmp/bench_hydra.txt
+grep -q "HYDRA_BITPARITY.*-> BIT-EXACT" /tmp/bench_hydra.txt
+grep -q "allocs=0" /tmp/bench_hydra.txt
+grep -q "PR1_HYDRA_VERDICT.*-> PASS" /tmp/bench_hydra.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT.*-> PASS" /tmp/bench_hydra.txt
+
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D8) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)
