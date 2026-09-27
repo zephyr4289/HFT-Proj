@@ -18,7 +18,7 @@ use nf_protocol::gates::{
 };
 use nf_protocol::moldudp64;
 use nf_testkit::sched::{build_schedule, Packetize, ReplayConfig};
-use nf_testkit::sink::{ConformanceSink, FastConformanceSink};
+use nf_testkit::sink::{ConformanceSink, FastConformanceSink, SpanConformanceSink};
 use nf_transport::replay::ReplayTransport;
 use nf_transport::{FrameBatch, Transport};
 use std::env;
@@ -106,6 +106,14 @@ impl<'a, S: Sink> Sink for InstrumentedSink<'a, S> {
 /// reset() — the 8bf88d0 hft_bench precedent: fresh 15MB blob per run meant
 /// mmap/munmap + first-touch page-fault churn INSIDE the window. Golden-hash
 /// conformance stays anchored in the replay binary (classic path, unchanged).
+///
+/// R4: the arm consumes SpanConformanceSink — span-batched emission (R3) with
+/// EVERY emitted byte read in-window and CRC32C-checked through 8 interleaved
+/// hardware lanes. A reference pass OUTSIDE the measurement window pins the
+/// expected (count, span-hash, msg-hash); every measured run must reproduce
+/// them exactly (bit-determinism check — catches any corruption or
+/// nondeterministic emission). The PR1_TITAN_VERDICT line evaluates the
+/// 100M msg/s target via gates.rs (Gates-as-Code, F-22).
 fn run_uninstrumented_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibration) -> u64 {
     let cfg = ReplayConfig {
         msgs_per_packet: Packetize::MtuBound(1400),
@@ -119,10 +127,32 @@ fn run_uninstrumented_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::Cloc
     // identical session — frames byte-identical, pages faulted and warm per pass.
     let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
 
+    // R4: untimed reference pass pins the deterministic expected values.
+    let (ref_count, ref_hash, ref_msg_hash) = {
+        transport.reset(sess);
+        let mut seq = Sequencer::new();
+        let mut sink = SpanConformanceSink::new();
+        let mut batch = FrameBatch::new();
+        while transport.poll(&mut batch) > 0 {
+            let now = transport.now_ns();
+            for (pos, frame) in batch.frames().iter().enumerate() {
+                seq.ingest_auto(
+                    frame.bytes(),
+                    frame.feed,
+                    now,
+                    &mut sink,
+                    transport.batch_blocks(pos),
+                    transport.batch_memo(pos),
+                );
+            }
+        }
+        (sink.count, sink.hash, sink.msg_hash)
+    };
+
     for run_id in 1..=runs {
         transport.reset(sess);
         let mut seq = Sequencer::new();
-        let mut sink = FastConformanceSink::new();
+        let mut sink = SpanConformanceSink::new();
         let mut batch = FrameBatch::new();
 
         let (a1, d1) = GLOBAL.snapshot();
@@ -147,7 +177,11 @@ fn run_uninstrumented_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::Cloc
         let (a2, d2) = GLOBAL.snapshot();
         let alloc_delta = (a2 - a1) + (d2 - d1);
 
-        let msg_count = sink.count();
+        let msg_count = sink.count;
+        // R4: bit-determinism + full-verification asserts (outside the window).
+        assert_eq!(msg_count, ref_count, "span conformance count divergence");
+        assert_eq!(sink.hash, ref_hash, "span conformance hash divergence");
+        assert_eq!(sink.msg_hash, ref_msg_hash, "msg-path hash divergence");
         let rate = if dt_ns > 0 {
             ((msg_count as f64) / (dt_ns as f64) * 1e9) as u64
         } else {
@@ -165,6 +199,13 @@ fn run_uninstrumented_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::Cloc
     rates.sort();
     let median = rates[runs / 2];
     println!("BENCH_MEDIAN mode=replay-burst-uninstrumented rate={}", median);
+    // R4: PR-1 TITAN machine verdict (gates.rs threshold, F-22 single source).
+    println!(
+        "PR1_TITAN_VERDICT rate={} target={} -> {} (span conformance: every emitted byte CRC32C-checked in-window, 8 lanes)",
+        median,
+        nf_protocol::gates::PR1_TITAN_MIN_MSG_PER_SEC,
+        nf_protocol::gates::evaluate_pr1_titan(median).as_str()
+    );
     median
 }
 
@@ -182,7 +223,7 @@ fn run_sustained_loop_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
     let initial_sess = *b"SUSTAIN000";
     let mut transport = ReplayTransport::new(gt, sched, initial_sess);
     let mut seq = Sequencer::new();
-    let mut sink = FastConformanceSink::new();
+    let mut sink = SpanConformanceSink::new();
     let mut batch = FrameBatch::new();
 
     let (a1, d1) = GLOBAL.snapshot();
@@ -196,7 +237,7 @@ fn run_sustained_loop_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
 
         transport.reset(sess);
         *seq = Sequencer::new_unboxed();
-        sink = FastConformanceSink::new();
+        sink = SpanConformanceSink::new();
 
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
@@ -231,6 +272,14 @@ fn run_sustained_loop_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
         start.elapsed().as_secs_f64(),
         sustained_rate,
         alloc_delta
+    );
+    // R4: PR-1 TITAN verdict on the sustained arm as well (>= 5s continuous,
+    // fresh sessions, full span conformance every pass).
+    println!(
+        "PR1_TITAN_SUSTAINED_VERDICT rate={} target={} -> {}",
+        sustained_rate,
+        nf_protocol::gates::PR1_TITAN_MIN_MSG_PER_SEC,
+        nf_protocol::gates::evaluate_pr1_titan(sustained_rate).as_str()
     );
     assert_eq!(alloc_delta, 0, "ALLOC_DELTA must be 0 in sustained loop");
     sustained_rate

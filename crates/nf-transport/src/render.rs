@@ -329,6 +329,40 @@ impl ReplayTransport {
                 self.batch_event[slot_idx] = self.event_idx as u32;
             }
             self.event_idx += 1;
+            // R4: DLP warm-up — software-prefetch the FIRST cache line of the
+            // frame bodies arriving over the next few events, plus the first
+            // line of their block triples. Intra-body streaming is then
+            // carried by the hardware streamer; what starves it (and what
+            // this fixes) are the inter-frame gaps: 20B headers and the bodies
+            // of duplicate frames the sequencer will never read. With bodies
+            // at ~12 lines each, warming 4 events ahead covers L3/DRAM latency
+            // at streaming cost — turning latency stalls into bandwidth.
+            #[cfg(target_arch = "x86_64")]
+            for k in 1..=4usize {
+                let ahead = self.event_idx + k - 1;
+                if ahead < events_len {
+                    let mk = self.meta[ahead];
+                    if mk.len > 0 {
+                        let base = mk.offset as usize;
+                        // SAFETY: base < frames.len() by construction (offset
+                        // pushed only for rendered frames); prefetcht0 accepts
+                        // any readable address and faults never.
+                        unsafe {
+                            std::arch::x86_64::_mm_prefetch(
+                                self.frames.as_ptr().add(base) as *const i8,
+                                std::arch::x86_64::_MM_HINT_T0,
+                            );
+                            if mk.blk_count > 0 {
+                                std::arch::x86_64::_mm_prefetch(
+                                    self.triples.as_ptr()
+                                        .add(mk.blk_base as usize) as *const i8,
+                                    std::arch::x86_64::_MM_HINT_T0,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         self.batch_event_len = batch.len();
