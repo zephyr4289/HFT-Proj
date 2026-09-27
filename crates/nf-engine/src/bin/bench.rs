@@ -98,6 +98,14 @@ impl<'a, S: Sink> Sink for InstrumentedSink<'a, S> {
 }
 
 /// PR-1 Single-Pass Burst Benchmark (Wall-clock only, zero TSC marks in inner loop)
+/// R1: harness modernization — (a) Q1 indexed ingest path (`ingest_auto` +
+/// `batch_blocks`, kills the in-window length-chain walk), (b) FastConformanceSink
+/// (CRC32C-SSE4.2, P1-proven on GH znver3) replacing the FNV-1a ConformanceSink whose
+/// serial imul chain doc 18/H10 measured at ~2.9 cyc/byte (the PR-1 arm was
+/// harness-hash-bound, not engine-bound), (c) ONE transport reused across runs with
+/// reset() — the 8bf88d0 hft_bench precedent: fresh 15MB blob per run meant
+/// mmap/munmap + first-touch page-fault churn INSIDE the window. Golden-hash
+/// conformance stays anchored in the replay binary (classic path, unchanged).
 fn run_uninstrumented_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibration) -> u64 {
     let cfg = ReplayConfig {
         msgs_per_packet: Packetize::MtuBound(1400),
@@ -107,11 +115,14 @@ fn run_uninstrumented_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::Cloc
     let sched = build_schedule(gt, &cfg);
     let sess = *b"BENCHSESS1";
     let mut rates = Vec::with_capacity(runs);
+    // R1: single pre-rendered transport; reset() only rewinds event_idx/clock with an
+    // identical session — frames byte-identical, pages faulted and warm per pass.
+    let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
 
     for run_id in 1..=runs {
-        let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
+        transport.reset(sess);
         let mut seq = Sequencer::new();
-        let mut sink = ConformanceSink::new();
+        let mut sink = FastConformanceSink::new();
         let mut batch = FrameBatch::new();
 
         let (a1, d1) = GLOBAL.snapshot();
@@ -119,8 +130,14 @@ fn run_uninstrumented_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::Cloc
 
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for frame in batch.frames() {
-                seq.ingest(frame.bytes(), frame.feed, now, &mut sink);
+            for (pos, frame) in batch.frames().iter().enumerate() {
+                seq.ingest_auto(
+                    frame.bytes(),
+                    frame.feed,
+                    now,
+                    &mut sink,
+                    transport.batch_blocks(pos),
+                );
             }
         }
 
@@ -164,7 +181,7 @@ fn run_sustained_loop_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
     let initial_sess = *b"SUSTAIN000";
     let mut transport = ReplayTransport::new(gt, sched, initial_sess);
     let mut seq = Sequencer::new();
-    let mut sink = ConformanceSink::new();
+    let mut sink = FastConformanceSink::new();
     let mut batch = FrameBatch::new();
 
     let (a1, d1) = GLOBAL.snapshot();
@@ -178,12 +195,18 @@ fn run_sustained_loop_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
 
         transport.reset(sess);
         *seq = Sequencer::new_unboxed();
-        sink = ConformanceSink::new();
+        sink = FastConformanceSink::new();
 
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for frame in batch.frames() {
-                seq.ingest(frame.bytes(), frame.feed, now, &mut sink);
+            for (pos, frame) in batch.frames().iter().enumerate() {
+                seq.ingest_auto(
+                    frame.bytes(),
+                    frame.feed,
+                    now,
+                    &mut sink,
+                    transport.batch_blocks(pos),
+                );
             }
         }
         total_msgs += 505_849;
