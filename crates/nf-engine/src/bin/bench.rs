@@ -137,6 +137,7 @@ fn run_uninstrumented_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::Cloc
                     now,
                     &mut sink,
                     transport.batch_blocks(pos),
+                    transport.batch_memo(pos),
                 );
             }
         }
@@ -206,6 +207,7 @@ fn run_sustained_loop_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
                     now,
                     &mut sink,
                     transport.batch_blocks(pos),
+                    transport.batch_memo(pos),
                 );
             }
         }
@@ -331,7 +333,7 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
             while transport.poll(&mut batch) > 0 {
                 let now = transport.now_ns();
                 for (pos, f) in batch.frames().iter().enumerate() {
-                    seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, transport.batch_blocks(pos));
+                    seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, transport.batch_blocks(pos), transport.batch_memo(pos));
                 }
             }
             let dt = read_monotonic_raw_ns().saturating_sub(t0);
@@ -349,7 +351,7 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
             while transport.poll(&mut batch) > 0 {
                 let now = transport.now_ns();
                 for (pos, f) in batch.frames().iter().enumerate() {
-                    seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, transport.batch_blocks(pos));
+                    seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, transport.batch_blocks(pos), transport.batch_memo(pos));
                 }
             }
             let dt = read_monotonic_raw_ns().saturating_sub(t0);
@@ -377,7 +379,7 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
             while transport.poll(&mut batch) > 0 {
                 let now = transport.now_ns();
                 for (pos, f) in batch.frames().iter().enumerate() {
-                    seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, transport.batch_blocks(pos));
+                    seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, transport.batch_blocks(pos), transport.batch_memo(pos));
                 }
             }
             let dt = read_monotonic_raw_ns().saturating_sub(t0);
@@ -404,7 +406,7 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
             while transport.poll(&mut batch) > 0 {
                 let now = transport.now_ns();
                 for (pos, f) in batch.frames().iter().enumerate() {
-                    seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, transport.batch_blocks(pos));
+                    seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, transport.batch_blocks(pos), transport.batch_memo(pos));
                 }
             }
             let dt = read_monotonic_raw_ns().saturating_sub(t0);
@@ -429,7 +431,7 @@ fn run_stage_ectomy_sweep(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockC
             while transport.poll(&mut batch) > 0 {
                 let now = transport.now_ns();
                 for (pos, f) in batch.frames().iter().enumerate() {
-                    seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, transport.batch_blocks(pos));
+                    seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, transport.batch_blocks(pos), transport.batch_memo(pos));
                 }
             }
             let dt = read_monotonic_raw_ns().saturating_sub(t0);

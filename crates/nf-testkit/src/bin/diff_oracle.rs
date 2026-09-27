@@ -409,6 +409,7 @@ fn run_indexed_path(
                 now,
                 &mut sink,
                 transport.batch_blocks(pos),
+                transport.batch_memo(pos),
             );
         }
     }
