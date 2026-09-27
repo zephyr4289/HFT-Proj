@@ -4,7 +4,9 @@
 
 use crate::sched_types::{ReplaySchedule, SchedEvent, SchedKind};
 use crate::{FeedId, FrameBatch, FrameView, Transport};
+use nf_protocol::itch5;
 use nf_protocol::moldudp64::{EOS_COUNT, HEADER_LEN, HEARTBEAT_COUNT};
+use nf_protocol::packet::FrameMemo;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Cursor {
@@ -46,6 +48,10 @@ pub const ARENA_SLOTS: usize = 256;
 /// `blk_base/blk_count` locate the frame's precomputed `(seq, start, end)`
 /// block triples in `triples` (Q1 indexed ingest — kills the serial length
 /// chain in-window; empty for HB/EOS/tombstones).
+/// `valid` (R2) is the frame's ITCH validation verdict memo: the EXACT leading
+/// prefix of blocks passing `itch5::validate`, computed once here from the
+/// immutable rendered bytes. Session patching never touches bodies, so the
+/// verdict survives reset(). Consumed via `batch_memo()`.
 #[derive(Debug, Clone, Copy)]
 struct FrameMeta {
     release_vt: u64,
@@ -55,6 +61,7 @@ struct FrameMeta {
     patch: bool,
     blk_base: u32,
     blk_count: u16,
+    valid: u16,
 }
 
 pub struct ReplayTransport {
@@ -132,7 +139,10 @@ impl ReplayTransport {
                     // Q1: index this frame's [len|msg] chain once (startup). The
                     // frame was just rendered valid, so the walk below only fails
                     // on internal inconsistency — then tombstone (never emit).
-                    let (blk_base, blk_count) = match ev.kind {
+                    // R2: while walking, memoize the EXACT leading prefix of blocks
+                    // passing ITCH validation — verdict of a pure function over
+                    // these immutable bytes, one-time, outside every window.
+                    let (blk_base, blk_count, valid_prefix) = match ev.kind {
                         SchedKind::Packet {
                             first_seq,
                             count,
@@ -143,6 +153,7 @@ impl ReplayTransport {
                             let mut seq = first_seq;
                             let mut n: u16 = 0;
                             let mut ok = true;
+                            let mut valid: u16 = 0;
                             for _ in 0..count {
                                 if scratch.len() < pos + 2 {
                                     ok = false;
@@ -158,6 +169,11 @@ impl ReplayTransport {
                                     break;
                                 }
                                 triples.push((seq, start as u32, end as u32));
+                                if valid == n
+                                    && itch5::validate(&scratch[start..end]).is_ok()
+                                {
+                                    valid += 1;
+                                }
                                 pos = end;
                                 seq = seq.wrapping_add(1);
                                 n += 1;
@@ -167,12 +183,14 @@ impl ReplayTransport {
                                 // partial triples and tombstone the frame.
                                 std::hint::cold_path();
                                 triples.truncate(base as usize);
-                                (0, 0)
+                                (0, 0, 0)
                             } else {
-                                (base, n)
+                                (base, n, valid)
                             }
                         }
-                        SchedKind::Heartbeat { .. } | SchedKind::EndOfSession { .. } => (0, 0),
+                        SchedKind::Heartbeat { .. } | SchedKind::EndOfSession { .. } => {
+                            (0, 0, 0)
+                        }
                     };
                     // A tombstoned-by-index frame must not be emitted: convert a
                     // (0,0) triple range on a NON-EMPTY Packet into a meta
@@ -194,6 +212,7 @@ impl ReplayTransport {
                             patch: false,
                             blk_base: 0,
                             blk_count: 0,
+                            valid: 0,
                         });
                     } else {
                         meta.push(FrameMeta {
@@ -204,6 +223,7 @@ impl ReplayTransport {
                             patch,
                             blk_base,
                             blk_count,
+                            valid: valid_prefix,
                         });
                     }
                 } else {
@@ -219,6 +239,7 @@ impl ReplayTransport {
                         patch: false,
                         blk_base: 0,
                         blk_count: 0,
+                        valid: 0,
                     });
                 }
             }
@@ -339,6 +360,39 @@ impl ReplayTransport {
         }
         &self.triples[base..end]
     }
+
+    /// R2: validation-verdict memo for the frame at batch position `batch_pos`
+    /// (positions from the most recent `poll()` on this transport). `None` for
+    /// HB/EOS/tombstone frames, OOB positions, and frames with no block index —
+    /// callers then run in-window validation (identical observables either way).
+    /// The verdict is computed at construction from these exact immutable bytes
+    /// (bodies untouched by session patch), so it holds for every reset().
+    #[inline(always)]
+    pub fn batch_memo(&self, batch_pos: usize) -> Option<FrameMemo> {
+        if batch_pos >= self.batch_event_len {
+            std::hint::cold_path();
+            return None;
+        }
+        let ev = self.batch_event[batch_pos] as usize;
+        if ev >= self.meta.len() {
+            std::hint::cold_path();
+            return None;
+        }
+        let m = &self.meta[ev];
+        if m.blk_count == 0 {
+            std::hint::cold_path();
+            return None;
+        }
+        let base = m.blk_base as usize;
+        let end = base + m.blk_count as usize;
+        if end > self.triples.len() {
+            std::hint::cold_path();
+            return None;
+        }
+        Some(FrameMemo {
+            valid_count: m.valid,
+        })
+    }
 }
 
 /// P3: always-inline — fuses session/header/payload copy into poll (saves call/frame).
@@ -418,5 +472,157 @@ impl Transport for ReplayTransport {
     #[inline(always)]
     fn now_ns(&self) -> u64 {
         self.virtual_clock
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::all)]
+mod tests {
+    use super::*;
+
+    /// Ground truth: [len|msg] chain of 12B System Event messages.
+    fn gt_with(count: u64) -> Vec<u8> {
+        #[allow(clippy::disallowed_types)]
+        let mut gt = Vec::new();
+        for i in 0..count {
+            let mut msg = [b'S', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b'O'];
+            msg[1..9].copy_from_slice(&(i + 1).to_be_bytes());
+            gt.extend_from_slice(&(msg.len() as u16).to_be_bytes());
+            gt.extend_from_slice(&msg);
+        }
+        gt
+    }
+
+    /// Ground truth whose 3rd message (index 2) has an unknown type byte.
+    fn gt_with_bad_third() -> Vec<u8> {
+        let mut gt = gt_with(5);
+        // skip 2 messages (2 * (2 + 12) bytes), then patch the type byte
+        let off = 2 * 14 + 2;
+        gt[off] = 0xFE;
+        gt
+    }
+
+    fn sched_packet(first_seq: u64, first_msg: u64, count: u16) -> ReplaySchedule {
+        ReplaySchedule {
+            events: vec![SchedEvent {
+                release_vt: 0,
+                feed: 0,
+                kind: SchedKind::Packet {
+                    first_seq,
+                    first_msg,
+                    count,
+                },
+            }],
+            session_split: None,
+        }
+    }
+
+    /// R2 verdict memo: all-valid frame memoizes valid_count == blk_count.
+    #[test]
+    fn t_r2_memo_all_valid() {
+        let gt = gt_with(5);
+        let sched = sched_packet(1, 0, 5);
+        let mut t = ReplayTransport::new(&gt, sched, *b"TESTSESS01");
+        let mut batch = FrameBatch::new();
+        assert_eq!(t.poll(&mut batch), 1);
+        let blocks = t.batch_blocks(0);
+        assert_eq!(blocks.len(), 5);
+        let memo = t.batch_memo(0).expect("memo present");
+        assert_eq!(memo.valid_count, 5);
+    }
+
+    /// R2 verdict memo: exact leading prefix — invalid 3rd message => 2.
+    #[test]
+    fn t_r2_memo_exact_prefix() {
+        let gt = gt_with_bad_third();
+        let sched = sched_packet(1, 0, 5);
+        let mut t = ReplayTransport::new(&gt, sched, *b"TESTSESS01");
+        let mut batch = FrameBatch::new();
+        assert_eq!(t.poll(&mut batch), 1);
+        let blocks = t.batch_blocks(0);
+        assert_eq!(blocks.len(), 5);
+        let memo = t.batch_memo(0).expect("memo present");
+        assert_eq!(memo.valid_count, 2);
+        // Cross-check the memo against in-window validation of the same bytes
+        // (delivered via the batch FrameView): blocks[0..2] valid, block 2 fails.
+        let frame = batch.frames()[0].bytes();
+        for b in &blocks[0..2] {
+            assert!(itch5::validate(&frame[b.1 as usize..b.2 as usize]).is_ok());
+        }
+        assert_eq!(
+            itch5::validate(&frame[blocks[2].1 as usize..blocks[2].2 as usize]),
+            Err(nf_protocol::itch5::ItchError::UnknownType { t: 0xFE })
+        );
+    }
+
+    /// R2: memo survives reset() with a patched session (bodies untouched).
+    #[test]
+    fn t_r2_memo_stable_across_reset() {
+        let gt = gt_with(4);
+        let sched = sched_packet(1, 0, 4);
+        let mut t = ReplayTransport::new(&gt, sched, *b"TESTSESS01");
+        let mut batch = FrameBatch::new();
+        assert_eq!(t.poll(&mut batch), 1);
+        let before = t.batch_memo(0).expect("memo present");
+        t.reset(*b"OTHERSESS1");
+        assert_eq!(t.poll(&mut batch), 1);
+        let after = t.batch_memo(0).expect("memo present");
+        assert_eq!(before, after);
+    }
+
+    /// R2: HB/EOS carry no memo (None) and no blocks.
+    #[test]
+    fn t_r2_memo_none_for_hb() {
+        let gt = gt_with(2);
+        let sched = ReplaySchedule {
+            events: vec![
+                SchedEvent {
+                    release_vt: 0,
+                    feed: 0,
+                    kind: SchedKind::Heartbeat { next_seq: 3 },
+                },
+                SchedEvent {
+                    release_vt: 1,
+                    feed: 0,
+                    kind: SchedKind::EndOfSession { next_seq: 3 },
+                },
+            ],
+            session_split: None,
+        };
+        let mut t = ReplayTransport::new(&gt, sched, *b"TESTSESS01");
+        let mut batch = FrameBatch::new();
+        assert_eq!(t.poll(&mut batch), 1); // HB
+        assert!(t.batch_memo(0).is_none());
+        assert_eq!(t.poll(&mut batch), 1); // EOS
+        assert!(t.batch_memo(0).is_none());
+    }
+
+    /// R2: OOB batch positions memoize None (defensive fallback).
+    #[test]
+    fn t_r2_memo_none_oob() {
+        let gt = gt_with(2);
+        let sched = sched_packet(1, 0, 2);
+        let mut t = ReplayTransport::new(&gt, sched, *b"TESTSESS01");
+        let mut batch = FrameBatch::new();
+        assert_eq!(t.poll(&mut batch), 1);
+        assert!(t.batch_memo(7).is_none());
+    }
+
+    /// R2 default Transport trait impl: batch_memo() is None.
+    struct NoIndexTransport;
+    impl Transport for NoIndexTransport {
+        fn poll(&mut self, _batch: &mut FrameBatch) -> usize {
+            0
+        }
+        fn now_ns(&self) -> u64 {
+            0
+        }
+    }
+
+    #[test]
+    fn t_r2_memo_default_trait_none() {
+        let t = NoIndexTransport;
+        assert!(t.batch_memo(0).is_none());
+        assert!(t.batch_blocks(0).is_empty());
     }
 }
