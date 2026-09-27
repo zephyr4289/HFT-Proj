@@ -208,6 +208,7 @@ fn run_engine<T: Transport>(
                 now,
                 &mut sink,
                 transport.batch_blocks(pos),
+                transport.batch_memo(pos),
             );
         }
 

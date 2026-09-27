@@ -3,6 +3,12 @@
 
 pub const PR1_MIN_SUSTAINED_MSG_PER_SEC: u64 = 10_000_000;
 
+// R4: PR-1 TITAN target — 100M msg/s wall-rate with full byte-level
+// conformance verification (SpanConformanceSink: every emitted byte read and
+// CRC32C-checked in-window). Gates-as-Code law (F-22): the threshold lives
+// here, consumed by bench verdict lines and CI JSON checks alike.
+pub const PR1_TITAN_MIN_MSG_PER_SEC: u64 = 100_000_000;
+
 // Strict Tier 3 Bare-Metal / Reference Target (doc 00)
 pub const PR2_TARGET_P50_CYCLES: u64 = 60;
 pub const PR2_TARGET_P99_CYCLES: u64 = 150;
@@ -33,6 +39,17 @@ impl GateVerdict {
 #[inline]
 pub fn evaluate_pr1(sustained_rate: u64) -> GateVerdict {
     if sustained_rate >= PR1_MIN_SUSTAINED_MSG_PER_SEC {
+        GateVerdict::Pass
+    } else {
+        GateVerdict::Fail
+    }
+}
+
+/// R4: PR-1 TITAN verdict — wall-rate with full byte-level span conformance
+/// verification must reach 100M msg/s (see PR1_TITAN_MIN_MSG_PER_SEC).
+#[inline]
+pub fn evaluate_pr1_titan(wall_rate_msg_per_sec: u64) -> GateVerdict {
+    if wall_rate_msg_per_sec >= PR1_TITAN_MIN_MSG_PER_SEC {
         GateVerdict::Pass
     } else {
         GateVerdict::Fail

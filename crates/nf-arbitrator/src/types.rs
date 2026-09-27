@@ -70,9 +70,50 @@ pub struct RecoveryIntent {
 }
 
 /// Confluence consumer sink. Single-threaded fold target.
+///
+/// R3 span protocol: a sink MAY opt into batched emission for contiguous
+/// runs. Within one data packet on the contiguous fast path, every per-message
+/// decision the sequencer makes is identical (same proof era `gen`, same
+/// session, strictly consecutive sequence numbers, all-validated bodies —
+/// see the R2 FrameMemo equivalence), so per-message emission
+/// `on_msg(p, s_i, m_i) for i in 0..n` is observationally equivalent to a
+/// single `on_span(p, s_0, n, body, blocks)` for sinks that can consume runs.
+/// Sinks that need per-message call semantics simply keep
+/// `wants_spans() == false` (the default) and observe bit-identical behavior.
 pub trait Sink {
     /// Invoked per contiguous message with valid proof.
     fn on_msg(&mut self, proof: &LiveFeedProof, seq: u64, msg: &[u8]);
     /// Invoked per control-plane event.
     fn on_event(&mut self, ev: &Event);
+    /// R3: opt into span (batched) emission for contiguous runs. Default false
+    /// — sinks keep exact per-message on_msg semantics. Monomorphized per
+    /// sink type, so the sequencer's gate on this folds to a compile-time
+    /// constant: zero cost for classic sinks.
+    #[inline(always)]
+    fn wants_spans(&self) -> bool {
+        false
+    }
+    /// R3: batched emission of a contiguous, all-validated run.
+    /// Contract (only called when `wants_spans()` returned true):
+    /// - messages `first_seq ..= first_seq + count - 1`, emitted in order,
+    ///   all under the same proof era `proof.gen()` (identical guarantee the
+    ///   per-message path provides for the same run);
+    /// - `body` = the exact bytes of those messages back-to-back, including
+    ///   their 2B big-endian length prefixes: message i starts at
+    ///   `body[blocks[i].1 - blocks[0].1]` with length `blocks[i].2 -
+    ///   blocks[i].1` (blocks are the frame's `(seq, start, end)` triples,
+    ///   absolute into the frame);
+    /// - `blocks[i].0 == first_seq + i` for i < count.
+    ///
+    /// Default impl is never invoked (gated on wants_spans()).
+    #[inline(always)]
+    fn on_span(
+        &mut self,
+        _proof: &LiveFeedProof,
+        _first_seq: u64,
+        _count: u16,
+        _body: &[u8],
+        _blocks: &[(u64, u32, u32)],
+    ) {
+    }
 }

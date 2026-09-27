@@ -10,6 +10,7 @@ pub mod types;
 pub mod window;
 
 pub use counters::{Counters, FeedCounters, ViolationCounters};
+pub use nf_protocol::packet::FrameMemo;
 pub use state::State;
 pub use types::{DeadReason, Event, FeedId, LiveFeedProof, RecoveryIntent, SequencerMutation, Sink};
 use window::{ARENA_SIZE, WINDOW_SLOTS};
@@ -376,6 +377,13 @@ impl Sequencer {
     /// indexed fast path; empty ⟹ full classic `ingest` (HB/EOS frames, live
     /// transports without an index, or defensive fallback — identical
     /// observables either way, so XDP and hand-built-frame callers are safe).
+    ///
+    /// R2: `memo` carries the transport's construction-time ITCH validation
+    /// verdict for this exact frame (exact leading-valid prefix; None = not
+    /// memoized — live transports). It is only ever used to SKIP work whose
+    /// outcome it already proves (per-message validate calls that would return
+    /// Ok), so behavior is bit-identical with and without the memo — the D9
+    /// differential oracle asserts exactly this every CI run.
     #[inline(always)]
     pub fn ingest_auto<S: Sink>(
         &mut self,
@@ -384,12 +392,13 @@ impl Sequencer {
         now_ns: u64,
         sink: &mut S,
         blocks: &[(u64, u32, u32)],
+        memo: Option<packet::FrameMemo>,
     ) {
         if blocks.is_empty() {
             std::hint::cold_path();
             self.ingest(frame, feed, now_ns, sink);
         } else {
-            self.ingest_indexed(frame, feed, now_ns, sink, blocks);
+            self.ingest_indexed(frame, feed, now_ns, sink, blocks, memo);
         }
     }
 
@@ -401,6 +410,12 @@ impl Sequencer {
     /// Behavior on valid data is bit-identical to `ingest` (proven by D9 +
     /// §7 replay hash every CI run). `#[inline(always)]` keeps the whole path
     /// fused into the caller's poll loop.
+    ///
+    /// R3: on the contiguous fast path, when the R2 memo proves every block
+    /// valid AND the sink opted into span emission, the per-message loop
+    /// collapses to closed-form arithmetic + one `on_span` call (see the Sink
+    /// trait doc for the observational-equivalence argument). Sinks that do
+    /// not opt in keep the exact per-message `on_msg` sequence.
     #[inline(always)]
     pub fn ingest_indexed<S: Sink>(
         &mut self,
@@ -409,6 +424,7 @@ impl Sequencer {
         now_ns: u64,
         sink: &mut S,
         blocks: &[(u64, u32, u32)],
+        memo: Option<packet::FrameMemo>,
     ) {
         // S0: FRAMING HEADER (header-only; body comes from triples)
         let feed_cnt = self.counters.feed_mut(feed);
@@ -540,26 +556,47 @@ impl Sequencer {
             let old_w = self.w;
             let gen = self.gen;
             let proof = LiveFeedProof { gen };
-            let skip = (old_w.wrapping_sub(first) as usize).min(blocks.len());
+            let n = blocks.len();
+            let skip = (old_w.wrapping_sub(first) as usize).min(n);
             if skip != 0 {
                 self.counters.dup_msgs += skip as u64;
             }
-            let mut n_emit = 0u64;
-            for &(seq, start, end) in &blocks[skip..] {
-                let data = &frame[start as usize..end as usize];
-                if let Err(e) = itch5::validate(data) {
-                    std::hint::cold_path();
-                    self.counters.msgs_emitted += n_emit;
-                    self.counters
-                        .violations
-                        .record_packet_error(packet::PacketError::Payload(e));
-                    self.counters.total_violations += 1;
-                    return;
+            // R2: all_valid <=> memo's exact prefix covers every block of this
+            // frame <=> every in-window validate() would return Ok (see
+            // FrameMemo doc). Unmemoized (live) frames never skip validation.
+            let all_valid = memo.is_some_and(|m| m.valid_count as usize == n);
+            // R3: closed-form span emission. Emission state arithmetic on the
+            // contiguous run is closed-form: n_emit = n - skip, w = last + 1.
+            // Gated on (a) memo-proven validity, (b) sink opt-in — otherwise the
+            // exact classic per-message sequence runs (bit-identical semantics).
+            if all_valid && sink.wants_spans() && n > skip {
+                let body_start = blocks[skip].1 as usize;
+                let body_end = blocks[n - 1].2 as usize;
+                let body = &frame[body_start..body_end];
+                sink.on_span(&proof, first + skip as u64, (n - skip) as u16, body, &blocks[skip..]);
+                self.counters.msgs_emitted += (n - skip) as u64;
+            } else {
+                let mut n_emit = 0u64;
+                for &(seq, start, end) in &blocks[skip..] {
+                    let data = &frame[start as usize..end as usize];
+                    // R2: skip re-validation only when the memo proves this exact
+                    // block would pass; error mapping/order otherwise identical.
+                    if !all_valid {
+                        if let Err(e) = itch5::validate(data) {
+                            std::hint::cold_path();
+                            self.counters.msgs_emitted += n_emit;
+                            self.counters
+                                .violations
+                                .record_packet_error(packet::PacketError::Payload(e));
+                            self.counters.total_violations += 1;
+                            return;
+                        }
+                    }
+                    sink.on_msg(&proof, seq, data);
+                    n_emit += 1;
                 }
-                sink.on_msg(&proof, seq, data);
-                n_emit += 1;
+                self.counters.msgs_emitted += n_emit;
             }
-            self.counters.msgs_emitted += n_emit;
             self.w = last + 1;
 
             // §4.2 Clear-on-Advance Law

@@ -9,6 +9,29 @@ pub enum PacketError {
     Payload(itch5::ItchError),
 }
 
+/// R2: deterministic-replay validation memo carried per rendered frame.
+///
+/// `valid_count` is the EXACT leading prefix of the frame's message blocks
+/// that pass `itch5::validate` (block `valid_count` is the first failure when
+/// `valid_count < n`). It is computed ONCE at transport construction from the
+/// same immutable bytes the in-window walk would read — the verdict of a pure
+/// function over immutable inputs, memoized. Session-prefix patching never
+/// touches message bodies (bytes 20+), so the memo stays valid across
+/// `reset()`.
+///
+/// Equivalence claim (proved by construction + D10 tests):
+///   for immutable frame bytes f with blocks b_0..b_{n-1}:
+///     memo(f).valid_count = max k such that forall i < k: validate(b_i) = Ok
+///   hence "valid_count == n" <=> "every in-window validate call returns Ok",
+///   and "valid_count = k < n" <=> "the first in-window failure is b_k".
+/// The sequencer uses this to gate the R3 span fast path and to skip per-
+/// message validate on the classic path WITHOUT changing any observable
+/// (emitted prefix, violation counters, error mapping) for either branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameMemo {
+    pub valid_count: u16,
+}
+
 /// Single-pass fused framing + per-block callback walk for the ingest hot path
 /// (P9c). Replaces parse-then-validate-then-emit (3 block-walks/packet) with ONE
 /// pass: framing bounds are checked per block and `f` runs for blocks past

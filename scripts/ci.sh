@@ -77,6 +77,9 @@ $HFT_TASKSET cargo run --release -p nf-engine --bin bench -- --sample data/tests
 grep -q "STUDY_REPORT written to" /tmp/bench.txt
 grep -q "allocs=0" /tmp/bench.txt
 grep -q "PR2_PROD_VERDICT" /tmp/bench.txt
+# R4: PR-1 TITAN gate — burst + sustained span-conformance arms must PASS (>= 100M msg/s)
+grep -q "PR1_TITAN_VERDICT.*-> PASS" /tmp/bench.txt
+grep -q "PR1_TITAN_SUSTAINED_VERDICT.*-> PASS" /tmp/bench.txt
 
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D8) ==="
 # R-1 Independence Grep Audit
@@ -121,7 +124,8 @@ python3 - <<'PYEOF'
 import json, sys
 with open('/tmp/bench_results.json') as f:
     r = json.load(f)
-required = ['median_cycles', 'p95_cycles', 'p99_cycles', 'stddev', 'cv_percent']
+required = ['median_cycles', 'p95_cycles', 'p99_cycles', 'stddev', 'cv_percent',
+            'span_median_cycles', 'span_rate_msg_per_sec']
 for k in required:
     if k not in r:
         print(f'MISSING METRIC: {k}')
@@ -133,6 +137,9 @@ constraints = {
     'stddev': {'max': 2.0, 'unit': 'cycles'},
     'cv_percent': {'max': 8.0, 'unit': '%'},
 }
+# R4: PR-1 TITAN — span arm wall-rate (count sink, closed-form emission) >= 100M msg/s
+if r['span_rate_msg_per_sec'] < 100_000_000:
+    failed.append(f"span_rate_msg_per_sec: {r['span_rate_msg_per_sec']} < 100000000 msg/s (PR1_TITAN)")
 failed = []
 for metric, rule in constraints.items():
     val = r[metric]

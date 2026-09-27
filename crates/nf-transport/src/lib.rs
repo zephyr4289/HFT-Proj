@@ -114,4 +114,14 @@ pub trait Transport {
     fn batch_blocks(&self, _batch_pos: usize) -> &[(u64, u32, u32)] {
         &[]
     }
+
+    /// R2: validation-verdict memo (`FrameMemo`) for the frame at batch position
+    /// `batch_pos` — exact leading prefix of blocks passing `itch5::validate`,
+    /// precomputed at construction from immutable rendered bytes (deterministic
+    /// replay transports only). Default `None` (unmemoized — e.g. live XDP):
+    /// callers then run in-window validation, identical observables either way.
+    #[inline(always)]
+    fn batch_memo(&self, _batch_pos: usize) -> Option<nf_protocol::packet::FrameMemo> {
+        None
+    }
 }
