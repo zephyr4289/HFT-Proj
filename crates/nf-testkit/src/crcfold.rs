@@ -573,6 +573,21 @@ pub(crate) mod imp {
     }
 }
 
+#[cfg(not(target_arch = "x86_64"))]
+pub(crate) mod imp {
+    use crate::sink::span_crc32c_8lane;
+
+    #[inline(always)]
+    pub unsafe fn span_fold_eval(body: &[u8]) -> u64 {
+        span_crc32c_8lane(body)
+    }
+
+    #[inline(always)]
+    pub unsafe fn span_fold_eval2(a: &[u8], b: &[u8]) -> (u64, u64) {
+        (span_crc32c_8lane(a), span_crc32c_8lane(b))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
