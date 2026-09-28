@@ -9,6 +9,8 @@ Originally engineered for **25M msg/s** on standard cloud VMs, the project evolv
 1. **The TITAN Program (Single-Core)**: Scaling single-core in-window verified throughput to **235M–259M+ msg/s** (~3.85–4.25 ns/msg) and raw engine arbitration to **4.41 cyc/msg** (1.80 ns classic) / **1.77 cyc/msg** (0.72 ns vectorized span).
 2. **The HYDRA Program (Multi-Core Fabric)**: Breaking the single-core x86 instruction throughput ceiling via a lock-free parallel verification fabric, scaling verified in-window throughput to **561M–603M+ msg/s** (>3.01 Billion messages in 5.0s) with **bit-exact conformance** and **zero heap allocations** (`ALLOC_DELTA = 0`).
 
+The **GIGAHFT program (R7, Project 1.0B)** then attacked the remaining budget with four levers — a **bit-exact VPCLMULQDQ mirror-domain CRC32C fold kernel** (the final reduction collapses to two chained hardware `crc32` instructions; no Barrett, no length-dependent constants), **zero-copy in-place 128-bit ring descriptor stores**, a **fused hot-path header/session decode**, and a **cross-pass double-buffered fabric** whose span ids never reset: pass N+1's submission overlaps pass N's residual worker tail fold, the pipeline never drains mid-run, and every completed pass must reproduce the pinned per-pass `(count, hash, msg_hash)` tuple exactly — gated at **≥ 1B msg/s sustained** (`PR1_GIGAHFT_MIN_MSG_PER_SEC`) with `ALLOC_DELTA = 0` and every byte still read and verified in-window (see [`docs/21-gigahft.md`](docs/21-gigahft.md) for the lever inventory, the physics audit, and the honest runner expectations).
+
 ---
 
 ## 1. Verified Benchmark Metrics
@@ -31,7 +33,7 @@ Measured on GitHub Actions reference hardware (**Intel Xeon / AMD EPYC @ 2.45–
 | **PR-1 TITAN Burst** (Single-pass) | **`235.18M msg/s`** | **`10.40 cyc/msg`** (4.25 ns) | $\ge 100\text{M msg/s}$ | **`PASS`** |
 | **PR-1 TITAN Sustained** (5.0s loop) | **`259.49M msg/s`** | **`9.42 cyc/msg`** (3.85 ns) | $\ge 100\text{M msg/s}$ | **`PASS`** |
 
-### C. Pure Engine Ingest Mechanics (Harness Hashing Excluded)
+### C. Pure Engine Ingest Mechanics (Harness Hash Excluded)
 *30-run statistical verification gate ([`crates/nf-engine/src/bin/hft_bench.rs`](file:///data/data/com.termux/files/home/HFT-Proj/crates/nf-engine/src/bin/hft_bench.rs)) on `x86_64-unknown-linux-musl`, isolating raw sequencer and transport mechanics without downstream verification hash overhead.*
 
 | Ingest Mode | Median Latency | p95 Latency | p99 Tail | StdDev (CV%) | Rate Equivalent |
@@ -115,8 +117,14 @@ cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.
 # Run single-core TITAN benchmark & stage-ectomy study
 cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --runs 5 --study
 
+<<<<<<< HEAD
 # Run 30-run statistical verification gate (hft_bench)
 cargo run --release -p nf-engine --bin hft_bench -- --sample data/tests/sample-mini.itch --runs 30 --warmup 5
+=======
+# Run the R6 HYDRA multi-core arms (UNPINNED — the fabric spans all vCPUs)
+cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --hydra-only --runs 7
+# Knobs: HFT_HYDRA_WORKERS=<N> (0 = inline/sequential mode); HFT_CRC_KERNEL=scalar|fold512 (span-CRC kernel override, values identical by D11); HFT_HYDRA_NULL=1 (pipeline-overhead diagnostic ONLY — disables parity asserts, never in CI)
+>>>>>>> 8c2897e (feat(r7): GIGAHFT gates + D11 CRC-kernel differential oracle + docs)
 ```
 
 ### Run Full CI Suite

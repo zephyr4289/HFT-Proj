@@ -438,6 +438,12 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
         median,
         fabric.workers
     );
+    println!(
+        "PR1_GIGAHFT_BURST_VERDICT rate={} target={} -> {} (R7 burst reference; the sustained arm below is the gate)",
+        median,
+        nf_protocol::gates::PR1_GIGAHFT_MIN_MSG_PER_SEC,
+        nf_protocol::gates::evaluate_pr1_gigahft(median).as_str()
+    );
     median
 }
 
@@ -584,6 +590,12 @@ fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -
         start.elapsed().as_secs_f64(),
         total_msgs,
         fabric.workers
+    );
+    println!(
+        "PR1_GIGAHFT_VERDICT rate={} target={} -> {} (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)",
+        sustained_rate,
+        nf_protocol::gates::PR1_GIGAHFT_MIN_MSG_PER_SEC,
+        nf_protocol::gates::evaluate_pr1_gigahft(sustained_rate).as_str()
     );
     assert_eq!(alloc_delta, 0, "ALLOC_DELTA must be 0 in hydra sustained loop");
     sustained_rate

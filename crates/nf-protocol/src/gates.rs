@@ -18,6 +18,15 @@ pub const PR1_TITAN_MIN_MSG_PER_SEC: u64 = 100_000_000;
 // 4-vCPU GitHub runner; the sustained arm must match the burst arm's verdict.
 pub const PR1_HYDRA_MIN_MSG_PER_SEC: u64 = 800_000_000;
 
+// R7: PR-1 GIGAHFT target (Project 1.0B) — >= 1,000,000,000 msg/s sustained
+// on the 4-vCPU GitHub Actions runner with the SAME invariants as HYDRA
+// (bit-exact, every emitted byte read + CRC32C-verified in-window,
+// ALLOC_DELTA = 0). Achieved by the four GIGAHFT levers (docs/21-gigahft.md):
+// vector CRC folding, in-place ring stores, fused header decode, and the
+// cross-pass double-buffered fabric. The HYDRA 800M gate above remains the
+// R6 program level; GIGAHFT is the 1B milestone the sustained arm gates on.
+pub const PR1_GIGAHFT_MIN_MSG_PER_SEC: u64 = 1_000_000_000;
+
 // Strict Tier 3 Bare-Metal / Reference Target (doc 00)
 pub const PR2_TARGET_P50_CYCLES: u64 = 60;
 pub const PR2_TARGET_P99_CYCLES: u64 = 150;
@@ -70,6 +79,17 @@ pub fn evaluate_pr1_titan(wall_rate_msg_per_sec: u64) -> GateVerdict {
 #[inline]
 pub fn evaluate_pr1_hydra(wall_rate_msg_per_sec: u64) -> GateVerdict {
     if wall_rate_msg_per_sec >= PR1_HYDRA_MIN_MSG_PER_SEC {
+        GateVerdict::Pass
+    } else {
+        GateVerdict::Fail
+    }
+}
+
+/// R7: PR-1 GIGAHFT verdict — the 1B msg/s sustained milestone (see
+/// PR1_GIGAHFT_MIN_MSG_PER_SEC).
+#[inline]
+pub fn evaluate_pr1_gigahft(sustained_rate_msg_per_sec: u64) -> GateVerdict {
+    if sustained_rate_msg_per_sec >= PR1_GIGAHFT_MIN_MSG_PER_SEC {
         GateVerdict::Pass
     } else {
         GateVerdict::Fail
