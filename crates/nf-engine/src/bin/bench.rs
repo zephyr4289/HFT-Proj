@@ -342,7 +342,6 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
         let mut seq = Sequencer::new();
         let mut sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
         let mut batch = FrameBatch::new();
-        let mut poll_no: u32 = 0;
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
             for (pos, frame) in batch.frames().iter().enumerate() {
@@ -355,13 +354,10 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
                     transport.batch_memo(pos),
                 );
             }
-            // Fold drain is amortized (pure values, order fixed by span ids;
-            // finish() completes the fold) — the result rings hold 4096
-            // entries per lane, far above the max in-flight skew.
-            poll_no = poll_no.wrapping_add(1);
-            if poll_no % 8 == 0 {
-                sink.drain_ready();
-            }
+            // Fold drain every poll (GIGAHFT: with CHUNK=64 one poll fills
+            // exactly one chunk — draining per poll keeps the result rings
+            // shallow and the fold one chunk behind submission at most).
+            sink.drain_ready();
         }
         sink.finish();
         (sink.count, sink.hash, sink.msg_hash)
@@ -393,7 +389,6 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
         let (a1, d1) = GLOBAL.snapshot();
         let t0 = read_monotonic_raw_ns();
 
-        let mut poll_no: u32 = 0;
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
             for (pos, frame) in batch.frames().iter().enumerate() {
@@ -406,10 +401,7 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
                     transport.batch_memo(pos),
                 );
             }
-            poll_no = poll_no.wrapping_add(1);
-            if poll_no % 8 == 0 {
-                sink.drain_ready();
-            }
+            sink.drain_ready();
         }
         sink.finish();
 
@@ -449,7 +441,27 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
     median
 }
 
+/// Sustained-arm per-pass tuple assert (hash skipped in NULL diagnostic
+/// mode — fake span-id-derived values differ per pass by design).
+fn assert_sustained_pass(got: (u64, u64, u64), want: (u64, u64, u64), null_diag: bool) {
+    assert_eq!(got.0, want.0, "hydra sustained pass count divergence");
+    assert_eq!(got.2, want.2, "hydra sustained pass msg_hash divergence");
+    if !null_diag {
+        assert_eq!(
+            got.1, want.1,
+            "hydra sustained pass tuple divergence (cross-pass overlap)"
+        );
+    }
+}
+
 /// R6: PR-1 HYDRA Sustained Loop Mode (>= 5 seconds, fresh sessions).
+/// GIGAHFT Lever 4: the sustained loop runs the CROSS-PASS double-buffered
+/// fabric — one sink, global span ids, per-pass boundary records — so pass
+/// N+1's submission overlaps pass N's residual worker tail fold. The only
+/// blocking drain is the FINAL finish(), inside the measured window.
+/// Every completed pass must reproduce the pinned reference tuple
+/// (count, hash, msg_hash) exactly — stronger than the R6 count-only
+/// assert.
 fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -> u64 {
     let cfg = ReplayConfig {
         msgs_per_packet: Packetize::MtuBound(1400),
@@ -469,20 +481,53 @@ fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -
     let mut sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
     let mut batch = FrameBatch::new();
 
+    // Untimed reference pass pins the per-pass tuple (identical bytes every
+    // pass; only the session id changes, which cannot affect the tuple).
+    let ref_tuple = {
+        transport.reset(initial_sess);
+        *seq = Sequencer::new_unboxed();
+        let mut ref_sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
+        while transport.poll(&mut batch) > 0 {
+            let now = transport.now_ns();
+            for (pos, frame) in batch.frames().iter().enumerate() {
+                seq.ingest_auto(
+                    frame.bytes(),
+                    frame.feed,
+                    now,
+                    &mut ref_sink,
+                    transport.batch_blocks(pos),
+                    transport.batch_memo(pos),
+                );
+            }
+            ref_sink.drain_ready();
+        }
+        ref_sink.finish();
+        (ref_sink.count, ref_sink.hash, ref_sink.msg_hash)
+    };
+
+    // NULL diagnostic mode: worker values are span-id-derived (wrong by
+    // design) — with GLOBAL span ids every pass's fake hash differs, so
+    // the per-pass hash assert is disabled (count/msg_hash still asserted).
+    // (Read BEFORE the allocation window — env::var allocates.)
+    let null_diag = std::env::var("HFT_HYDRA_NULL").as_deref() == Ok("1");
+
     let (a1, d1) = GLOBAL.snapshot();
     let start = Instant::now();
     let t_start_mono = read_monotonic_raw_ns();
 
     let mut sess = *b"HYDRASUST1";
+    let mut harvested = [(0u64, 0u64, 0u64); 8];
     while start.elapsed().as_secs_f64() < 5.0 {
         sess[7..10].copy_from_slice(&session_counter.to_be_bytes()[5..8]);
         session_counter += 1;
 
         transport.reset(sess);
         *seq = Sequencer::new_unboxed();
-        sink.reset();
+        sink.begin_pass();
 
-        let mut poll_no: u32 = 0;
+        // Fold drain every poll: keeps the result rings shallow and the
+        // ordered fold close behind submission (the overlap's slack is the
+        // in-flight ring capacity, not fold lag).
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
             for (pos, frame) in batch.frames().iter().enumerate() {
@@ -495,14 +540,22 @@ fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -
                     transport.batch_memo(pos),
                 );
             }
-            poll_no = poll_no.wrapping_add(1);
-            if poll_no % 8 == 0 {
-                sink.drain_ready();
-            }
+            sink.drain_ready();
         }
-        sink.finish();
-        total_msgs += sink.count;
-        assert_eq!(sink.count, 505_849, "hydra sustained pass count divergence");
+        sink.end_pass(); // non-blocking: the tail folds during the next pass
+        let n = sink.harvest_completed(&mut harvested);
+        for rec in &harvested[..n] {
+            assert_sustained_pass(*rec, ref_tuple, null_diag);
+            total_msgs += rec.0;
+        }
+    }
+    // The single blocking drain of the whole run — INSIDE the window (the
+    // last pass's verification is part of the measured work).
+    sink.finish();
+    let n = sink.harvest_completed(&mut harvested);
+    for rec in &harvested[..n] {
+        assert_sustained_pass(*rec, ref_tuple, null_diag);
+        total_msgs += rec.0;
     }
 
     let t_end_mono = read_monotonic_raw_ns();
@@ -517,12 +570,13 @@ fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -
     };
 
     println!(
-        "BENCH mode=replay-hydra-sustained-5s total_msgs={} duration={:.2}s sustained_rate={} msg/s allocs={} workers={}",
+        "BENCH mode=replay-hydra-sustained-5s total_msgs={} duration={:.2}s sustained_rate={} msg/s allocs={} workers={} crc_kernel={}",
         total_msgs,
         start.elapsed().as_secs_f64(),
         sustained_rate,
         alloc_delta,
-        fabric.workers
+        fabric.workers,
+        fabric.kernel.name()
     );
     println!(
         "PR1_HYDRA_SUSTAINED_VERDICT rate={} (duration={:.2}s, total_msgs={}, workers={})",

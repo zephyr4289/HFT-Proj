@@ -133,6 +133,27 @@ struct Res {
     value: u64,
 }
 
+/// One pass's deferred-result record (GIGAHFT Lever 4). `count`/`msg_hash`
+/// are captured synchronously at `end_pass`; `hash` is captured when the
+/// ordered fold crosses the pass's final span — possibly DURING a later
+/// pass's polling (the double-buffered overlap). Fixed-size ring, zero
+/// allocation.
+#[derive(Clone, Copy)]
+struct PassRec {
+    /// Global span id one past the pass's last span (u64::MAX while open).
+    end_span: u64,
+    count: u64,
+    msg_hash: u64,
+    /// Captured span-fold hash (valid when `done`).
+    hash: u64,
+    done: bool,
+}
+
+/// Completed-pass records kept per sink (harvested by the harness each
+/// pass; the fold can lag at most ~1 pass by the ring-capacity proof, so 8
+/// is ample headroom).
+const PASS_RING: usize = 8;
+
 /// Cache-line-padded cursor to keep producer and consumer writes on
 /// different lines (no false sharing between main and worker cores).
 #[repr(align(64))]
@@ -210,15 +231,6 @@ impl HydraLane {
             res_head: Pad::zeroed(),
             res_tail: Pad::zeroed(),
         })
-    }
-
-    /// Producer-side descriptor slots (main thread only).
-    #[inline(always)]
-    #[allow(clippy::mut_from_ref)]
-    fn desc_slots(&self) -> &mut [Desc; DESC_CAP as usize] {
-        // SAFETY: SPSC protocol — slots in [tail, head) are exclusively owned
-        // by the producer between the space check and the head Release store.
-        unsafe { &mut *self.desc.get() }
     }
 
     /// Consumer-side descriptor slots (worker thread only).
@@ -550,6 +562,21 @@ pub struct HydraSpanSink<'a> {
     fold_lane: usize,
     /// Spans remaining in the fold-side chunk.
     fold_rem: u64,
+    // ── GIGAHFT Lever 4: cross-pass double buffering ──
+    /// Span ids are GLOBAL across the sink's life; each pass records its
+    /// boundary so the ordered fold snapshots the pass's hash exactly at
+    /// the boundary and resets the chain to SPAN_SEED. Pass N+1's
+    /// submission overlaps pass N's residual worker tail — the fabric
+    /// never drains mid-run; only the harness's final `finish()` blocks.
+    passes: [PassRec; PASS_RING],
+    /// Next record slot (written by begin_pass/end_pass).
+    pass_head: usize,
+    /// Oldest record not yet folded past its boundary.
+    pass_tail: usize,
+    /// Oldest record not yet harvested by the harness.
+    harvest_pos: usize,
+    /// A pass is open (begin_pass called, end_pass pending).
+    pass_open: bool,
 }
 
 impl<'a> HydraSpanSink<'a> {
@@ -581,6 +608,17 @@ impl<'a> HydraSpanSink<'a> {
             submit_rem: CHUNK,
             fold_lane: 0,
             fold_rem: CHUNK,
+            passes: [PassRec {
+                end_span: 0,
+                count: 0,
+                msg_hash: 0,
+                hash: 0,
+                done: false,
+            }; PASS_RING],
+            pass_head: 0,
+            pass_tail: 0,
+            harvest_pos: 0,
+            pass_open: false,
         }
     }
 
@@ -624,6 +662,118 @@ impl<'a> HydraSpanSink<'a> {
         self.fold_rem = CHUNK;
         self.submit_lane = 0;
         self.fold_lane = 0;
+        self.pass_head = 0;
+        self.pass_tail = 0;
+        self.harvest_pos = 0;
+        self.pass_open = false;
+    }
+
+    /// GIGAHFT Lever 4: open a new pass on the SAME fabric connection —
+    /// span ids stay GLOBAL, the fold chain keeps draining the previous
+    /// pass's residual tail, and per-pass observable state resets. NEVER
+    /// blocks on workers (that is the point: pass N+1's submission
+    /// overlaps pass N's tail fold).
+    pub fn begin_pass(&mut self) {
+        assert!(!self.pass_open, "begin_pass while a pass is open");
+        // Ring capacity: one slot must remain free for this record.
+        assert_ne!(
+            (self.pass_head + 1) % PASS_RING,
+            self.harvest_pos,
+            "pass record ring exhausted (harness not harvesting)"
+        );
+        // NOTE: `self.hash` (the in-flight fold chain) is intentionally NOT
+        // reset here — the previous pass's residual tail is still folding
+        // into it; the boundary crossing snapshots it and resets to
+        // SPAN_SEED at exactly the right value. Per-pass hashes come from
+        // `harvest_completed`; the field is only directly observable after
+        // a full `finish()` (no boundaries pending).
+        self.count = 0;
+        self.last_gen = 0;
+        self.gap_open_gen = None;
+        self.gap_open_from = None;
+        self.gap_opens = 0;
+        self.reanchors = 0;
+        self.session_boundaries = 0;
+        self.end_of_sessions = 0;
+        self.session_deads = 0;
+        self.last_seq = 0;
+        self.msg_hash = Self::SPAN_SEED;
+        // NOTE: next_span / fold_pos / chunk trackers / fold chain are
+        // intentionally NOT reset — global continuity is what lets the
+        // fold cross the pass boundary late without stalling submission.
+        // (Inline mode has fold_pos == next_span; the chain is already at
+        // SPAN_SEED after the previous end_pass.)
+        self.passes[self.pass_head] = PassRec {
+            end_span: u64::MAX,
+            count: 0,
+            msg_hash: 0,
+            hash: 0,
+            done: false,
+        };
+        self.pass_head = (self.pass_head + 1) % PASS_RING;
+        self.pass_open = true;
+    }
+
+    /// Close the current pass: publish any partial chunk (one non-blocking
+    /// Release store — the workers can start the tail while the main core
+    /// arbitrates the next pass) and record the boundary. The pass's
+    /// (count, hash, msg_hash) tuple becomes harvestable once the ordered
+    /// fold crosses the boundary — typically during the NEXT pass.
+    pub fn end_pass(&mut self) {
+        assert!(self.pass_open, "end_pass without begin_pass");
+        if self.fabric.is_some() {
+            self.flush_pending();
+        } else {
+            // Inline mode folds eagerly: complete the record right now.
+            debug_assert_eq!(self.fold_pos, self.next_span);
+        }
+        let idx = (self.pass_head + PASS_RING - 1) % PASS_RING;
+        let rec = &mut self.passes[idx];
+        rec.end_span = self.next_span;
+        rec.count = self.count;
+        rec.msg_hash = self.msg_hash;
+        self.pass_open = false;
+        self.complete_boundaries();
+    }
+
+    /// Snapshot + reset at every pass boundary the fold has crossed.
+    /// The chain value at the crossing IS the completed pass's hash (the
+    /// fold applies values in strict global span order, and the boundary
+    /// sits exactly at the pass's final span + 1).
+    fn complete_boundaries(&mut self) {
+        while self.pass_tail != self.pass_head {
+            let rec = &self.passes[self.pass_tail];
+            if rec.done || rec.end_span == u64::MAX {
+                break;
+            }
+            if rec.end_span <= self.fold_pos {
+                let h = self.hash;
+                let rec = &mut self.passes[self.pass_tail];
+                rec.hash = h;
+                rec.done = true;
+                // The next pass's chain starts from a fresh seed.
+                self.hash = Self::SPAN_SEED;
+                self.pass_tail = (self.pass_tail + 1) % PASS_RING;
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Harvest completed passes in order (oldest first). Returns the
+    /// number of (count, hash, msg_hash) tuples written to `out`.
+    pub fn harvest_completed(&mut self, out: &mut [(u64, u64, u64); PASS_RING]) -> usize {
+        let mut k = 0usize;
+        while self.harvest_pos != self.pass_head && k < out.len() {
+            let rec = &self.passes[self.harvest_pos];
+            if !rec.done {
+                break;
+            }
+            out[k] = (rec.count, rec.hash, rec.msg_hash);
+            self.harvest_pos = (self.harvest_pos + 1) % PASS_RING;
+            k += 1;
+        }
+        k
     }
 
     /// The per-span fold — EXACTLY `SpanConformanceSink::on_span`'s mix.
@@ -698,9 +848,8 @@ impl<'a> HydraSpanSink<'a> {
         // SAFETY: the slot at (pending_head + pending_len) & DESC_MASK is
         // producer-owned (space checked at chunk start for the full chunk)
         // and unread by the worker until the Release publish below.
-        let slot = unsafe {
-            lane_slot_ptr(&fabric.lanes[self.pending_lane], self.pending_head + self.pending_len)
-        };
+        let slot =
+            lane_slot_ptr(&fabric.lanes[self.pending_lane], self.pending_head + self.pending_len);
         let packed = (body.as_ptr() as u128)
             | ((body.len() as u128) << 64)
             | ((self.next_span as u32 as u128) << 96);
@@ -711,7 +860,8 @@ impl<'a> HydraSpanSink<'a> {
         // Advance the division-free submit-chunk tracker (after-use: the
         // lane advances when the chunk it belongs to is complete).
         self.submit_rem -= 1;
-        if self.submit_rem == 0 {
+        let chunk_done = self.submit_rem == 0;
+        if chunk_done {
             self.submit_rem = CHUNK;
             self.submit_lane = if self.submit_lane + 1 == self.n_lanes {
                 0
@@ -719,7 +869,12 @@ impl<'a> HydraSpanSink<'a> {
                 self.submit_lane + 1
             };
         }
-        if self.pending_len == CHUNK as u64 {
+        // GIGAHFT Lever 4: flush on GLOBAL chunk completion, not on
+        // `pending_len == CHUNK` — a chunk split across a pass boundary
+        // (partial publish at end_pass + continuation in the next pass)
+        // has a short window, and the next chunk must open its own window
+        // on its own lane with its own space reservation.
+        if chunk_done {
             self.flush_pending();
         }
     }
@@ -737,6 +892,7 @@ impl<'a> HydraSpanSink<'a> {
             Some(f) => f,
             None => return,
         };
+        self.complete_boundaries();
         while self.fold_pos < self.next_span {
             // H6: `fold_lane` tracks the chunk containing `fold_pos` — no
             // division in the hot path (advance after chunk completion).
@@ -747,7 +903,15 @@ impl<'a> HydraSpanSink<'a> {
                 break; // this lane's next batch isn't ready — order is strict
             }
             // Never fold past the end of fold_pos's chunk (lane changes there).
-            let n = (head - tail).min(self.fold_rem);
+            let mut n = (head - tail).min(self.fold_rem);
+            // GIGAHFT Lever 4: never fold past the oldest pending pass
+            // boundary — the chain must snapshot + reset exactly there.
+            if self.pass_tail != self.pass_head {
+                let rec = &self.passes[self.pass_tail];
+                if !rec.done && rec.end_span != u64::MAX {
+                    n = n.min(rec.end_span - self.fold_pos);
+                }
+            }
             // SAFETY: slots [tail & RES_MASK, +n) published by the worker's
             // Release store to res_head (loaded Acquire above) and owned by
             // main until the res_tail Release store below. Per-slot masking
@@ -778,6 +942,8 @@ impl<'a> HydraSpanSink<'a> {
                     self.fold_lane + 1
                 };
             }
+            // A batch capped at a boundary just crossed it — snapshot now.
+            self.complete_boundaries();
         }
     }
 
@@ -802,9 +968,11 @@ impl<'a> HydraSpanSink<'a> {
                 }
                 std::hint::spin_loop();
             }
+            self.complete_boundaries();
         } else {
             // Inline mode folds eagerly; nothing to drain.
             debug_assert_eq!(self.fold_pos, self.next_span);
+            self.complete_boundaries();
         }
     }
 
@@ -1147,6 +1315,109 @@ mod tests {
         let want = seq_pass(&mut t1, sess);
         let got = hydra_pass(&mut t2, sess, &fabric);
         assert_eq!(got, want, "wraparound fabric mode diverged");
+    }
+
+    /// GIGAHFT Lever 4: cross-pass double-buffered overlap bit-parity.
+    /// Multiple passes on ONE sink (global span ids, per-pass boundary
+    /// capture, non-blocking end_pass) must produce, for EVERY pass, the
+    /// exact tuple a fresh sequential SpanConformanceSink produces —
+    /// including when the fold drains pass N's tail during pass N+1.
+    #[test]
+    fn t_hydra_crosspass_overlap_bitparity() {
+        let gt = load_mini();
+        let cfg = ReplayConfig {
+            msgs_per_packet: Packetize::MtuBound(1400),
+            guarantee_coverage: true,
+            ..Default::default()
+        };
+        let sched = build_schedule(&gt, &cfg);
+        // Reference: one sequential pass per session id.
+        let sessions: [[u8; 10]; 3] = [*b"OVLAPAAA01", *b"OVLAPBBB02", *b"OVLAPCCC03"];
+        let mut want = Vec::new();
+        for sess in sessions {
+            let mut t = ReplayTransport::new(&gt, sched.clone(), sess);
+            want.push(seq_pass(&mut t, sess));
+        }
+
+        // Overlapped fabric passes on one sink. Pass N+1's submission
+        // overlaps pass N's residual tail (the whole point of Lever 4).
+        let fabric = HydraFabric::spawn(2);
+        let mut t = ReplayTransport::new(&gt, sched.clone(), sessions[0]);
+        let mut sink = HydraSpanSink::new(&fabric);
+        let mut harvested = [(0u64, 0u64, 0u64); PASS_RING];
+        let mut got = Vec::new();
+        for (pi, sess) in sessions.iter().enumerate() {
+            t.reset(*sess);
+            let mut seq = Sequencer::new();
+            sink.begin_pass();
+            let mut batch = FrameBatch::new();
+            let mut poll_no: u32 = 0;
+            while t.poll(&mut batch) > 0 {
+                let now = t.now_ns();
+                for (pos, frame) in batch.frames().iter().enumerate() {
+                    seq.ingest_auto(
+                        frame.bytes(),
+                        frame.feed,
+                        now,
+                        &mut sink,
+                        t.batch_blocks(pos),
+                        t.batch_memo(pos),
+                    );
+                }
+                poll_no = poll_no.wrapping_add(1);
+                if poll_no % 2 == 0 {
+                    sink.drain_ready();
+                }
+            }
+            sink.end_pass();
+            // Harvest whatever completed (older passes close during this
+            // pass's polling); the LAST pass closes at finish().
+            let n = sink.harvest_completed(&mut harvested);
+            for rec in &harvested[..n] {
+                got.push(*rec);
+            }
+            let _ = pi;
+        }
+        sink.finish();
+        let n = sink.harvest_completed(&mut harvested);
+        for rec in &harvested[..n] {
+            got.push(*rec);
+        }
+        assert_eq!(got, want, "cross-pass overlap diverged from sequential");
+        // And the same structure once more with inline mode (no threads).
+        let mut t = ReplayTransport::new(&gt, sched.clone(), sessions[0]);
+        let mut sink = HydraSpanSink::new_inline();
+        let mut got2 = Vec::new();
+        for sess in sessions {
+            t.reset(sess);
+            let mut seq = Sequencer::new();
+            sink.begin_pass();
+            let mut batch = FrameBatch::new();
+            while t.poll(&mut batch) > 0 {
+                let now = t.now_ns();
+                for (pos, frame) in batch.frames().iter().enumerate() {
+                    seq.ingest_auto(
+                        frame.bytes(),
+                        frame.feed,
+                        now,
+                        &mut sink,
+                        t.batch_blocks(pos),
+                        t.batch_memo(pos),
+                    );
+                }
+            }
+            sink.end_pass();
+            let n = sink.harvest_completed(&mut harvested);
+            for rec in &harvested[..n] {
+                got2.push(*rec);
+            }
+        }
+        sink.finish();
+        let n = sink.harvest_completed(&mut harvested);
+        for rec in &harvested[..n] {
+            got2.push(*rec);
+        }
+        assert_eq!(got2, want, "inline cross-pass diverged");
     }
 
     /// Fabric mode == inline mode == sequential on the full mini sample
