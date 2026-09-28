@@ -91,6 +91,7 @@
 //! no heap allocation; `ALLOC_DELTA == 0` is asserted by every benchmark arm
 //! that uses this fabric.
 
+use crate::crcfold::CrcKernel;
 use crate::sink::span_crc32c_8lane;
 use nf_arbitrator::types::{Event, LiveFeedProof, Sink};
 use std::cell::UnsafeCell;
@@ -98,10 +99,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-/// Spans per handoff chunk. Must divide both ring capacities (ring-aligned
-/// chunks never wrap) and be large enough to amortize the cross-core
-/// handoff (~2 atomics + ~8 line transfers) against the ~225c/span CRC work.
-const CHUNK: u64 = 16;
+/// Spans per handoff chunk (GIGAHFT Lever 4: 16 -> 64). Must divide both
+/// ring capacities (ring-aligned chunks never wrap) and amortizes the
+/// cross-core handoff (~2 atomics + ~24 line transfers per chunk) 4x
+/// further than R6's CHUNK=16, collapsing per-span atomic-fence traffic.
+const CHUNK: u64 = 64;
 
 /// Result-ring capacity (power of two, multiple of CHUNK).
 const RES_CAP: usize = 4096;
@@ -263,8 +265,9 @@ fn prefetch_body(ptr: *const u8) {
 fn prefetch_body(_ptr: *const u8) {}
 
 /// Worker batch budget: descriptors processed per outer-loop iteration
-/// (multiple of CHUNK so cursors stay chunk-aligned).
-const WORKER_BATCH: u64 = 64;
+/// (multiple of CHUNK so cursors stay chunk-aligned; two full chunks per
+/// iteration amortizes the result-space check and publishes).
+const WORKER_BATCH: u64 = 128;
 
 /// Diagnostic (H5): when `HFT_HYDRA_NULL=1`, workers skip the CRC kernel
 /// and return a constant-derived value. This BREAKS bit parity by design —
@@ -287,7 +290,7 @@ fn null_mode() -> bool {
 /// FOUR queued spans while CRC-ing the current one — the ~200c per-span CRC
 /// pass gives the prefetches ample lead time, converting body-start latency
 /// stalls into overlapped L3 bandwidth.
-fn lane_worker(lane: Arc<HydraLane>, shutdown: Arc<AtomicBool>) {
+fn lane_worker(lane: Arc<HydraLane>, shutdown: Arc<AtomicBool>, kernel: CrcKernel) {
     let null = null_mode();
     let mut tail: u64 = 0; // desc cursor (worker-owned)
     let mut rhead: u64 = 0; // result cursor (worker-owned)
@@ -336,33 +339,59 @@ fn lane_worker(lane: Arc<HydraLane>, shutdown: Arc<AtomicBool>) {
         // Evaluate + buffer the batch's results locally, then publish with
         // ONE Release store. Slot writes stay unpublished until the store,
         // so intermediate states are invisible to the consumer.
+        // GIGAHFT Lever 1: the span CRC evaluation runs on the dispatched
+        // kernel — the VPCLMULQDQ mirror-domain fold when the silicon has
+        // AVX-512+GFNI (bit-exact equal to the scalar kernel by D11),
+        // otherwise the scalar 8-lane crc32 chain. Two spans are evaluated
+        // per call on the fold kernel (interleaved fold chains hide clmul
+        // dependency latency).
         // SAFETY: res slots in [rhead, rhead+n) are owned by this worker.
         let res_slots = lane.res_slots();
         let mut i = 0u64;
         while i < n {
             // Keep the lookahead window warm while the current span's CRC
-            // pass (≈200c) covers the prefetch lead time.
+            // pass covers the prefetch lead time.
             if i + LOOKAHEAD < n {
                 prefetch_body(slots[((tail + i + LOOKAHEAD) & DESC_MASK) as usize].ptr);
             }
-            // SAFETY: published descriptor slot (see above).
-            let d = slots[((tail + i) & DESC_MASK) as usize];
-            // SAFETY: body slice per the HydraLane contract — immutable
-            // bytes, valid until the owning pass's finish() drain.
-            let value = if null {
-                // Diagnostic: constant work, no body read, wrong value (by
-                // design — see null_mode doc).
-                (d.len as u64) | ((d.span_id as u64) << 32)
+            let emit = |res_slots: &mut [Res], i: u64, span_id: u32, value: u64| {
+                res_slots[((rhead + i) & RES_MASK) as usize] = Res {
+                    span_id,
+                    _pad: 0,
+                    value,
+                };
+            };
+            if !null && i + 1 < n && kernel == CrcKernel::Fold512 {
+                // SAFETY: published descriptor slots (Acquire above); body
+                // slices per the HydraLane contract — immutable bytes, valid
+                // until the owning pass's finish() drain.
+                let da = slots[((tail + i) & DESC_MASK) as usize];
+                let db = slots[((tail + i + 1) & DESC_MASK) as usize];
+                let ba = unsafe { std::slice::from_raw_parts(da.ptr, da.len as usize) };
+                let bb = unsafe { std::slice::from_raw_parts(db.ptr, db.len as usize) };
+                // SAFETY: feature contract verified at spawn (CrcKernel::detect).
+                let (va, vb) = unsafe { kernel.eval2(ba, bb) };
+                emit(res_slots, i, da.span_id, va);
+                emit(res_slots, i + 1, db.span_id, vb);
+                i += 2;
             } else {
-                let body = unsafe { std::slice::from_raw_parts(d.ptr, d.len as usize) };
-                span_crc32c_8lane(body)
-            };
-            res_slots[((rhead + i) & RES_MASK) as usize] = Res {
-                span_id: d.span_id,
-                _pad: 0,
-                value,
-            };
-            i += 1;
+                // SAFETY: published descriptor slot (see above).
+                let d = slots[((tail + i) & DESC_MASK) as usize];
+                // SAFETY: body slice per the HydraLane contract — immutable
+                // bytes, valid until the owning pass's finish() drain.
+                let value = if null {
+                    // Diagnostic: constant work, no body read, wrong value (by
+                    // design — see null_mode doc).
+                    (d.len as u64) | ((d.span_id as u64) << 32)
+                } else {
+                    let body =
+                        unsafe { std::slice::from_raw_parts(d.ptr, d.len as usize) };
+                    // SAFETY: feature contract verified at spawn.
+                    unsafe { kernel.eval(body) }
+                };
+                emit(res_slots, i, d.span_id, value);
+                i += 1;
+            }
         }
         std::hint::black_box(&res_slots[(rhead & RES_MASK) as usize]);
         lane.res_head.store(rhead + n, Ordering::Release);
@@ -381,6 +410,10 @@ pub struct HydraFabric {
     shutdown: Arc<AtomicBool>,
     handles: Vec<JoinHandle<()>>,
     pub workers: usize,
+    /// GIGAHFT Lever 1: the span-CRC kernel the workers evaluate (detected
+    /// ONCE here — outside every measurement window; values are bit-exact
+    /// across kernels by D11, so this choice affects speed only).
+    pub kernel: CrcKernel,
 }
 
 impl HydraFabric {
@@ -389,6 +422,7 @@ impl HydraFabric {
     /// code path). All allocation and thread spawn happens here — outside
     /// every measurement window.
     pub fn spawn(workers: usize) -> Box<Self> {
+        let kernel = CrcKernel::detect();
         let shutdown = Arc::new(AtomicBool::new(false));
         let mut handles = Vec::with_capacity(workers);
         let mut lanes: Vec<Arc<HydraLane>> = Vec::with_capacity(workers);
@@ -399,10 +433,11 @@ impl HydraFabric {
         for lane in lanes.iter() {
             let lane = lane.clone();
             let sd = shutdown.clone();
+            let kern = kernel;
             let h = std::thread::Builder::new()
                 .stack_size(512 * 1024)
                 .name("hydra-worker".to_string())
-                .spawn(move || lane_worker(lane, sd))
+                .spawn(move || lane_worker(lane, sd, kern))
                 .expect("hydra worker spawn");
             handles.push(h);
         }
@@ -411,6 +446,7 @@ impl HydraFabric {
             shutdown,
             handles,
             workers,
+            kernel,
         })
     }
 

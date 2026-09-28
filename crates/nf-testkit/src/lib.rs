@@ -2,6 +2,7 @@
 
 #![allow(clippy::all)]
 
+pub mod crcfold;
 pub mod fakeserver;
 pub mod golden;
 pub mod hydra;
