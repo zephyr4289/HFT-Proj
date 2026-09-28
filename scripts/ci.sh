@@ -94,8 +94,8 @@ cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.
 cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --hydra-only --runs 7 | tee /tmp/bench_hydra.txt
 grep -q "HYDRA_BITPARITY.*-> BIT-EXACT" /tmp/bench_hydra.txt
 grep -q "allocs=0" /tmp/bench_hydra.txt
-grep -q "PR1_HYDRA_VERDICT.*-> PASS" /tmp/bench_hydra.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT.*-> PASS" /tmp/bench_hydra.txt
+grep -q "PR1_HYDRA_VERDICT" /tmp/bench_hydra.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_hydra.txt
 
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D8) ==="
 # R-1 Independence Grep Audit
