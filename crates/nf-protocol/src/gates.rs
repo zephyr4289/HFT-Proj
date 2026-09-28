@@ -9,6 +9,15 @@ pub const PR1_MIN_SUSTAINED_MSG_PER_SEC: u64 = 10_000_000;
 // here, consumed by bench verdict lines and CI JSON checks alike.
 pub const PR1_TITAN_MIN_MSG_PER_SEC: u64 = 100_000_000;
 
+// R6: PR-1 HYDRA target — 800M msg/s wall-rate with the SAME full byte-level
+// span conformance verification, bit-exact, but evaluated across the runner's
+// vCPU fabric (docs/20-hydra.md): the single-core CRC32C throughput ceiling
+// (8 B/cycle × ~31.65 B/msg ≈ 3.96 cyc/msg ≈ 619M msg/s absolute) is broken by
+// moving the pure span-CRC evaluation onto worker cores while the ordered fold
+// stays on the main core. The 800M threshold is the program target on the
+// 4-vCPU GitHub runner; the sustained arm must match the burst arm's verdict.
+pub const PR1_HYDRA_MIN_MSG_PER_SEC: u64 = 800_000_000;
+
 // Strict Tier 3 Bare-Metal / Reference Target (doc 00)
 pub const PR2_TARGET_P50_CYCLES: u64 = 60;
 pub const PR2_TARGET_P99_CYCLES: u64 = 150;
@@ -50,6 +59,17 @@ pub fn evaluate_pr1(sustained_rate: u64) -> GateVerdict {
 #[inline]
 pub fn evaluate_pr1_titan(wall_rate_msg_per_sec: u64) -> GateVerdict {
     if wall_rate_msg_per_sec >= PR1_TITAN_MIN_MSG_PER_SEC {
+        GateVerdict::Pass
+    } else {
+        GateVerdict::Fail
+    }
+}
+
+/// R6: PR-1 HYDRA verdict — bit-exact multi-core span conformance wall-rate
+/// must reach 800M msg/s (see PR1_HYDRA_MIN_MSG_PER_SEC).
+#[inline]
+pub fn evaluate_pr1_hydra(wall_rate_msg_per_sec: u64) -> GateVerdict {
+    if wall_rate_msg_per_sec >= PR1_HYDRA_MIN_MSG_PER_SEC {
         GateVerdict::Pass
     } else {
         GateVerdict::Fail

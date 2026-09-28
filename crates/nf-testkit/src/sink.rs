@@ -8,7 +8,7 @@ use nf_arbitrator::{Event, LiveFeedProof, Sink};
 /// Keeps FNV SEED for cross-arch determinism, but GH x86_64 path dominates CI.
 #[cfg(target_arch = "x86_64")]
 #[inline(always)]
-fn fast_hash_bytes(h: u64, bytes: &[u8]) -> u64 {
+pub(crate) fn fast_hash_bytes(h: u64, bytes: &[u8]) -> u64 {
     // Use current hash low 32b as CRC seed (invert for IEEE)
     let mut crc = (h as u32) ^ 0xffffffffu32;
     let mut i = 0usize;
@@ -56,7 +56,7 @@ fn fast_hash_bytes(h: u64, bytes: &[u8]) -> u64 {
 
 #[cfg(not(target_arch = "x86_64"))]
 #[inline(always)]
-fn fast_hash_bytes(h: u64, bytes: &[u8]) -> u64 {
+pub(crate) fn fast_hash_bytes(h: u64, bytes: &[u8]) -> u64 {
     // aarch64/others: fallback to FNV (no CRC32 hw assumed for portability)
     fnv_bytes(h, bytes)
 }
@@ -411,7 +411,7 @@ impl Sink for ConformanceSink {
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::disallowed_methods)]
 #[inline(always)]
-fn span_crc32c_8lane(body: &[u8]) -> u64 {
+pub fn span_crc32c_8lane(body: &[u8]) -> u64 {
     use std::arch::x86_64::*;
     let len = body.len();
     let p = body.as_ptr();
@@ -481,7 +481,7 @@ fn span_crc32c_8lane(body: &[u8]) -> u64 {
 /// arch — same policy as FastHashSink).
 #[cfg(not(target_arch = "x86_64"))]
 #[inline(always)]
-fn span_crc32c_8lane(body: &[u8]) -> u64 {
+pub fn span_crc32c_8lane(body: &[u8]) -> u64 {
     fnv_bytes(0xcbf29ce484222325, body)
 }
 
