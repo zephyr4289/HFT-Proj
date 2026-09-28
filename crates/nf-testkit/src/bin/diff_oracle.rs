@@ -496,6 +496,127 @@ fn test_d7_d8_watchdog_and_determinism(gt: &[u8]) {
     );
 }
 
+/// D11: CRC kernel differential (GIGAHFT Lever 1). The scalar 8-lane
+/// kernel is pinned to the reference table-driven reflected CRC32C (raw
+/// golden vectors), and — on silicon with AVX-512F/BW + VPCLMULQDQ +
+/// GFNI — the VPCLMULQDQ mirror-domain fold kernel must equal the scalar
+/// kernel bit-for-bit on an exhaustive length sweep, pattern sweep, random
+/// stress, and mismatched two-span eval2 pairs.
+fn test_d11_crc_kernel_differential() {
+    use nf_testkit::crcfold::{fold512_available, CrcKernel};
+    use nf_testkit::sink::span_crc32c_8lane;
+
+    // Reference reflected CRC32C (init=0, xorout=0) — table-driven.
+    fn ref_crc32c(data: &[u8]) -> u32 {
+        fn table() -> [u32; 256] {
+            let mut t = [0u32; 256];
+            for (i, e) in t.iter_mut().enumerate() {
+                let mut c = i as u32;
+                for _ in 0..8 {
+                    c = if c & 1 != 0 { (c >> 1) ^ 0x82F6_3B78 } else { c >> 1 };
+                }
+                *e = c;
+            }
+            t
+        }
+        static TABLE: std::sync::OnceLock<[u32; 256]> = std::sync::OnceLock::new();
+        let t = TABLE.get_or_init(table);
+        let mut crc = 0u32;
+        for &b in data {
+            crc = (crc >> 8) ^ t[((crc ^ b as u32) & 0xFF) as usize];
+        }
+        crc
+    }
+
+    // 1) Anchor the SCALAR kernel's lane semantics to the raw CRC32C of the
+    //    lane streams (bodies small enough to be single-lane).
+    let mut body = [0u8; 64];
+    for (i, e) in body.iter_mut().enumerate() {
+        *e = (i * 131 + 17) as u8;
+    }
+    // len < 64: everything is lane 0 + tail => span hash = FNV over
+    // [c0..c7, len] where c0 = raw crc of the whole body.
+    let h = span_crc32c_8lane(&body[..40]);
+    let c0 = ref_crc32c(&body[..40]);
+    let mut want = 0xcbf29ce484222325u64;
+    for c in [c0, 0u32, 0, 0, 0, 0, 0, 0, 40u32] {
+        want ^= c as u64;
+        want = want.wrapping_mul(0x100000001b3);
+    }
+    assert_eq!(h, want, "D11: scalar kernel lane-0 semantics diverged from reference CRC32C");
+
+    // 2) Fold kernel differential (skipped on non-AVX-512 silicon).
+    if !fold512_available() {
+        println!("D11 CRC_KERNEL_DIFFERENTIAL_SKIPPED: fold512 unavailable on this CPU (scalar kernel anchored to reference)");
+        return;
+    }
+    let kernel = CrcKernel::Fold512;
+    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+    let mut next = || {
+        seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = seed;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    };
+    let mut checked = 0u64;
+    let mut check = |b: &[u8]| {
+        let want = span_crc32c_8lane(b);
+        // SAFETY: fold512_available() verified the feature contract.
+        let got = unsafe { kernel.eval(b) };
+        assert_eq!(want, got, "D11: fold diverged at len={}", b.len());
+        checked += 1;
+    };
+    let mut buf = [0u8; 4200];
+    for len in 0..=520usize {
+        for pat in 0..4u8 {
+            match pat {
+                0 => buf[..len].fill(0),
+                1 => buf[..len].fill(0xFF),
+                2 => {
+                    for (i, e) in buf[..len].iter_mut().enumerate() {
+                        *e = (i * 131 + 17) as u8;
+                    }
+                }
+                _ => {
+                    for e in buf[..len].iter_mut() {
+                        *e = next() as u8;
+                    }
+                }
+            }
+            check(&buf[..len]);
+        }
+    }
+    for len in [640usize, 680, 1000, 1360, 1380, 1399, 1400, 2048, 4096] {
+        for e in buf[..len].iter_mut() {
+            *e = next() as u8;
+        }
+        check(&buf[..len]);
+    }
+    // Mismatched eval2 pairs.
+    for (la, lb) in [(1360usize, 1399), (1399, 680), (2048, 1360), (1379, 4096)] {
+        for e in buf[..la].iter_mut() {
+            *e = next() as u8;
+        }
+        let a = buf[..la].to_vec();
+        for e in buf[..lb].iter_mut() {
+            *e = next() as u8;
+        }
+        let b = buf[..lb].to_vec();
+        let want_a = span_crc32c_8lane(&a);
+        let want_b = span_crc32c_8lane(&b);
+        // SAFETY: feature contract verified above.
+        let (ga, gb) = unsafe { kernel.eval2(&a, &b) };
+        assert_eq!(want_a, ga, "D11: eval2 A diverged ({} x {})", la, lb);
+        assert_eq!(want_b, gb, "D11: eval2 B diverged ({} x {})", la, lb);
+        checked += 2;
+    }
+    println!(
+        "D11 CRC_KERNEL_DIFFERENTIAL_PASSED: scalar==reference, fold512==scalar on {} bodies (exhaustive lengths + patterns + random + eval2)",
+        checked
+    );
+}
+
 fn main() {
     let sample_path = "data/tests/sample-mini.itch";
     let gt = fs::read(sample_path).unwrap_or_else(|_| {
@@ -503,7 +624,7 @@ fn main() {
             .unwrap_or_else(|_| fs::read("../data/tests/sample-mini.itch").expect("Failed to load sample"))
     });
 
-    println!("=== RUNNING G12-T3 REFERENCE ARBITRATOR & DIFFERENTIAL SUITE (D1..D9) ===");
+    println!("=== RUNNING G12-T3 REFERENCE ARBITRATOR & DIFFERENTIAL SUITE (D1..D11) ===");
     test_d3_oracle_validation();
     test_d1_matrix_cells(&gt);
     test_d2_random_configs(&gt);
@@ -512,5 +633,6 @@ fn main() {
     test_d6_unclean_death(&gt);
     test_d7_d8_watchdog_and_determinism(&gt);
     test_d9_indexed_equivalence(&gt);
-    println!("=== ALL D1..D8 DIFFERENTIAL ORACLE CHECKS PASSED SUCCESSFULLY ===");
+    test_d11_crc_kernel_differential();
+    println!("=== ALL D1..D11 DIFFERENTIAL ORACLE CHECKS PASSED SUCCESSFULLY ===");
 }

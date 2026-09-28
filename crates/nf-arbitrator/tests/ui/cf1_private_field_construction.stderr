@@ -1,0 +1,5 @@
+error[E0451]: field `gen` of struct `LiveFeedProof` is private
+ --> tests/ui/cf1_private_field_construction.rs:4:34
+  |
+4 |     let _proof = LiveFeedProof { gen: 0 };
+  |                                  ^^^ private field

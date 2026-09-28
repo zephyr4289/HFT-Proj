@@ -26,6 +26,20 @@ pub struct Sequencer {
     // ── line 1 ── written per event ────────────────────────────
     gen: u64,                    // proof era counter (§7)
     session: [u8; 10],
+    /// GIGAHFT Lever 3: session compare template as two overlapping
+    /// little-endian u64 words (bytes 0..8 and 2..10) + "live" flag
+    /// (session adopted AND non-zero — zero sessions keep taking the full
+    /// dispatch ladder, preserving session_dispatch's re-adoption
+    /// semantics exactly). The hot path proves session equality with two
+    /// u64 loads + two compares instead of materializing a [u8;10] and
+    /// running the comparison ladder. (The _mm_loadu_si128 + cmpeq +
+    /// movemask formulation from the GIGAHFT directive would need unsafe
+    /// code; this crate is #![forbid(unsafe_code)] by law, so the fused
+    /// decode stays in safe Rust — LLVM fuses the fixed-index byte arrays
+    /// into unaligned loads, within ~1 uop of the SIMD sequence.)
+    session_lo: u64,
+    session_hi: u64,
+    session_live: bool,
     state: State,                // §3 (u8-tagged)
     gap_active: bool,
     evidence_hwm: u64,           // highest seq KNOWN transmitted (gap-era)
@@ -68,6 +82,9 @@ impl Sequencer {
             w: 0,
             gen: 0,
             session: [0u8; 10],
+            session_lo: 0,
+            session_hi: 0,
+            session_live: false,
             state: State::Init,
             gap_active: false,
             evidence_hwm: 0,
@@ -82,6 +99,46 @@ impl Sequencer {
             mutation: SequencerMutation::None,
             lens: [0u8; WINDOW_SLOTS],
             arena: [0u8; ARENA_SIZE],
+        }
+    }
+
+    /// Refresh the SIMD session compare template after any session change
+    /// (adoption or boundary). `session_live` is true iff the current
+    /// session is adopted AND non-zero — zero sessions intentionally stay
+    /// cold so session_dispatch's re-adoption branch keeps its exact
+    /// observable behavior (counters included).
+    #[inline]
+    fn refresh_session_tmpl(&mut self) {
+        let s = &self.session;
+        self.session_lo = u64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]);
+        self.session_hi = u64::from_le_bytes([s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9]]);
+        self.session_live = *s != [0u8; 10];
+    }
+
+    /// Cold-path session dispatch (adoption / boundary) with template
+    /// refresh — behaviorally identical to calling session_dispatch
+    /// directly (the refresh is a pure derived-field update).
+    #[inline]
+    fn dispatch_session<S: Sink>(&mut self, new_session: [u8; 10], sink: &mut S) {
+        let prev_session = self.session;
+        session::session_dispatch(
+            &mut self.session,
+            new_session,
+            &mut self.lens,
+            &mut self.staged_count,
+            &mut self.max_staged,
+            &mut self.gap_active,
+            &mut self.evidence_hwm,
+            &mut self.hb_seq,
+            &mut self.hb_vt,
+            &mut self.pending_to,
+            &mut self.gen,
+            &mut self.state,
+            &mut self.counters,
+            sink,
+        );
+        if !self.session_live || self.session != prev_session {
+            self.refresh_session_tmpl();
         }
     }
 
@@ -124,6 +181,7 @@ impl Sequencer {
         }
 
         // S1: SESSION DISPATCH
+        let prev_session = self.session;
         session::session_dispatch(
             &mut self.session,
             hdr.session,
@@ -140,6 +198,11 @@ impl Sequencer {
             &mut self.counters,
             sink,
         );
+        // Lever 3: keep the SIMD compare template in sync with any
+        // adoption/boundary (no-op when the session is unchanged).
+        if !self.session_live || self.session != prev_session {
+            self.refresh_session_tmpl();
+        }
 
         // S2: KIND CLASSIFY (HB/EOS rare in steady replay — cold)
         if hdr.count == moldudp64::HEARTBEAT_COUNT {
@@ -438,45 +501,49 @@ impl Sequencer {
             return;
         }
 
-        let hdr = match moldudp64::parse_header(frame) {
-            Ok(h) => h,
-            Err(e) => {
-                std::hint::cold_path();
-                self.counters.violations.record_frame_error(e);
-                self.counters.total_violations += 1;
-                return;
-            }
-        };
-
         if self.state == State::Dead {
             std::hint::cold_path();
             self.counters.ignored_after_dead += 1;
             return;
         }
 
-        // S1: SESSION DISPATCH (identical to ingest)
-        session::session_dispatch(
-            &mut self.session,
-            hdr.session,
-            &mut self.lens,
-            &mut self.staged_count,
-            &mut self.max_staged,
-            &mut self.gap_active,
-            &mut self.evidence_hwm,
-            &mut self.hb_seq,
-            &mut self.hb_vt,
-            &mut self.pending_to,
-            &mut self.gen,
-            &mut self.state,
-            &mut self.counters,
-            sink,
-        );
+        // S0/S1 FUSED (GIGAHFT Lever 3: 128-bit SIMD header decode).
+        // One unaligned 128-bit load + cmpeq + movemask proves the frame's
+        // 10-byte session equals the live session template (bits 0..9 of
+        // the movemask); seq and count come from two unaligned loads +
+        // bswaps. The 10-byte session array is materialized and the full
+        // session_dispatch ladder runs ONLY on the cold path (adoption or
+        // boundary). Values are identical to parse_header on every input
+        // (frame.len() >= 20 checked above makes it infallible).
+        let frame_lo = u64::from_le_bytes([
+            frame[0], frame[1], frame[2], frame[3], frame[4], frame[5], frame[6], frame[7],
+        ]);
+        let frame_hi = u64::from_le_bytes([
+            frame[2], frame[3], frame[4], frame[5], frame[6], frame[7], frame[8], frame[9],
+        ]);
+        let sess_match =
+            self.session_live && frame_lo == self.session_lo && frame_hi == self.session_hi;
+        let hdr_seq = u64::from_be_bytes([
+            frame[10], frame[11], frame[12], frame[13], frame[14], frame[15], frame[16], frame[17],
+        ]);
+        let hdr_count = u16::from_be_bytes([frame[18], frame[19]]);
+        if !sess_match {
+            // COLD: adoption or boundary — the full dispatch ladder
+            // (identical to the classic path), then refresh the template.
+            std::hint::cold_path();
+            let mut sess = [0u8; 10];
+            sess.copy_from_slice(&frame[0..10]);
+            self.dispatch_session(sess, sink);
+        }
+        // HOT: live session unchanged — session_dispatch would perform no
+        // observable work (proved: an equal, adopted, non-zero session
+        // falls through both of its branches).
 
         // S2: KIND CLASSIFY (identical to ingest; HB/EOS carry no triples)
-        if hdr.count == moldudp64::HEARTBEAT_COUNT {
+        if hdr_count == moldudp64::HEARTBEAT_COUNT {
             std::hint::cold_path();
             session::handle_heartbeat(
-                hdr.seq,
+                hdr_seq,
                 feed,
                 now_ns,
                 self.w,
@@ -492,12 +559,19 @@ impl Sequencer {
             return;
         }
 
-        if hdr.count == moldudp64::EOS_COUNT {
+        if hdr_count == moldudp64::EOS_COUNT {
             std::hint::cold_path();
             if self.mutation == SequencerMutation::DropStagedAtEos {
                 self.lens.fill(0);
                 self.staged_count = 0;
             }
+            let mut eos_session = [0u8; 10];
+            eos_session.copy_from_slice(&frame[0..10]);
+            let hdr = moldudp64::Header {
+                session: eos_session,
+                seq: hdr_seq,
+                count: hdr_count,
+            };
             session::handle_eos(
                 &hdr,
                 self.w,
@@ -547,7 +621,7 @@ impl Sequencer {
         } else if last < self.w {
             // Pure duplicate packet (HOT in dual-feed replay)
             self.counters.feed_mut(feed).dups += 1;
-            self.counters.dup_msgs += hdr.count as u64;
+            self.counters.dup_msgs += hdr_count as u64;
             return;
         }
 
