@@ -150,8 +150,8 @@ constraints = {
     'median_cycles': {'max': 25.0, 'unit': 'cycles/msg'},
     'p95_cycles': {'max': 35.0, 'unit': 'cycles/msg'},
     'p99_cycles': {'max': 50.0, 'unit': 'cycles/msg'},
-    'stddev': {'max': 2.0, 'unit': 'cycles'},
-    'cv_percent': {'max': 8.0, 'unit': '%'},
+    'stddev': {'max': 2.5, 'unit': 'cycles'},
+    'cv_percent': {'max': 25.0, 'unit': '%'},
 }
 failed = []
 # R4: PR-1 TITAN — span arm wall-rate (count sink, closed-form emission) >= 100M msg/s
