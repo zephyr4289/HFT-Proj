@@ -1,0 +1,23 @@
+error[E0117]: only traits defined in the current crate can be implemented for types defined outside of the crate
+ --> tests/ui/cf6_orphan_clone.rs:3:1
+  |
+3 | impl Clone for LiveFeedProof {
+  | ^^^^^^^^^^^^^^^-------------
+  |                |
+  |                `LiveFeedProof` is not defined in the current crate
+  |
+  = note: impl doesn't have any local type before any uncovered type parameters
+  = note: for more information see https://doc.rust-lang.org/reference/items/implementations.html#orphan-rules
+  = note: define and implement a trait or new type instead
+
+error[E0507]: cannot move out of `*self` which is behind a shared reference
+ --> tests/ui/cf6_orphan_clone.rs:5:9
+  |
+5 |         *self
+  |         ^^^^^ move occurs because `*self` has type `LiveFeedProof`, which does not implement the `Copy` trait
+  |
+help: consider cloning the value if the performance cost is acceptable
+  |
+5 -         *self
+5 +         self.clone()
+  |

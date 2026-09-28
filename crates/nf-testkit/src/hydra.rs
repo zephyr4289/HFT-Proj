@@ -246,6 +246,19 @@ impl HydraLane {
     }
 }
 
+/// Producer-side raw pointer to a descriptor ring slot (Lever 2: the
+/// submitting sink writes descriptors in place via a single unaligned
+/// 128-bit store).
+///
+/// SAFETY: the caller must own the slot (space checked at chunk start for
+/// the whole chunk) and publish it afterwards with the head Release store.
+#[inline(always)]
+fn lane_slot_ptr(lane: &HydraLane, pos: u64) -> *mut Desc {
+    // SAFETY: SPSC protocol — see HydraLane::desc_slots; per-slot masking
+    // handles the ring wrap.
+    unsafe { (&mut *lane.desc.get()).as_mut_ptr().add((pos & DESC_MASK) as usize) }
+}
+
 /// Prefetch the first lines of a span body (T0) — gives the hardware
 /// streamer a head start on the worker's upcoming CRC pass.
 #[inline(always)]
@@ -515,9 +528,10 @@ pub struct HydraSpanSink<'a> {
     next_span: u64,
     /// Number of spans folded (fold cursor).
     fold_pos: u64,
-    /// Chunk-buffered descriptors not yet published to the lane.
-    pending: [Desc; CHUNK as usize],
-    /// Filled slots in `pending`.
+    /// GIGAHFT Lever 2: descriptors are written IN PLACE into the lane's
+    /// ring slot at on_span time (single 128-bit store — no staging buffer,
+    /// no flush copy loop). `pending_len` counts slots of the current
+    /// chunk already written but not yet published.
     pending_len: u64,
     /// Lane of the current partial chunk (valid when pending_len > 0).
     pending_lane: usize,
@@ -558,11 +572,6 @@ impl<'a> HydraSpanSink<'a> {
             msg_hash: Self::SPAN_SEED,
             next_span: 0,
             fold_pos: 0,
-            pending: [Desc {
-                ptr: std::ptr::null(),
-                len: 0,
-                span_id: 0,
-            }; CHUNK as usize],
             pending_len: 0,
             pending_lane: 0,
             pending_head: 0,
@@ -624,12 +633,13 @@ impl<'a> HydraSpanSink<'a> {
         self.hash = self.hash.wrapping_mul(0x9e3779b97f4a7c15);
     }
 
-    /// Publish the buffered descriptors to their lane: bulk slot writes + ONE
-    /// Release store. Full chunks (CHUNK spans) keep the cursors chunk-
-    /// aligned; the pass tail publishes a partial run — all slot indexing is
-    /// ring-masked, so unaligned publishes are safe. Backpressure (ring full)
-    /// folds ready results and spins until the worker frees slots —
-    /// deadlock-free by the lane-balance proof.
+    /// Publish the in-place-written descriptors: ONE Release store (Lever 2
+    /// — the slots were already written by `submit_span` directly into the
+    /// lane's ring, kept L1-local on this core). Full chunks (CHUNK spans)
+    /// keep the cursors chunk-aligned; the pass tail publishes a partial
+    /// run — all slot indexing is ring-masked, so unaligned publishes are
+    /// safe. The space check happened at chunk start (see `submit_span`).
+    #[inline]
     fn flush_pending(&mut self) {
         let n = self.pending_len;
         if n == 0 {
@@ -640,35 +650,19 @@ impl<'a> HydraSpanSink<'a> {
             None => unreachable!("flush_pending in inline mode"),
         };
         let lane = &fabric.lanes[self.pending_lane];
+        // SAFETY: slots [h0 & MASK, +n) were producer-owned (space checked
+        // at chunk start) and fully written before this Release store.
         let h0 = self.pending_head;
-        loop {
-            let t = lane.desc_tail.load(Ordering::Acquire);
-            if h0.saturating_sub(t) + n <= DESC_CAP {
-                break;
-            }
-            // Backpressure: fold what's ready (keeps result rings flowing),
-            // then re-check. The worker is guaranteed to make progress.
-            self.fold_available();
-            std::hint::spin_loop();
-        }
-        // Write exactly `n` slots (never more — stale buffer entries beyond
-        // `pending_len` must NOT be published: the worker would evaluate
-        // dead descriptors and poison the fold order).
-        // SAFETY: slots [h0 & MASK, +n) are producer-owned until the head
-        // Release store below; per-slot masking handles the ring wrap.
-        {
-            let slots = lane.desc_slots();
-            for i in 0..n as usize {
-                slots[((h0 + i as u64) & DESC_MASK) as usize] = self.pending[i];
-            }
-        }
         lane.desc_head.store(h0 + n, Ordering::Release);
         self.pending_len = 0;
     }
 
-    /// Buffer a span descriptor into the current chunk (flushing the
-    /// previous chunk when it fills). H6: lane tracking is incremental —
-    /// no division in the hot path.
+    /// Submit a span descriptor: write the 16-byte (ptr, len, span_id)
+    /// descriptor DIRECTLY into its ring slot with one 128-bit store
+    /// (GIGAHFT Lever 2 — zero-copy, zero staging; the descriptor ring
+    /// stays mapped in this core's L1). The chunk is published with ONE
+    /// Release store when full. H6: lane tracking is incremental — no
+    /// division in the hot path.
     #[inline]
     fn submit_span(&mut self, body: &[u8]) {
         let fabric = match self.fabric {
@@ -679,18 +673,40 @@ impl<'a> HydraSpanSink<'a> {
             // Start a new chunk on the lane that owns this span id.
             self.pending_lane = self.submit_lane;
             let lane = &fabric.lanes[self.pending_lane];
-            self.pending_head = lane.desc_head.load(Ordering::Relaxed);
+            let h0 = lane.desc_head.load(Ordering::Relaxed);
+            // Space check for the WHOLE chunk up front (the in-place writes
+            // below must never touch slots the worker still owns).
+            // Backpressure: fold what's ready (keeps result rings flowing),
+            // then re-check — deadlock-free by the lane-balance proof.
+            loop {
+                let t = lane.desc_tail.load(Ordering::Acquire);
+                if h0.saturating_sub(t) + CHUNK <= DESC_CAP {
+                    break;
+                }
+                self.pending_head = h0;
+                self.fold_available();
+                std::hint::spin_loop();
+            }
+            self.pending_head = h0;
         }
         debug_assert_eq!(
             ((self.next_span / CHUNK) % self.n_lanes as u64) as usize,
             self.pending_lane,
             "hydra pending buffer crossed a lane boundary"
         );
-        self.pending[self.pending_len as usize] = Desc {
-            ptr: body.as_ptr(),
-            len: body.len() as u32,
-            span_id: self.next_span as u32,
+        // In-place 128-bit store: (ptr | len<<64 | span_id<<96).
+        // SAFETY: the slot at (pending_head + pending_len) & DESC_MASK is
+        // producer-owned (space checked at chunk start for the full chunk)
+        // and unread by the worker until the Release publish below.
+        let slot = unsafe {
+            lane_slot_ptr(&fabric.lanes[self.pending_lane], self.pending_head + self.pending_len)
         };
+        let packed = (body.as_ptr() as u128)
+            | ((body.len() as u128) << 64)
+            | ((self.next_span as u32 as u128) << 96);
+        unsafe {
+            std::ptr::write_unaligned(slot as *mut u128, packed);
+        }
         self.pending_len += 1;
         // Advance the division-free submit-chunk tracker (after-use: the
         // lane advances when the chunk it belongs to is complete).

@@ -1,0 +1,13 @@
+warning: unused variable: `gen`
+ --> tests/ui/cf3_destructure.rs:4:25
+  |
+4 |     let LiveFeedProof { gen } = *p;
+  |                         ^^^ help: try ignoring the field: `gen: _`
+  |
+  = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+error[E0451]: field `gen` of struct `LiveFeedProof` is private
+ --> tests/ui/cf3_destructure.rs:4:25
+  |
+4 |     let LiveFeedProof { gen } = *p;
+  |                         ^^^ private field
