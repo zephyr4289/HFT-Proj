@@ -97,11 +97,11 @@ grep -q "allocs=0" /tmp/bench_hydra.txt
 grep -q "PR1_HYDRA_VERDICT" /tmp/bench_hydra.txt
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_hydra.txt
 
-echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D8) ==="
+echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D11) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)
 cargo run --release -p nf-testkit --bin diff_oracle | tee /tmp/diff_oracle.txt
-grep -q "ALL D1..D8 DIFFERENTIAL ORACLE CHECKS PASSED SUCCESSFULLY" /tmp/diff_oracle.txt
+grep -q "ALL D1..D11 DIFFERENTIAL ORACLE CHECKS PASSED SUCCESSFULLY" /tmp/diff_oracle.txt
 
 echo "=== 13. T2 Window Sweep & Full 17-Cell Matrix Confluence Campaign ==="
 cargo run --release -p nf-testkit --bin window_sweep | tee /tmp/window_sweep.txt
@@ -153,10 +153,10 @@ constraints = {
     'stddev': {'max': 2.0, 'unit': 'cycles'},
     'cv_percent': {'max': 8.0, 'unit': '%'},
 }
+failed = []
 # R4: PR-1 TITAN — span arm wall-rate (count sink, closed-form emission) >= 100M msg/s
 if r['span_rate_msg_per_sec'] < 100_000_000:
     failed.append(f"span_rate_msg_per_sec: {r['span_rate_msg_per_sec']} < 100000000 msg/s (PR1_TITAN)")
-failed = []
 for metric, rule in constraints.items():
     val = r[metric]
     if val > rule['max']:
