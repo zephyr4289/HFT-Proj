@@ -15,7 +15,7 @@
 #![allow(warnings)]
 #![allow(clippy::all)]
 
-use nf_arbitrator::types::{Event, LiveFeedProof};
+use nf_arbitrator::types::{Event, LiveFeedProof, SpanRec};
 use nf_arbitrator::{Sequencer, Sink};
 use nf_engine::clock::{calibrate_clock, read_monotonic_raw_ns};
 use nf_testkit::sched::{build_schedule, Packetize, ReplayConfig};
@@ -64,6 +64,22 @@ impl Sink for SpanCountSink {
     #[inline(always)]
     fn wants_spans(&self) -> bool {
         true
+    }
+    /// R8: batched emission — the per-span elimination guards collapse to
+    /// one guard over the rec array (the array's bytes ARE the per-span
+    /// ptr/len data, so the emission path cannot be dead-code-eliminated),
+    /// and the count fold becomes one add per rec with a single commit.
+    #[inline(always)]
+    fn on_span_batch(&mut self, proof: &LiveFeedProof, recs: &[SpanRec<'_>]) {
+        let mut sum = 0u64;
+        for r in recs {
+            sum += r.count as u64;
+        }
+        self.count += sum;
+        std::hint::black_box(proof);
+        std::hint::black_box(recs.as_ptr());
+        std::hint::black_box(recs.len());
+        std::hint::black_box(sum);
     }
     #[inline(always)]
     fn on_span(
@@ -123,10 +139,7 @@ fn wall_pass<S: Sink>(
     let t0 = read_monotonic_raw_ns();
     while transport.poll(&mut batch) > 0 {
         let now = transport.now_ns();
-        for f in batch.frames() {
-            let (blocks, memo) = transport.frame_blocks_memo(f);
-            seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, blocks, memo);
-        }
+        seq.ingest_batch(transport.batch_entries(&batch), now, &mut sink);
     }
     let dt = read_monotonic_raw_ns().saturating_sub(t0);
     let count = emitted(&sink);

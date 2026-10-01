@@ -135,10 +135,7 @@ fn run_uninstrumented_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::Cloc
         let mut batch = FrameBatch::new();
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for f in batch.frames() {
-                let (blocks, memo) = transport.frame_blocks_memo(f);
-                seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, blocks, memo);
-            }
+            seq.ingest_batch(transport.batch_entries(&batch), now, &mut sink);
         }
         (sink.count, sink.hash, sink.msg_hash)
     };
@@ -154,10 +151,7 @@ fn run_uninstrumented_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::Cloc
 
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for f in batch.frames() {
-                let (blocks, memo) = transport.frame_blocks_memo(f);
-                seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, blocks, memo);
-            }
+            seq.ingest_batch(transport.batch_entries(&batch), now, &mut sink);
         }
 
         let t1 = read_monotonic_raw_ns();
@@ -229,10 +223,7 @@ fn run_sustained_loop_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
 
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for f in batch.frames() {
-                let (blocks, memo) = transport.frame_blocks_memo(f);
-                seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, blocks, memo);
-            }
+            seq.ingest_batch(transport.batch_entries(&batch), now, &mut sink);
         }
         total_msgs += 505_849;
     }
@@ -304,10 +295,7 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
         let mut batch = FrameBatch::new();
         while t2.poll(&mut batch) > 0 {
             let now = t2.now_ns();
-            for f in batch.frames() {
-                let (blocks, memo) = t2.frame_blocks_memo(f);
-                seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, blocks, memo);
-            }
+            seq.ingest_batch(t2.batch_entries(&batch), now, &mut sink);
         }
         (sink.count, sink.hash, sink.msg_hash)
     };
@@ -320,10 +308,7 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
         let mut batch = FrameBatch::new();
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for f in batch.frames() {
-                let (blocks, memo) = transport.frame_blocks_memo(f);
-                seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, blocks, memo);
-            }
+            seq.ingest_batch(transport.batch_entries(&batch), now, &mut sink);
             // Fold drain every poll (GIGAHFT: with CHUNK=64 one poll fills
             // exactly one chunk — draining per poll keeps the result rings
             // shallow and the fold one chunk behind submission at most).
@@ -361,10 +346,7 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
 
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for f in batch.frames() {
-                let (blocks, memo) = transport.frame_blocks_memo(f);
-                seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, blocks, memo);
-            }
+            seq.ingest_batch(transport.batch_entries(&batch), now, &mut sink);
             sink.drain_ready();
         }
         sink.finish();
@@ -459,10 +441,7 @@ fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -
         let mut ref_sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for f in batch.frames() {
-                let (blocks, memo) = transport.frame_blocks_memo(f);
-                seq.ingest_auto(f.bytes(), f.feed, now, &mut ref_sink, blocks, memo);
-            }
+            seq.ingest_batch(transport.batch_entries(&batch), now, &mut ref_sink);
             ref_sink.drain_ready();
         }
         ref_sink.finish();
@@ -494,10 +473,7 @@ fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -
         // in-flight ring capacity, not fold lag).
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for f in batch.frames() {
-                let (blocks, memo) = transport.frame_blocks_memo(f);
-                seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, blocks, memo);
-            }
+            seq.ingest_batch(transport.batch_entries(&batch), now, &mut sink);
             sink.drain_ready();
         }
         sink.end_pass(); // non-blocking: the tail folds during the next pass

@@ -523,9 +523,9 @@ impl Sequencer {
         ]);
         let sess_match =
             self.session_live && frame_lo == self.session_lo && frame_hi == self.session_hi;
-        let hdr_seq = u64::from_be_bytes([
-            frame[10], frame[11], frame[12], frame[13], frame[14], frame[15], frame[16], frame[17],
-        ]);
+        // R8: hdr_seq is loaded only on the cold control paths (HB/EOS) —
+        // the hot Data path takes first/last from the block triples, so the
+        // 8B load + bswap left the hot loop.
         let hdr_count = u16::from_be_bytes([frame[18], frame[19]]);
         if !sess_match {
             // COLD: adoption or boundary — the full dispatch ladder
@@ -542,6 +542,10 @@ impl Sequencer {
         // S2: KIND CLASSIFY (identical to ingest; HB/EOS carry no triples)
         if hdr_count == moldudp64::HEARTBEAT_COUNT {
             std::hint::cold_path();
+            let hdr_seq = u64::from_be_bytes([
+                frame[10], frame[11], frame[12], frame[13], frame[14], frame[15], frame[16],
+                frame[17],
+            ]);
             session::handle_heartbeat(
                 hdr_seq,
                 feed,
@@ -565,6 +569,10 @@ impl Sequencer {
                 self.lens.fill(0);
                 self.staged_count = 0;
             }
+            let hdr_seq = u64::from_be_bytes([
+                frame[10], frame[11], frame[12], frame[13], frame[14], frame[15], frame[16],
+                frame[17],
+            ]);
             let mut eos_session = [0u8; 10];
             eos_session.copy_from_slice(&frame[0..10]);
             let hdr = moldudp64::Header {
@@ -995,6 +1003,23 @@ where
     let mut emitted = 0u64;
     let mut progressed = false;
     let mut cold: Option<packet::FrameEntry<'a>> = None;
+    // R8: span-emission buffer — steady spans are captured as SpanRecs and
+    // delivered with ONE on_span_batch call per buffer-fill / scan-exit (the
+    // default Sink impl replays them exactly, so this is purely mechanical
+    // batching; sinks like the count/hydra/fabric sinks amortize their
+    // per-call guard work across the batch). 8 covers a coalesced poll's
+    // emitting frames; overflow flushes mid-scan in order.
+    let mut recs = [
+        crate::types::SpanRec {
+            first_seq: 0,
+            count: 0,
+            body: &[],
+            blocks: &[],
+        };
+        8
+    ];
+    let mut nrecs = 0usize;
+    let proof = LiveFeedProof { gen };
     while let Some(entry) = entries.next() {
         let frame = entry.bytes;
         let blocks = entry.blocks;
@@ -1054,17 +1079,21 @@ where
         if skip != 0 {
             dup_msgs += skip as u64;
         }
-        let proof = LiveFeedProof { gen };
         if wants_spans {
-            // R3 closed-form span emission (n > skip always: last >= w).
+            // R3 closed-form span emission (n > skip always: last >= w),
+            // captured into the batch buffer (R8).
             let body = &frame[blocks[skip].1 as usize..blocks[n - 1].2 as usize];
-            sink.on_span(
-                &proof,
-                first + skip as u64,
-                (n - skip) as u16,
+            recs[nrecs] = crate::types::SpanRec {
+                first_seq: first + skip as u64,
+                count: (n - skip) as u16,
                 body,
-                &blocks[skip..],
-            );
+                blocks: &blocks[skip..],
+            };
+            nrecs += 1;
+            if nrecs == recs.len() {
+                sink.on_span_batch(&proof, &recs);
+                nrecs = 0;
+            }
         } else {
             for &(seq, start, end) in &blocks[skip..] {
                 sink.on_msg(&proof, seq, &frame[start as usize..end as usize]);
@@ -1073,6 +1102,11 @@ where
         emitted += (n - skip) as u64;
         *w = last + 1;
         progressed = true;
+    }
+    // Flush any buffered span emissions (BEFORE the caller applies the cold
+    // frame, preserving emission order).
+    if nrecs != 0 {
+        sink.on_span_batch(&proof, &recs[..nrecs]);
     }
     // Commit deferred counters (scan exit — before the caller touches the
     // cold frame, preserving increment order).

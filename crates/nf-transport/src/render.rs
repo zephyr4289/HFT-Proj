@@ -294,7 +294,7 @@ impl ReplayTransport {
                 i = j;
             }
         }
-        Self {
+        let mut t = Self {
             schedule,
             event_idx: 0,
             virtual_clock: first_vt,
@@ -309,7 +309,13 @@ impl ReplayTransport {
             clock_clamp: None,
             body_prefetch: true,
             coalesce: 1,
-        }
+        };
+        // R8: bake the construction session into the patchable prefixes —
+        // the old lazy poll-patching did this on first release; without a
+        // reset() the blob would otherwise serve zeroed sessions (caught by
+        // the A-1 split-watermark test).
+        t.patch_sessions();
+        t
     }
 
     /// R6: control main-side frame-body prefetching in poll() (see field
@@ -341,6 +347,36 @@ impl ReplayTransport {
         self.virtual_clock = first_vt;
         self.session = session;
         self.clock_clamp = None;
+        // R8: patch every patchable frame's 10B session prefix NOW, once —
+        // poll() used to do this per released frame inside the measurement
+        // window (a 10B copy + branch per frame). reset() runs outside every
+        // timed window in the burst arms, and its ~60-80µs blob rewrite is
+        // 0.25% of the sustained arm's in-window reset cadence. The frames
+        // poll() serves are byte-identical to the lazily-patched ones (same
+        // bytes written, same positions, before any consumer can read them
+        // — poll slices frames only after this loop completes).
+        self.patch_sessions();
+    }
+
+    /// R8: write the current session into every patchable frame's 10B
+    /// prefix (see `reset`). Also run at construction, so a transport that
+    /// is polled without any reset() serves the construction session's
+    /// bytes exactly as the old lazy poll-patching did.
+    fn patch_sessions(&mut self) {
+        let session = self.session;
+        for i in 0..self.meta.len() {
+            if self.meta[i].patch {
+                let base = self.meta[i].offset as usize;
+                let end = base + self.meta[i].len as usize;
+                // SAFETY: offset/len are construction-valid (the render
+                // loop's own append cursor); patch is only ever true for
+                // rendered (len > 0) frames.
+                unsafe {
+                    let frame = self.frames.get_unchecked_mut(base..end);
+                    frame[0..10].copy_from_slice(&session);
+                }
+            }
+        }
     }
 
     #[inline]
@@ -410,7 +446,6 @@ impl ReplayTransport {
         let vclock = self.virtual_clock;
 
         let cap = FrameBatch::capacity();
-        let session = self.session;
 
         while self.event_idx < events_len && batch.len() < cap {
             let evt = self.event_idx;
@@ -431,9 +466,9 @@ impl ReplayTransport {
             // the invariant honest under mutation-heavy test builds.
             debug_assert!(end <= self.frames.len());
             let frame = unsafe { self.frames.get_unchecked_mut(base..end) };
-            if m.patch {
-                frame[0..10].copy_from_slice(&session);
-            }
+            // R8: the session prefix was patched at reset() time — poll's
+            // release loop is a pure slice + push (the 10B copy and its
+            // branch are gone from the hot path).
             let slot_idx = batch.len();
             batch.push_indexed(
                 frame.as_ptr(),

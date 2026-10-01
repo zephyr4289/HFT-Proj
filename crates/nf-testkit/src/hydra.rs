@@ -93,7 +93,7 @@
 
 use crate::crcfold::CrcKernel;
 use crate::sink::span_crc32c_8lane;
-use nf_arbitrator::types::{Event, LiveFeedProof, Sink};
+use nf_arbitrator::types::{Event, LiveFeedProof, Sink, SpanRec};
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -1106,6 +1106,55 @@ impl<'a> Sink for HydraSpanSink<'a> {
             Some(_) => {
                 self.submit_span(body);
                 self.next_span += 1;
+            }
+        }
+    }
+
+    /// R8: batched span emission — the G-INV assert runs once per batch (one
+    /// proof era for all recs), the continuity chain is checked head-to-tail
+    /// across the recs (exactly as strong as per-span: recs[0] must continue
+    /// the previous emission and each rec[i] must continue recs[i-1]), and
+    /// the per-span submit/evaluate work runs in one tight loop. Values,
+    /// order and invariants are identical to the per-span path.
+    #[inline(always)]
+    fn on_span_batch(&mut self, proof: &LiveFeedProof, recs: &[SpanRec<'_>]) {
+        assert!(
+            proof.gen() >= self.last_gen,
+            "G-INV violation: proof gen {} is older than sink last_gen {}",
+            proof.gen(),
+            self.last_gen
+        );
+        let mut sum = 0u64;
+        for r in recs {
+            if self.last_seq != 0 {
+                assert_eq!(
+                    r.first_seq,
+                    self.last_seq + 1,
+                    "Non-monotonic span batch: expected {}, got {} (count={})",
+                    self.last_seq + 1,
+                    r.first_seq,
+                    r.count
+                );
+            }
+            self.last_seq = r.first_seq + r.count as u64 - 1;
+            sum += r.count as u64;
+        }
+        self.count += sum;
+        match self.fabric {
+            None => {
+                // Inline mode: evaluate + fold NOW — sequential-equivalent.
+                for r in recs {
+                    let v = span_crc32c_8lane(r.body);
+                    self.fold_value(v);
+                    self.next_span += 1;
+                    self.fold_pos += 1;
+                }
+            }
+            Some(_) => {
+                for r in recs {
+                    self.submit_span(r.body);
+                    self.next_span += 1;
+                }
             }
         }
     }
