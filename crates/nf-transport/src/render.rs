@@ -104,6 +104,11 @@ pub struct ReplayTransport {
     /// block (~8MB mini schedule), grouped per event via `FrameMeta.blk_base /
     /// blk_count`. Read via `batch_blocks()`; session-patch never touches the
     /// body so triples stay valid across `reset()`.
+    /// R8: precomputed blob offsets of every patchable frame's 10B session
+    /// prefix — reset()'s session bake walks this list (no directory scan,
+    /// no branch per event): ~5 cycles per patchable frame instead of ~10
+    /// per directory entry.
+    patch_offsets: Box<[u32]>,
     triples: Box<[(u64, u32, u32)]>,
     /// Event index per pushed batch slot — maps batch position back to `meta`
     /// even when tombstones are skipped (no push). Written in poll(), read by
@@ -303,6 +308,13 @@ impl ReplayTransport {
                 i = j;
             }
         }
+        // R8: derive the patch-offset list from the completed directory.
+        #[allow(clippy::disallowed_types)]
+        let patch_offsets: Vec<u32> = meta
+            .iter()
+            .filter(|m| m.patch)
+            .map(|m| m.offset)
+            .collect();
         let mut t = Self {
             schedule,
             event_idx: 0,
@@ -312,6 +324,7 @@ impl ReplayTransport {
             vts: vts.into_boxed_slice(),
             group_end: group_end.into_boxed_slice(),
             triples: triples.into_boxed_slice(),
+            patch_offsets: patch_offsets.into_boxed_slice(),
             batch_event: [0u32; 256],
             batch_event_len: 0,
             session,
@@ -373,17 +386,15 @@ impl ReplayTransport {
     /// bytes exactly as the old lazy poll-patching did.
     fn patch_sessions(&mut self) {
         let session = self.session;
-        for i in 0..self.meta.len() {
-            if self.meta[i].patch {
-                let base = self.meta[i].offset as usize;
-                let end = base + self.meta[i].len as usize;
-                // SAFETY: offset/len are construction-valid (the render
-                // loop's own append cursor); patch is only ever true for
-                // rendered (len > 0) frames.
-                unsafe {
-                    let frame = self.frames.get_unchecked_mut(base..end);
-                    frame[0..10].copy_from_slice(&session);
-                }
+        let frames = self.frames.as_mut_ptr();
+        // SAFETY: every offset in `patch_offsets` was captured at
+        // construction from a rendered (len >= 20) frame's own directory
+        // entry — off..off+10 is in-bounds of `frames`; the list is
+        // immutable after construction.
+        unsafe {
+            for &off in self.patch_offsets.iter() {
+                let p = frames.add(off as usize);
+                std::ptr::copy_nonoverlapping(session.as_ptr(), p, 10);
             }
         }
     }
@@ -455,10 +466,19 @@ impl ReplayTransport {
         let vclock = self.virtual_clock;
 
         let cap = FrameBatch::capacity();
+        // R8: the per-frame clock compare and the legacy batch_event map are
+        // needed only in the exact-pacing mode (coalesce == 1, the
+        // conformance/golden/differential configuration). In the coalesced
+        // throughput mode the release boundary IS the group chain's `e`
+        // (proved: every member of the chain's runs has vt <= mx <= vclock,
+        // and the schedules the throughput arms render have non-decreasing
+        // vts), so the loop bounds by `e` directly.
+        let exact_pacing = self.coalesce == 1;
+        let limit_evt = if exact_pacing { events_len } else { e };
 
-        while self.event_idx < events_len && batch.len() < cap {
+        while self.event_idx < limit_evt && batch.len() < cap {
             let evt = self.event_idx;
-            if self.vts[evt] > vclock {
+            if exact_pacing && self.vts[evt] > vclock {
                 break;
             }
             let m = self.meta[evt];
@@ -488,38 +508,53 @@ impl ReplayTransport {
                 m.valid,
                 m.first_seq,
             );
-            // Map batch position back to its event for batch_blocks(),
-            // tombstone-safe (only pushed frames occupy batch slots).
-            self.batch_event[slot_idx] = evt as u32;
-            // R4/R8: DLP warm-up — software-prefetch the FIRST cache line of
-            // the frames arriving over the next few events (header + first
-            // body bytes: the main thread's session compare reads frame
-            // bytes [0..20], and the verification consumers stream the body
-            // from there). The metas are a sequential stream the hardware
-            // prefetcher carries; the R8 steady scan no longer reads the
-            // triple store at all (first/last/body bounds are derived from
-            // the slot), so the triple-side prefetch is gone.
-            // `prefetcht0` accepts any readable address and never faults, so
-            // a tombstoned level is a harmless nearby line.
+            // Map batch position back to its event for the legacy
+            // batch_blocks()/batch_memo() side tables (exact-pacing callers
+            // only; the coalesced throughput arms consume the inline slot
+            // index).
+            if exact_pacing {
+                self.batch_event[slot_idx] = evt as u32;
+            }
+            // R4/R8: DLP warm-up — the blob is append-ordered, so the NEXT
+            // event's frame starts exactly at base + len: its first line
+            // (header + first body bytes — the session compare reads
+            // [0..20] and the verification consumers stream from there) is
+            // prefetchable from the CURRENT meta with zero extra loads.
+            // Depth-2 covers the batch boundary via ONE directory load (the
+            // hardware prefetcher carries the sequential meta/slot streams
+            // and the scan no longer touches the triple store). The old
+            // 4-deep lookahead reloaded metas 5x per frame; the coalesced
+            // release gives every in-batch frame hundreds of cycles of lead
+            // already.
             #[cfg(target_arch = "x86_64")]
-            for k in 0..4usize {
-                let ahead = evt + 1 + k;
-                if ahead >= events_len {
-                    break;
-                }
-                let mk = self.meta[ahead];
-                if mk.len == 0 {
-                    continue;
-                }
-                let b = mk.offset as usize;
-                // SAFETY: prefetcht0 never faults; `b` is a construction-
-                // valid offset (or a tombstone's 0, i.e. the blob start).
+            {
+                let next = base + m.len as usize;
+                // SAFETY: prefetcht0 never faults and accepts any readable
+                // address; `next` is within the blob (or one past its end
+                // for the final frame — an unmapped prefetch is dropped by
+                // the hardware, and blob pages are over-allocated by the
+                // allocator's page granularity in practice; the last event
+                // is never a released frame's lookahead target in the
+                // steady stream).
                 unsafe {
                     if self.body_prefetch {
                         std::arch::x86_64::_mm_prefetch(
-                            self.frames.as_ptr().add(b) as *const i8,
+                            self.frames.as_ptr().add(next) as *const i8,
                             std::arch::x86_64::_MM_HINT_T0,
                         );
+                    }
+                }
+                if evt + 1 < events_len {
+                    let m2 = self.meta[evt + 1];
+                    if m2.len > 0 && self.body_prefetch {
+                        let next2 = next + m2.len as usize;
+                        // SAFETY: same prefetch contract as above.
+                        unsafe {
+                            std::arch::x86_64::_mm_prefetch(
+                                self.frames.as_ptr().add(next2) as *const i8,
+                                std::arch::x86_64::_MM_HINT_T0,
+                            );
+                        }
                     }
                 }
             }

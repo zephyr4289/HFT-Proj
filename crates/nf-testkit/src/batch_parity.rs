@@ -277,3 +277,41 @@ pub fn mini_gt(count: u64) -> Vec<u8> {
     }
     gt
 }
+
+/// R8: RX-coalesced pacing (set_poll_coalesce(k)) must be observationally
+/// identical to the exact default pacing on non-decreasing-vt schedules
+/// (the DelayModel::None configuration every throughput arm renders): the
+/// same frames, in the same order, with the same emissions and counters.
+/// The per-batch `now` values differ (coalesced polls report the latest
+/// released group's vt) — the sequencer's emissions and counters do not
+/// depend on it in lossless schedules (no gaps, no intents).
+#[test]
+fn t_r8_coalesced_pacing_parity() {
+    let gt = mini_gt(3000);
+    let cfg = default_cfg();
+    let sched = build_schedule(&gt, &cfg);
+    let sess = *b"PARITY0009";
+    let mut t_a = ReplayTransport::new(&gt, sched.clone(), sess);
+    let mut t_b = ReplayTransport::new(&gt, sched.clone(), sess);
+    let mut t_c = ReplayTransport::new(&gt, sched, sess);
+    t_b.set_poll_coalesce(4);
+    t_c.set_poll_coalesce(8);
+
+    let run = |t: &mut ReplayTransport| -> (nf_arbitrator::Counters, u64, u64, u64) {
+        t.reset(sess);
+        let mut seq = Sequencer::new();
+        let mut sink = SpanConformanceSink::new();
+        let mut batch = FrameBatch::new();
+        while t.poll(&mut batch) > 0 {
+            let now = t.now_ns();
+            seq.ingest_batch(t.batch_entries(&batch), now, &mut sink);
+        }
+        (seq.counters(), seq.watermark(), sink.count, sink.hash)
+    };
+    let a = run(&mut t_a);
+    let b = run(&mut t_b);
+    let c = run(&mut t_c);
+    assert_eq!(a, b, "coalesce=4 diverged from exact pacing");
+    assert_eq!(a, c, "coalesce=8 diverged from exact pacing");
+    assert!(a.2 > 0);
+}
