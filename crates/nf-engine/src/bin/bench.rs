@@ -285,20 +285,28 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
     let sched = build_schedule(gt, &cfg);
     let sess = *b"HYDRASESS1";
     let workers = nf_testkit::hydra::HydraFabric::default_workers();
-    let fabric = nf_testkit::hydra::HydraFabric::spawn(workers);
+    // R8: topology-aware affinity — capture the order BEFORE pinning main
+    // (threads inherit the creator's mask): main -> topo[0], workers ->
+    // topo[1..], the pipeline's RX thread -> a shared worker cpu (it is
+    // ~15% busy at these rates).
+    let topo = nf_testkit::affinity::cpu_order();
+    if let Some(c) = topo.first() {
+        let _ = nf_testkit::affinity::pin_current_to(*c);
+    }
+    let worker_cpus: Vec<usize> = topo.iter().skip(1).copied().collect();
+    let rx_cpu = topo.get(1).copied();
+    let fabric = nf_testkit::hydra::HydraFabric::spawn_pinned(workers, &worker_cpus);
     let mut rates = Vec::with_capacity(runs);
-    let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
-    // R8 (revised): main-side first-line prefetch is back ON — the main
-    // thread's steady scan reads every frame's session bytes [0..20], and
-    // the R6-era OFF setting left those header lines cold on the main
-    // core's critical path. Workers still issue their own deeper body
-    // prefetch; the shared lines land in L2/L3 either way. Also NAPI-style
-    // RX coalescing for the throughput arms.
-    transport.set_poll_coalesce(8);
+    // R8: RX-pipelined transport (poll staging on its own core; the main
+    // core runs arbitration + span submission + the ordered fold).
+    let mut transport = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce_cpu(
+        gt, sched.clone(), sess, 128, rx_cpu,
+    );
 
     // Layer 1: sequential reference (the TITAN arm's own verifier, pinned).
     let seq_ref = {
         let mut t2 = ReplayTransport::new(gt, sched.clone(), sess);
+        t2.set_poll_coalesce(128);
         let mut seq = Sequencer::new();
         let mut sink = SpanConformanceSink::new();
         let mut batch = FrameBatch::new();
@@ -310,17 +318,14 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
     };
 
     // Layer 2: untimed hydra reference pass pins the expected values.
-    let ref_pass = |transport: &mut ReplayTransport| -> (u64, u64, u64) {
+    let ref_pass = |transport: &mut nf_transport::pipeline::PipelinedReplayTransport| -> (u64, u64, u64) {
         transport.reset(sess);
         let mut seq = Sequencer::new();
         let mut sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
-        let mut batch = FrameBatch::new();
-        while transport.poll(&mut batch) > 0 {
-            let now = transport.now_ns();
-            seq.ingest_batch(transport.batch_entries(&batch), now, &mut sink);
-            // Fold drain every poll (GIGAHFT: with CHUNK=64 one poll fills
-            // exactly one chunk — draining per poll keeps the result rings
-            // shallow and the fold one chunk behind submission at most).
+        while transport.next_batch() {
+            seq.ingest_entries(transport.entries(), transport.now_ns(), &mut sink);
+            // Fold drain every batch (the rings stay shallow and the fold
+            // close behind submission).
             sink.drain_ready();
         }
         sink.finish();
@@ -348,14 +353,12 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
         transport.reset(sess);
         let mut seq = Sequencer::new();
         let mut sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
-        let mut batch = FrameBatch::new();
 
         let (a1, d1) = GLOBAL.snapshot();
         let t0 = read_monotonic_raw_ns();
 
-        while transport.poll(&mut batch) > 0 {
-            let now = transport.now_ns();
-            seq.ingest_batch(transport.batch_entries(&batch), now, &mut sink);
+        while transport.next_batch() {
+            seq.ingest_entries(transport.entries(), transport.now_ns(), &mut sink);
             sink.drain_ready();
         }
         sink.finish();
@@ -431,18 +434,23 @@ fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -
     };
     let sched = build_schedule(gt, &cfg);
     let workers = nf_testkit::hydra::HydraFabric::default_workers();
-    let fabric = nf_testkit::hydra::HydraFabric::spawn(workers);
+    let topo = nf_testkit::affinity::cpu_order();
+    if let Some(c) = topo.first() {
+        let _ = nf_testkit::affinity::pin_current_to(*c);
+    }
+    let worker_cpus: Vec<usize> = topo.iter().skip(1).copied().collect();
+    let rx_cpu = topo.get(1).copied();
+    let fabric = nf_testkit::hydra::HydraFabric::spawn_pinned(workers, &worker_cpus);
     let mut total_msgs = 0u64;
     let mut session_counter = 1000u64;
 
     let initial_sess = *b"HYDRASUST1";
-    let mut transport = ReplayTransport::new(gt, sched, initial_sess);
-    // R8 (revised): see the burst arm — first-line prefetch ON (main reads
-    // frame headers), RX coalescing ON.
-    transport.set_poll_coalesce(8);
+    // R8: RX-pipelined transport (see the burst arm).
+    let mut transport = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce_cpu(
+        gt, sched, initial_sess, 128, rx_cpu,
+    );
     let mut seq = Sequencer::new();
     let mut sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
-    let mut batch = FrameBatch::new();
 
     // Untimed reference pass pins the per-pass tuple (identical bytes every
     // pass; only the session id changes, which cannot affect the tuple).
@@ -450,9 +458,8 @@ fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -
         transport.reset(initial_sess);
         *seq = Sequencer::new_unboxed();
         let mut ref_sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
-        while transport.poll(&mut batch) > 0 {
-            let now = transport.now_ns();
-            seq.ingest_batch(transport.batch_entries(&batch), now, &mut ref_sink);
+        while transport.next_batch() {
+            seq.ingest_entries(transport.entries(), transport.now_ns(), &mut ref_sink);
             ref_sink.drain_ready();
         }
         ref_sink.finish();
@@ -479,12 +486,11 @@ fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -
         *seq = Sequencer::new_unboxed();
         sink.begin_pass();
 
-        // Fold drain every poll: keeps the result rings shallow and the
+        // Fold drain every batch: keeps the result rings shallow and the
         // ordered fold close behind submission (the overlap's slack is the
         // in-flight ring capacity, not fold lag).
-        while transport.poll(&mut batch) > 0 {
-            let now = transport.now_ns();
-            seq.ingest_batch(transport.batch_entries(&batch), now, &mut sink);
+        while transport.next_batch() {
+            seq.ingest_entries(transport.entries(), transport.now_ns(), &mut sink);
             sink.drain_ready();
         }
         sink.end_pass(); // non-blocking: the tail folds during the next pass

@@ -315,3 +315,72 @@ fn t_r8_coalesced_pacing_parity() {
     assert_eq!(a, c, "coalesce=8 diverged from exact pacing");
     assert!(a.2 > 0);
 }
+
+/// R8: the RX-PIPELINED transport must be observationally identical to the
+/// single-threaded transport on the canonical schedule — same frames, same
+/// order, same `now_ns` values per batch, same counters/watermark/count/
+/// hash — including the multi-pass reset cycle with fresh sessions.
+#[test]
+fn t_r8_pipeline_parity_canonical() {
+    let gt = mini_gt(3000);
+    let cfg = default_cfg();
+    let sched = build_schedule(&gt, &cfg);
+    let sess = *b"PIPEPAR001";
+
+    let mut t_st = ReplayTransport::new(&gt, sched.clone(), sess);
+    t_st.set_poll_coalesce(128);
+    let mut t_pl = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce(
+        &gt, sched, sess, 128,
+    );
+
+    let run_st = |t: &mut ReplayTransport| -> (nf_arbitrator::Counters, u64, u64, u64) {
+        t.reset(sess);
+        let mut seq = Sequencer::new();
+        let mut sink = SpanConformanceSink::new();
+        let mut batch = FrameBatch::new();
+        while t.poll(&mut batch) > 0 {
+            let now = t.now_ns();
+            seq.ingest_batch(t.batch_entries(&batch), now, &mut sink);
+        }
+        (seq.counters(), seq.watermark(), sink.count, sink.hash)
+    };
+    let run_pl =
+        |t: &mut nf_transport::pipeline::PipelinedReplayTransport| -> (nf_arbitrator::Counters, u64, u64, u64) {
+            t.reset(sess);
+            let mut seq = Sequencer::new();
+            let mut sink = SpanConformanceSink::new();
+            while t.next_batch() {
+                seq.ingest_entries(t.entries(), t.now_ns(), &mut sink);
+            }
+            (seq.counters(), seq.watermark(), sink.count, sink.hash)
+        };
+
+    let a = run_st(&mut t_st);
+    let b = run_pl(&mut t_pl);
+    assert_eq!(a, b, "pipelined transport diverged from single-threaded");
+
+    // Multi-pass reset cycle with fresh sessions.
+    for pass in 0..3u64 {
+        let mut s2 = *b"PIPEPAR001";
+        s2[7..10].copy_from_slice(&(100 + pass).to_be_bytes()[5..8]);
+        t_st.reset(s2);
+        let mut seq1 = Sequencer::new();
+        let mut sink1 = SpanConformanceSink::new();
+        let mut batch = FrameBatch::new();
+        while t_st.poll(&mut batch) > 0 {
+            let now = t_st.now_ns();
+            seq1.ingest_batch(t_st.batch_entries(&batch), now, &mut sink1);
+        }
+        t_pl.reset(s2);
+        let mut seq2 = Sequencer::new();
+        let mut sink2 = SpanConformanceSink::new();
+        while t_pl.next_batch() {
+            seq2.ingest_entries(t_pl.entries(), t_pl.now_ns(), &mut sink2);
+        }
+        assert_eq!(
+            (seq1.counters(), seq1.watermark(), sink1.count, sink1.hash),
+            (seq2.counters(), seq2.watermark(), sink2.count, sink2.hash),
+            "pipelined pass {pass} diverged"
+        );
+    }
+}

@@ -64,6 +64,13 @@ pub struct FrameEntry<'a> {
     /// `blocks[0].0` by construction (the render walk emits exactly
     /// `first_seq + i` triples or tombstones the frame).
     pub first_seq: u64,
+    /// R8: the frame's session prefix as the sequencer's fused compare
+    /// words (bytes 0..8 / 2..10 little-endian), carried inline by the
+    /// slot — equals the corresponding `bytes` words by construction (the
+    /// publisher computes them from those bytes). Lets the steady scan run
+    /// without touching the frame lines (cross-core in pipelined mode).
+    pub sess_lo: u64,
+    pub sess_hi: u64,
 }
 
 /// Single-pass fused framing + per-block callback walk for the ingest hot path

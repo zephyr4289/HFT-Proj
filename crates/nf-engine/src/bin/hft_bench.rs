@@ -156,6 +156,56 @@ fn wall_pass<S: Sink>(
     ((count as f64) / (dt as f64) * 1e9) as u64
 }
 
+/// R8: the span arm's pipelined pass — the RX thread (transport staging:
+/// directory walk, pacing, session-baked slicing, slot publication) runs
+/// on its own core while THIS thread arbitrates (the sequencer's steady
+/// ladder + span emission). Same bytes, same order, same emissions as the
+/// single-threaded pass (pinned by the parity suite); the two halves of
+/// the ingest pipeline are simply overlapped — the feed-handler shape
+/// real deployments run.
+fn wall_pass_pipelined<S: Sink>(
+    transport: &mut nf_transport::pipeline::PipelinedReplayTransport,
+    sess: [u8; 10],
+    golden_count: Option<u64>,
+    mk: impl FnOnce() -> S,
+    emitted: impl FnOnce(&S) -> u64,
+) -> u64 {
+    transport.reset(sess); // rewind + session bake (RX handshake)
+    let mut seq = Sequencer::new();
+    let mut sink = mk();
+    let t0 = read_monotonic_raw_ns();
+    let mut nb = 0usize;
+    let mut max_batch_ns: u128 = 0;
+    while transport.next_batch() {
+        let tb = read_monotonic_raw_ns();
+        seq.ingest_entries(transport.entries(), transport.now_ns(), &mut sink);
+        let db = read_monotonic_raw_ns().saturating_sub(tb) as u128;
+        if db > max_batch_ns {
+            max_batch_ns = db;
+        }
+        nb += 1;
+    }
+    let dt = read_monotonic_raw_ns().saturating_sub(t0);
+    if std::env::var("HFT_EXP_DIAG").is_ok() {
+        eprintln!(
+            "DIAG pass: batches={} total_ms={:.1} max_batch_us={:.1}",
+            nb,
+            dt as f64 / 1e6,
+            max_batch_ns as f64 / 1e3
+        );
+    }
+    let count = emitted(&sink);
+    assert!(count > 0, "hft_bench: zero messages emitted (pipelined)");
+    if let Some(g) = golden_count {
+        assert_eq!(
+            count, g,
+            "hft_bench: pipelined fast-path count divergence (confluence break)"
+        );
+    }
+    assert!(dt > 0, "hft_bench: zero-duration pass (pipelined)");
+    ((count as f64) / (dt as f64) * 1e9) as u64
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let mut runs: usize = 30;
@@ -217,15 +267,30 @@ fn main() {
     };
     let sched = build_schedule(&gt, &cfg);
     let sess = *b"HFTBENCH01";
+    // R8: affinity — capture the topology order FIRST (threads inherit
+    // the creator's restricted mask), then pin THIS thread to its first
+    // CPU and hand the second CPU to the RX thread of the pipeline.
+    let topo = nf_testkit::affinity::cpu_order();
+    let rx_cpu = topo.get(1).copied();
+    if let Some(cpu) = topo.first() {
+        let _ = nf_testkit::affinity::pin_current_to(*cpu);
+    }
     // Single transport for all passes (see wall_pass): identical bytes, warm pages.
-    let mut transport = ReplayTransport::new(&gt, sched, sess);
+    let mut transport = ReplayTransport::new(&gt, sched.clone(), sess);
     // R8: RX coalescing for the throughput arms (NAPI-style receipt batching;
     // see set_poll_coalesce). HFT_COALESCE=1 disables it (exact pre-R8 pacing).
     let co = std::env::var("HFT_COALESCE")
         .ok()
         .and_then(|v| v.trim().parse::<usize>().ok())
-        .unwrap_or(8);
+        .unwrap_or(128);
     transport.set_poll_coalesce(co);
+    // R8: the SPAN arm runs on the RX-pipelined transport (coalesced,
+    // RX pinned to topology slot 1); the classic per-message arm keeps
+    // the single-threaded transport (its JSON contract measures the
+    // engine-only path).
+    let mut piped = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce_cpu(
+        &gt, sched, sess, co, rx_cpu,
+    );
     // Golden population for the canonical mini sample under this config.
     let golden_count = sample_path
         .ends_with("sample-mini.itch")
@@ -253,16 +318,17 @@ fn main() {
         cs.push(cyc);
     }
 
-    // ── R3 span arm (closed-form contiguous emission ceiling) ────────────
+    // ── R3 span arm (closed-form contiguous emission ceiling; R8: pipelined) ──
     for w in 0..warmup {
-        let r = wall_pass(&mut transport, sess, golden_count, || SpanCountSink { count: 0 }, |s| s
-            .count);
+        let r = wall_pass_pipelined(&mut piped, sess, golden_count, || SpanCountSink { count: 0 }, |s| {
+            s.count
+        });
         eprintln!("HFT_BENCH_WARMUP {}/{} arm=span rate={}", w + 1, warmup, r);
     }
 
     let mut scs: Vec<f64> = Vec::with_capacity(runs);
     for run in 0..runs {
-        let rate = wall_pass(&mut transport, sess, golden_count, || SpanCountSink { count: 0 }, |s| {
+        let rate = wall_pass_pipelined(&mut piped, sess, golden_count, || SpanCountSink { count: 0 }, |s| {
             s.count
         });
         let cyc = freq / rate.max(1) as f64;

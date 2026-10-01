@@ -3,6 +3,11 @@
 #![cfg_attr(not(test), deny(clippy::disallowed_types))]
 
 use crate::sched_types::{ReplaySchedule, SchedEvent, SchedKind};
+// R8: construction-time shared handle for the triple store (the RX-pipelined
+// consumer's read-only view). Never touched in a hot path — the Tier-F
+// allow mirrors the construction-time Vec allows below.
+#[allow(clippy::disallowed_types)]
+use std::sync::Arc;
 use crate::{FeedId, FrameBatch, Transport};
 use nf_protocol::itch5;
 use nf_protocol::moldudp64::{EOS_COUNT, HEADER_LEN, HEARTBEAT_COUNT};
@@ -74,57 +79,30 @@ pub struct ReplayTransport {
     schedule: ReplaySchedule,
     event_idx: usize,
     virtual_clock: u64,
-    /// All event frames rendered once at construction (startup-only work, outside
-    /// every measurement window). poll() only slices + patches session prefix.
-    /// ~15MB for the 505k-msg mini schedule; dropped with the transport.
     frames: Box<[u8]>,
     meta: Box<[FrameMeta]>,
     /// R8: parallel release-time stream (event order, one u64 per event).
-    /// Split from `meta` so the directory is 16B/entry; the clock check
-    /// reads this stream and the per-frame metadata reads the other — both
-    /// sequential, both hardware-prefetched.
     vts: Box<[u64]>,
-    /// R8: vt-group boundaries — `group_end[i]` is the exclusive end of the
-    /// maximal in-order run starting at `i` whose release times are all
-    /// `<= vts[i]` (the exact release set of a poll entering at `i` with
-    /// `vclock = vts[i]`). Precomputed once at construction (vts are
-    /// non-decreasing for the schedules the renderer emits, but the
-    /// boundary math never assumes it). Lets poll release a whole group —
-    /// or several, see `coalesce` — with chain lookups instead of per-frame
-    /// clock comparisons, and drives the R8 RX-coalescing mode.
+    /// R8: vt-group boundaries (see poll_clamped's release proof).
     group_end: Box<[u32]>,
-    /// R8: RX coalescing — how many vt-groups one poll() releases into the
-    /// batch before returning (NAPI-style receipt batching; `now_ns()`
-    /// reports the latest released group's virtual time). Default 1 = the
-    /// exact pre-R8 pacing semantics (one group per poll). Perf arms raise
-    /// this to amortize the per-poll fixed cost; every conformance, golden
-    /// and differential path keeps the default.
-    coalesce: usize,
-    /// Flat precomputed block index: one `(seq, start, end)` triple per message
-    /// block (~8MB mini schedule), grouped per event via `FrameMeta.blk_base /
-    /// blk_count`. Read via `batch_blocks()`; session-patch never touches the
-    /// body so triples stay valid across `reset()`.
+    /// Flat precomputed block index: one `(seq, start, end)` triple per
+    /// message block, grouped per event. R8: shared (Arc) so the
+    /// RX-pipelined consumer can build block slices cross-thread — the
+    /// ONLY part of the rendered state the consumer touches directly
+    /// (frame bytes reach it through the raw pointers the RX thread's
+    /// slots carry, and the directory/pacing stay RX-private).
+    #[allow(clippy::disallowed_types)]
+    triples: Arc<[(u64, u32, u32)]>,
     /// R8: precomputed blob offsets of every patchable frame's 10B session
-    /// prefix — reset()'s session bake walks this list (no directory scan,
-    /// no branch per event): ~5 cycles per patchable frame instead of ~10
-    /// per directory entry.
+    /// prefix (reset-time session bake).
     patch_offsets: Box<[u32]>,
-    triples: Box<[(u64, u32, u32)]>,
-    /// Event index per pushed batch slot — maps batch position back to `meta`
-    /// even when tombstones are skipped (no push). Written in poll(), read by
-    /// `batch_blocks()`.
-    batch_event: [u32; 256],
-    /// Batch length of the most recent poll — bounds `batch_blocks()` so stale
-    /// slots from older polls are unreachable.
-    batch_event_len: usize,
+    /// R8: RX coalescing — vt-groups per poll (1 = exact pre-R8 pacing).
+    coalesce: usize,
+    body_prefetch: bool,
     session: [u8; 10],
     clock_clamp: Option<u64>,
-    /// R6: when false, poll() skips the frame-BODY prefetch (workers read
-    /// bodies on their own cores and issue their own head-start prefetch —
-    /// main-side body prefetch is pure overhead in fabric mode). The block
-    /// TRIPLE prefetch stays on: the main-thread ingest reads triples[0]
-    /// and triples[n-1] of every frame. Not semantically observable.
-    body_prefetch: bool,
+    batch_event: [u32; 256],
+    batch_event_len: usize,
 }
 
 impl ReplayTransport {
@@ -323,7 +301,12 @@ impl ReplayTransport {
             meta: meta.into_boxed_slice(),
             vts: vts.into_boxed_slice(),
             group_end: group_end.into_boxed_slice(),
-            triples: triples.into_boxed_slice(),
+            #[allow(clippy::disallowed_types)]
+            triples: {
+                #[allow(clippy::disallowed_types)]
+                let arc: Arc<[(u64, u32, u32)]> = triples.into_boxed_slice().into();
+                arc
+            },
             patch_offsets: patch_offsets.into_boxed_slice(),
             batch_event: [0u32; 256],
             batch_event_len: 0,
@@ -499,14 +482,29 @@ impl ReplayTransport {
             // release loop is a pure slice + push (the 10B copy and its
             // branch are gone from the hot path).
             let slot_idx = batch.len();
+            // R8: session compare words, read from the frame line this
+            // thread already holds (the reset-time bake guarantees the
+            // bytes). In pipelined mode the consumer's steady scan then
+            // never touches the cross-core frame lines at all.
+            let fptr = frame.as_ptr();
+            // SAFETY: len >= HEADER_LEN (>= 20) for every pushed frame;
+            // unaligned u64 reads are defined.
+            let (sess_lo, sess_hi) = unsafe {
+                (
+                    (fptr as *const u64).read_unaligned(),
+                    (fptr.add(2) as *const u64).read_unaligned(),
+                )
+            };
             batch.push_indexed(
-                frame.as_ptr(),
+                fptr,
                 m.len,
                 m.feed,
                 m.blk_base,
                 m.blk_count,
                 m.valid,
                 m.first_seq,
+                sess_lo,
+                sess_hi,
             );
             // Map batch position back to its event for the legacy
             // batch_blocks()/batch_memo() side tables (exact-pacing callers
@@ -609,6 +607,8 @@ impl ReplayTransport {
                 blocks,
                 memo,
                 first_seq: f.first_seq,
+                sess_lo: f.sess_lo,
+                sess_hi: f.sess_hi,
             }
         })
     }
@@ -927,5 +927,16 @@ mod tests {
                 assert_eq!(e.bytes.as_ptr(), batch.frames()[pos].bytes().as_ptr());
             }
         }
+    }
+}
+
+impl ReplayTransport {
+    /// R8: the shared block-triple store — the RX-pipelined consumer builds
+    /// `FrameEntry::blocks` slices from it cross-thread (see pipeline.rs).
+    /// Immutable after construction.
+    #[inline]
+    #[allow(clippy::disallowed_types)]
+    pub fn shared_triples(&self) -> Arc<[(u64, u32, u32)]> {
+        Arc::clone(&self.triples)
     }
 }

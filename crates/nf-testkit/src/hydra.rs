@@ -447,6 +447,16 @@ impl HydraFabric {
     /// code path). All allocation and thread spawn happens here — outside
     /// every measurement window.
     pub fn spawn(workers: usize) -> Box<Self> {
+        Self::spawn_pinned(workers, &[])
+    }
+
+    /// R8: `spawn` + worker affinity — worker `i` pins itself to the
+    /// ABSOLUTE cpu `worker_cpus[i % len]`. The caller captures the
+    /// topology order BEFORE pinning its own thread (threads inherit the
+    /// creator's restricted mask). Failures leave the thread unpinned,
+    /// gracefully. The doc-21 "worker core affinity" lever: unpinned
+    /// workers migrate and stack on SMT siblings on shared cloud runners.
+    pub fn spawn_pinned(workers: usize, worker_cpus: &[usize]) -> Box<Self> {
         let kernel = CrcKernel::detect();
         let shutdown = Arc::new(AtomicBool::new(false));
         let mut handles = Vec::with_capacity(workers);
@@ -455,14 +465,20 @@ impl HydraFabric {
             // Box→Arc: single heap object, ownership moved (leak-free).
             lanes.push(Arc::from(HydraLane::new()));
         }
-        for lane in lanes.iter() {
+        for (i, lane) in lanes.iter().enumerate() {
             let lane = lane.clone();
             let sd = shutdown.clone();
             let kern = kernel;
+            let cpu = worker_cpus.get(i % worker_cpus.len().max(1)).copied();
             let h = std::thread::Builder::new()
                 .stack_size(512 * 1024)
                 .name("hydra-worker".to_string())
-                .spawn(move || lane_worker(lane, sd, kern))
+                .spawn(move || {
+                    if let Some(c) = cpu {
+                        let _ = crate::affinity::pin_current_to(c);
+                    }
+                    lane_worker(lane, sd, kern)
+                })
                 .expect("hydra worker spawn");
             handles.push(h);
         }

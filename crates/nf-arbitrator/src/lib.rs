@@ -895,6 +895,51 @@ impl Sequencer {
         }
     }
 
+    /// R8: slice form of [`Self::ingest_batch`] — the RX-pipelined
+    /// transport's worker builds the `FrameEntry` array on its own core
+    /// (it holds the frame lines locally), so the consumer iterates a
+    /// ready-made slice with zero per-frame entry construction.
+    #[inline(always)]
+    pub fn ingest_entries<'a, S: Sink>(
+        &mut self,
+        entries: &'a [packet::FrameEntry<'a>],
+        now_ns: u64,
+        sink: &mut S,
+    ) {
+        let wants_spans = sink.wants_spans();
+        let mut it = entries.iter();
+        loop {
+            if self.steady_ready() {
+                let mut w = self.w;
+                let (progressed, cold) = steady_scan_ref(
+                    &mut self.counters,
+                    sink,
+                    &mut it,
+                    &mut w,
+                    self.session_lo,
+                    self.session_hi,
+                    self.gen,
+                    wants_spans,
+                );
+                self.w = w;
+                if progressed {
+                    self.progress_vt = now_ns;
+                }
+                match cold {
+                    Some(entry) => {
+                        cold_apply(self, entry, now_ns, sink);
+                        continue;
+                    }
+                    None => break,
+                }
+            }
+            match it.next() {
+                Some(entry) => cold_apply(self, entry, now_ns, sink),
+                None => break,
+            }
+        }
+    }
+
     /// Seals the sequencer into permanent DEAD state.
     pub fn seal<S: Sink>(&mut self, reason: DeadReason, sink: &mut S) {
         session::seal(reason, self.w, &mut self.state, sink);
@@ -945,6 +990,111 @@ impl Default for Sequencer {
     fn default() -> Self {
         Self::new_unboxed()
     }
+}
+
+/// R8: the by-REFERENCE steady scan — identical ladder to [`steady_scan`],
+/// iterating `&[FrameEntry]` with zero per-frame entry copies (the
+/// RX-pipelined transport's mailbox carries a ready-made array). The two
+/// implementations are pinned to each other by the batch-parity and
+/// pipeline-parity suites.
+#[inline(always)]
+#[allow(clippy::too_many_arguments, clippy::while_let_on_iterator)]
+fn steady_scan_ref<'a, S: Sink>(
+    counters: &mut Counters,
+    sink: &mut S,
+    entries: &mut std::slice::Iter<'a, packet::FrameEntry<'a>>,
+    w: &mut u64,
+    sess_lo: u64,
+    sess_hi: u64,
+    gen: u64,
+    wants_spans: bool,
+) -> (bool, Option<&'a packet::FrameEntry<'a>>) {
+    let mut pk = [0u64; 2];
+    let mut byt = [0u64; 2];
+    let mut dup = [0u64; 2];
+    let mut dup_msgs = 0u64;
+    let mut emitted = 0u64;
+    let mut progressed = false;
+    let mut cold: Option<&packet::FrameEntry<'a>> = None;
+    let mut recs = [
+        crate::types::SpanRec {
+            first_seq: 0,
+            count: 0,
+            body: &[],
+            blocks: &[],
+        };
+        32
+    ];
+    let mut nrecs = 0usize;
+    let proof = LiveFeedProof { gen };
+    while let Some(entry) = entries.next() {
+        let frame = entry.bytes;
+        let blocks = entry.blocks;
+        let n = blocks.len();
+        if n == 0 {
+            cold = Some(entry);
+            break;
+        }
+        if entry.sess_lo != sess_lo || entry.sess_hi != sess_hi {
+            cold = Some(entry);
+            break;
+        }
+        let first = entry.first_seq;
+        let last = first + n as u64 - 1;
+        if last < *w {
+            let fi = (entry.feed & 1) as usize;
+            pk[fi] += 1;
+            byt[fi] += frame.len() as u64;
+            dup[fi] += 1;
+            dup_msgs += n as u64;
+            continue;
+        }
+        if first != *w {
+            cold = Some(entry);
+            break;
+        }
+        let all_valid = entry.memo.is_some_and(|m| m.valid_count as usize == n);
+        if !all_valid {
+            cold = Some(entry);
+            break;
+        }
+        let fi = (entry.feed & 1) as usize;
+        pk[fi] += 1;
+        byt[fi] += frame.len() as u64;
+        if wants_spans {
+            let body = &frame[moldudp64::HEADER_LEN + 2..frame.len()];
+            recs[nrecs] = crate::types::SpanRec {
+                first_seq: first,
+                count: n as u16,
+                body,
+                blocks,
+            };
+            nrecs += 1;
+            if nrecs == recs.len() {
+                sink.on_span_batch(&proof, &recs);
+                nrecs = 0;
+            }
+        } else {
+            for &(seq, start, end) in blocks {
+                sink.on_msg(&proof, seq, &frame[start as usize..end as usize]);
+            }
+        }
+        emitted += n as u64;
+        *w = last + 1;
+        progressed = true;
+    }
+    if nrecs != 0 {
+        sink.on_span_batch(&proof, &recs[..nrecs]);
+    }
+    counters.feed_a.packets += pk[0];
+    counters.feed_b.packets += pk[1];
+    counters.feed_a.bytes += byt[0];
+    counters.feed_b.bytes += byt[1];
+    counters.feed_a.dups += dup[0];
+    counters.feed_b.dups += dup[1];
+    counters.dup_msgs += dup_msgs;
+    counters.msgs_emitted += emitted;
+    (progressed, cold)
 }
 
 /// R8: out-of-line cold-frame apply. `ingest_auto` and its whole classic
@@ -1032,15 +1182,11 @@ where
             cold = Some(entry);
             break;
         }
-        // S0/S1 fused header decode — the session compare is the ONLY frame
-        // read left on the steady path (header line, prefetched by poll).
-        let frame_lo = u64::from_le_bytes([
-            frame[0], frame[1], frame[2], frame[3], frame[4], frame[5], frame[6], frame[7],
-        ]);
-        let frame_hi = u64::from_le_bytes([
-            frame[2], frame[3], frame[4], frame[5], frame[6], frame[7], frame[8], frame[9],
-        ]);
-        if frame_lo != sess_lo || frame_hi != sess_hi {
+        // S0/S1 fused session compare — from the entry's inline words (the
+        // publisher computed them from the frame bytes it held locally;
+        // single-threaded mode gets them from the same poll-side read).
+        // The steady scan touches NO frame bytes at all.
+        if entry.sess_lo != sess_lo || entry.sess_hi != sess_hi {
             // Adoption or boundary: the full dispatch ladder.
             cold = Some(entry);
             break;

@@ -1,4 +1,5 @@
 pub mod render;
+pub mod pipeline;
 pub mod replay;
 pub mod sched_types;
 pub mod xdp;
@@ -26,6 +27,14 @@ pub struct FrameView {
     /// always starts at HEADER_LEN + 2 — so body = frame[HEADER_LEN+2..len]
     /// exactly, and the steady scan needs ZERO triple loads.
     pub(crate) first_seq: u64,
+    /// R8: the frame's session prefix as the two overlapping little-endian
+    /// u64 words (bytes 0..8 and 2..10 — the sequencer's fused compare
+    /// template), computed by the publisher from the frame bytes it already
+    /// holds locally. In RX-pipelined mode this keeps the consumer's session
+    /// compare OFF the cross-core frame lines: the slot line transfers
+    /// anyway, the frame header lines would not need to.
+    pub(crate) sess_lo: u64,
+    pub(crate) sess_hi: u64,
 }
 
 impl FrameView {
@@ -58,6 +67,8 @@ impl FrameBatch {
                 blk_count: 0,
                 valid: 0,
                 first_seq: 0,
+                sess_lo: 0,
+                sess_hi: 0,
             }),
             len: 0,
         }
@@ -113,6 +124,8 @@ impl FrameBatch {
         blk_count: u16,
         valid: u16,
         first_seq: u64,
+        sess_lo: u64,
+        sess_hi: u64,
     ) {
         debug_assert!(self.len < 256, "FrameBatch index push overflow");
         self.slots[self.len] = FrameView {
@@ -123,6 +136,8 @@ impl FrameBatch {
             blk_count,
             valid,
             first_seq,
+            sess_lo,
+            sess_hi,
         };
         self.len += 1;
     }
@@ -138,6 +153,8 @@ impl FrameBatch {
                 blk_count: 0,
                 valid: 0,
                 first_seq: 0,
+                sess_lo: 0,
+                sess_hi: 0,
             };
             self.len += 1;
             true
