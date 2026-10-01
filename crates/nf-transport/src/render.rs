@@ -82,6 +82,22 @@ pub struct ReplayTransport {
     /// reads this stream and the per-frame metadata reads the other — both
     /// sequential, both hardware-prefetched.
     vts: Box<[u64]>,
+    /// R8: vt-group boundaries — `group_end[i]` is the exclusive end of the
+    /// maximal in-order run starting at `i` whose release times are all
+    /// `<= vts[i]` (the exact release set of a poll entering at `i` with
+    /// `vclock = vts[i]`). Precomputed once at construction (vts are
+    /// non-decreasing for the schedules the renderer emits, but the
+    /// boundary math never assumes it). Lets poll release a whole group —
+    /// or several, see `coalesce` — with chain lookups instead of per-frame
+    /// clock comparisons, and drives the R8 RX-coalescing mode.
+    group_end: Box<[u32]>,
+    /// R8: RX coalescing — how many vt-groups one poll() releases into the
+    /// batch before returning (NAPI-style receipt batching; `now_ns()`
+    /// reports the latest released group's virtual time). Default 1 = the
+    /// exact pre-R8 pacing semantics (one group per poll). Perf arms raise
+    /// this to amortize the per-poll fixed cost; every conformance, golden
+    /// and differential path keeps the default.
+    coalesce: usize,
     /// Flat precomputed block index: one `(seq, start, end)` triple per message
     /// block (~8MB mini schedule), grouped per event via `FrameMeta.blk_base /
     /// blk_count`. Read via `batch_blocks()`; session-patch never touches the
@@ -261,6 +277,23 @@ impl ReplayTransport {
                 }
             }
         }
+        // R8: vt-group boundaries (see field doc). Single O(n) sweep: `j`
+        // advances monotonically; each event inside a group maps to the
+        // group's exclusive end.
+        #[allow(clippy::disallowed_types)]
+        let mut group_end: Vec<u32> = vec![0u32; vts.len()];
+        {
+            let mut i = 0usize;
+            while i < vts.len() {
+                let v = vts[i];
+                let mut j = i + 1;
+                while j < vts.len() && vts[j] <= v {
+                    j += 1;
+                }
+                group_end[i..j].fill(j as u32);
+                i = j;
+            }
+        }
         Self {
             schedule,
             event_idx: 0,
@@ -268,12 +301,14 @@ impl ReplayTransport {
             frames: blob.into_boxed_slice(),
             meta: meta.into_boxed_slice(),
             vts: vts.into_boxed_slice(),
+            group_end: group_end.into_boxed_slice(),
             triples: triples.into_boxed_slice(),
             batch_event: [0u32; 256],
             batch_event_len: 0,
             session,
             clock_clamp: None,
             body_prefetch: true,
+            coalesce: 1,
         }
     }
 
@@ -282,6 +317,16 @@ impl ReplayTransport {
     #[inline]
     pub fn set_body_prefetch(&mut self, on: bool) {
         self.body_prefetch = on;
+    }
+
+    /// R8: RX coalescing control (see the `coalesce` field doc). `k = 1` is
+    /// the exact pre-R8 pacing; `k > 1` releases up to `k` vt-groups per
+    /// poll, NAPI-style, with `now_ns()` reporting the latest released
+    /// group's virtual time. Conformance/golden/differential paths never
+    /// touch this.
+    #[inline]
+    pub fn set_poll_coalesce(&mut self, k: usize) {
+        self.coalesce = k.max(1);
     }
 
     #[inline]
@@ -306,12 +351,15 @@ impl ReplayTransport {
     /// P3: always-inline + hoisted len/capacity, cold clamp path.
     /// P9a: per released frame: 2 indexed loads + 10B session patch + batch push.
     /// No cursor seeks, no length re-walk, no payload memcpy in-window.
-    /// R8: (a) the release-time check reads the parallel `vts` stream while
-    /// the per-frame metadata comes from the 16B directory — two sequential
-    /// streams instead of one straddling 24B struct; (b) the frame slice is
-    /// unchecked (construction-valid offsets — bounds re-proven per push in
-    /// debug builds only); (c) the slot carries the Q1/R2 index inline, so
-    /// the sequencer's batch apply loop needs no side-table lookups.
+    /// R8: (a) the release boundary comes from the precomputed `group_end`
+    /// chain — poll() advances the virtual clock to the entering group's
+    /// vt and releases the maximal prefix at or below it, which is exactly
+    /// the pre-R8 per-frame comparison loop's release set (proved: the scan
+    /// always breaks at the first event above `vclock`, and every member of
+    /// `group_end[i]`'s run is `<= vts[i] <= vclock`), so the per-frame
+    /// clock compare disappears from the release loop; (b) with
+    /// `set_poll_coalesce(k > 1)` the chain advances `k` groups per call —
+    /// NAPI-style receipt batching, `now_ns()` = latest released group's vt.
     #[inline(always)]
     pub fn poll_clamped(&mut self, batch: &mut FrameBatch, max_vt: Option<u64>) -> usize {
         batch.clear();
@@ -321,20 +369,46 @@ impl ReplayTransport {
             return 0;
         }
 
-        let next_vt = self.vts[self.event_idx];
+        let first_vt = self.vts[self.event_idx];
         // HOT: max_vt=None + clock_clamp=None (steady replay) — clamp is cold.
-        let jump_to = match max_vt.or(self.clock_clamp) {
+        let limit = match max_vt.or(self.clock_clamp) {
             Some(clamp) => {
                 std::hint::cold_path();
-                std::cmp::min(next_vt, clamp)
+                std::cmp::min(first_vt, clamp)
             }
-            None => next_vt,
+            None => first_vt,
         };
 
-        if jump_to > self.virtual_clock {
-            self.virtual_clock = jump_to;
+        if limit > self.virtual_clock {
+            self.virtual_clock = limit;
         }
         let vclock = self.virtual_clock;
+
+        // R8: advance the group chain — `coalesce` groups (default 1). The
+        // chain's `mx` is the max group-start vt released; the clock never
+        // exceeds an explicit clamp (chain stops at a group start above the
+        // limit, matching the pre-R8 jump-to-min semantics).
+        let coalesce = self.coalesce;
+        let mut e = self.event_idx;
+        let mut mx = 0u64;
+        let mut groups = 0usize;
+        let limit_full = max_vt.or(self.clock_clamp).unwrap_or(u64::MAX);
+        while groups < coalesce && e < events_len {
+            let v = self.vts[e];
+            if v > limit_full {
+                break;
+            }
+            if v > mx {
+                mx = v;
+            }
+            e = self.group_end[e] as usize;
+            groups += 1;
+        }
+        if mx > vclock {
+            self.virtual_clock = mx;
+        }
+        let vclock = self.virtual_clock;
+
         let cap = FrameBatch::capacity();
         let session = self.session;
 
@@ -450,31 +524,42 @@ impl ReplayTransport {
         &'b self,
         batch: &'b FrameBatch,
     ) -> impl Iterator<Item = nf_protocol::packet::FrameEntry<'b>> + 'b {
-        batch.frames().iter().enumerate().map(move |(pos, f)| {
-            let (blk_base, blk_count, valid) = batch.slot_index(pos);
-            let blocks: &'b [(u64, u32, u32)] = if blk_count == 0 {
-                &[]
-            } else {
-                // SAFETY: batch slots are written only inside this crate —
-                // `push_indexed` copies construction-valid blk_base/blk_count
-                // (bounded by the triples store built at transport
-                // construction), and `push_raw`/`FrameBatch::new` write
-                // 0/0, which the guard above routes to the empty slice.
-                // `pos < batch.len()` by the enumerate bounds.
-                unsafe {
-                    let tp = self.triples.as_ptr().add(blk_base as usize);
-                    std::slice::from_raw_parts(tp, blk_count as usize)
-                }
-            };
+        batch.frames().iter().map(move |f| {
+            let (blocks, memo) = self.frame_blocks_memo(f);
             nf_protocol::packet::FrameEntry {
                 bytes: f.bytes(),
                 feed: f.feed,
                 blocks,
-                memo: (blk_count != 0).then_some(nf_protocol::packet::FrameMemo {
-                    valid_count: valid,
-                }),
+                memo,
             }
         })
+    }
+
+    /// R8: slot-direct per-frame index — one call replacing the
+    /// `batch_blocks(pos)` + `batch_memo(pos)` side-table pair (which walked
+    /// batch_event[pos] → meta[ev] → triples twice, with bounds checks at
+    /// every hop). Reads the Q1/R2 index the slot itself carries.
+    #[inline(always)]
+    pub fn frame_blocks_memo(
+        &self,
+        f: &crate::FrameView,
+    ) -> (&[(u64, u32, u32)], Option<FrameMemo>) {
+        let (blk_base, blk_count, valid) = (f.blk_base, f.blk_count, f.valid);
+        if blk_count == 0 {
+            return (&[], None);
+        }
+        // SAFETY: batch slots are written only inside this crate —
+        // `push_indexed` copies construction-valid blk_base/blk_count
+        // (bounded by the triples store built at transport construction),
+        // and `push_raw`/`FrameBatch::new` write 0/0, which the guard above
+        // routes to the empty slice.
+        unsafe {
+            let tp = self.triples.as_ptr().add(blk_base as usize);
+            (
+                std::slice::from_raw_parts(tp, blk_count as usize),
+                Some(FrameMemo { valid_count: valid }),
+            )
+        }
     }
 
     /// R2: validation-verdict memo for the frame at batch position `batch_pos`

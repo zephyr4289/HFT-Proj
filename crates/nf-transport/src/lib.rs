@@ -132,15 +132,6 @@ impl FrameBatch {
             false
         }
     }
-
-    /// R8: the frame's inline Q1 index (blk_base/blk_count/valid_count) —
-    /// read by `ReplayTransport::batch_entries` to feed the sequencer's
-    /// batch apply loop with zero side-table indirection.
-    #[inline(always)]
-    pub(crate) fn slot_index(&self, pos: usize) -> (u32, u16, u16) {
-        let f = &self.slots[pos];
-        (f.blk_base, f.blk_count, f.valid)
-    }
 }
 
 impl Default for FrameBatch {

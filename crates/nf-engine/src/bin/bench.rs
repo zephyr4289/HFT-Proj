@@ -135,15 +135,9 @@ fn run_uninstrumented_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::Cloc
         let mut batch = FrameBatch::new();
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for (pos, frame) in batch.frames().iter().enumerate() {
-                seq.ingest_auto(
-                    frame.bytes(),
-                    frame.feed,
-                    now,
-                    &mut sink,
-                    transport.batch_blocks(pos),
-                    transport.batch_memo(pos),
-                );
+            for f in batch.frames() {
+                let (blocks, memo) = transport.frame_blocks_memo(f);
+                seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, blocks, memo);
             }
         }
         (sink.count, sink.hash, sink.msg_hash)
@@ -160,15 +154,9 @@ fn run_uninstrumented_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::Cloc
 
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for (pos, frame) in batch.frames().iter().enumerate() {
-                seq.ingest_auto(
-                    frame.bytes(),
-                    frame.feed,
-                    now,
-                    &mut sink,
-                    transport.batch_blocks(pos),
-                    transport.batch_memo(pos),
-                );
+            for f in batch.frames() {
+                let (blocks, memo) = transport.frame_blocks_memo(f);
+                seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, blocks, memo);
             }
         }
 
@@ -241,15 +229,9 @@ fn run_sustained_loop_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
 
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for (pos, frame) in batch.frames().iter().enumerate() {
-                seq.ingest_auto(
-                    frame.bytes(),
-                    frame.feed,
-                    now,
-                    &mut sink,
-                    transport.batch_blocks(pos),
-                    transport.batch_memo(pos),
-                );
+            for f in batch.frames() {
+                let (blocks, memo) = transport.frame_blocks_memo(f);
+                seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, blocks, memo);
             }
         }
         total_msgs += 505_849;
@@ -322,15 +304,9 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
         let mut batch = FrameBatch::new();
         while t2.poll(&mut batch) > 0 {
             let now = t2.now_ns();
-            for (pos, frame) in batch.frames().iter().enumerate() {
-                seq.ingest_auto(
-                    frame.bytes(),
-                    frame.feed,
-                    now,
-                    &mut sink,
-                    t2.batch_blocks(pos),
-                    t2.batch_memo(pos),
-                );
+            for f in batch.frames() {
+                let (blocks, memo) = t2.frame_blocks_memo(f);
+                seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, blocks, memo);
             }
         }
         (sink.count, sink.hash, sink.msg_hash)
@@ -344,15 +320,9 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
         let mut batch = FrameBatch::new();
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for (pos, frame) in batch.frames().iter().enumerate() {
-                seq.ingest_auto(
-                    frame.bytes(),
-                    frame.feed,
-                    now,
-                    &mut sink,
-                    transport.batch_blocks(pos),
-                    transport.batch_memo(pos),
-                );
+            for f in batch.frames() {
+                let (blocks, memo) = transport.frame_blocks_memo(f);
+                seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, blocks, memo);
             }
             // Fold drain every poll (GIGAHFT: with CHUNK=64 one poll fills
             // exactly one chunk — draining per poll keeps the result rings
@@ -391,15 +361,9 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
 
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for (pos, frame) in batch.frames().iter().enumerate() {
-                seq.ingest_auto(
-                    frame.bytes(),
-                    frame.feed,
-                    now,
-                    &mut sink,
-                    transport.batch_blocks(pos),
-                    transport.batch_memo(pos),
-                );
+            for f in batch.frames() {
+                let (blocks, memo) = transport.frame_blocks_memo(f);
+                seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, blocks, memo);
             }
             sink.drain_ready();
         }
@@ -495,15 +459,9 @@ fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -
         let mut ref_sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for (pos, frame) in batch.frames().iter().enumerate() {
-                seq.ingest_auto(
-                    frame.bytes(),
-                    frame.feed,
-                    now,
-                    &mut ref_sink,
-                    transport.batch_blocks(pos),
-                    transport.batch_memo(pos),
-                );
+            for f in batch.frames() {
+                let (blocks, memo) = transport.frame_blocks_memo(f);
+                seq.ingest_auto(f.bytes(), f.feed, now, &mut ref_sink, blocks, memo);
             }
             ref_sink.drain_ready();
         }
@@ -536,15 +494,9 @@ fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -
         // in-flight ring capacity, not fold lag).
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for (pos, frame) in batch.frames().iter().enumerate() {
-                seq.ingest_auto(
-                    frame.bytes(),
-                    frame.feed,
-                    now,
-                    &mut sink,
-                    transport.batch_blocks(pos),
-                    transport.batch_memo(pos),
-                );
+            for f in batch.frames() {
+                let (blocks, memo) = transport.frame_blocks_memo(f);
+                seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, blocks, memo);
             }
             sink.drain_ready();
         }

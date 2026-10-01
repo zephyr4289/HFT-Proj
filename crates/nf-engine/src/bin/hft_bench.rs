@@ -104,6 +104,10 @@ fn get_cpu_model() -> String {
 /// across runs (host compaction/THP dance). reset() only rewinds event_idx /
 /// clock with an identical session, so frames are byte-identical and pages
 /// stay faulted and warm — steady-state measurement.
+/// R8: the per-frame index comes slot-direct (`frame_blocks_memo`) — one
+/// call replacing the batch_blocks/batch_memo side-table pair — over the
+/// classic ingest_auto ladder; poll() runs the RX-coalesced group release
+/// (see `set_poll_coalesce`, NAPI-style receipt batching).
 /// Returns messages/sec. Panics on zero messages or zero-duration pass.
 fn wall_pass<S: Sink>(
     transport: &mut ReplayTransport,
@@ -119,15 +123,9 @@ fn wall_pass<S: Sink>(
     let t0 = read_monotonic_raw_ns();
     while transport.poll(&mut batch) > 0 {
         let now = transport.now_ns();
-        for (pos, f) in batch.frames().iter().enumerate() {
-            seq.ingest_auto(
-                f.bytes(),
-                f.feed,
-                now,
-                &mut sink,
-                transport.batch_blocks(pos),
-                transport.batch_memo(pos),
-            );
+        for f in batch.frames() {
+            let (blocks, memo) = transport.frame_blocks_memo(f);
+            seq.ingest_auto(f.bytes(), f.feed, now, &mut sink, blocks, memo);
         }
     }
     let dt = read_monotonic_raw_ns().saturating_sub(t0);
@@ -208,6 +206,13 @@ fn main() {
     let sess = *b"HFTBENCH01";
     // Single transport for all passes (see wall_pass): identical bytes, warm pages.
     let mut transport = ReplayTransport::new(&gt, sched, sess);
+    // R8: RX coalescing for the throughput arms (NAPI-style receipt batching;
+    // see set_poll_coalesce). HFT_COALESCE=1 disables it (exact pre-R8 pacing).
+    let co = std::env::var("HFT_COALESCE")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(8);
+    transport.set_poll_coalesce(co);
     // Golden population for the canonical mini sample under this config.
     let golden_count = sample_path
         .ends_with("sample-mini.itch")
