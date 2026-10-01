@@ -20,6 +20,11 @@ rustc --print cfg 2>&1 | grep -E "target_arch|target_cpu|target_feature" | head 
 # taskset optional (fallback unpinned); nproc + cpuinfo logged for provenance.
 echo "CPUS: $(nproc 2>&1 || echo unknown)"
 grep -m1 "model name" /proc/cpuinfo 2>&1 || true
+# R8: topology provenance — sibling groups + physical count (drives the
+# fabric's thread sizing; see nf-testkit/src/affinity.rs).
+for c in $(nproc); do
+  echo "cpu$c siblings: $(cat /sys/devices/system/cpu/cpu$c/topology/thread_siblings_list 2>/dev/null || echo n/a)"
+done
 if command -v taskset >/dev/null 2>&1; then
   echo "taskset: $(taskset -pc $$ 2>&1 || true)"
   export HFT_TASKSET="taskset -c 1"
