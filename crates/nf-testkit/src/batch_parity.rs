@@ -1,0 +1,279 @@
+//! R8: batch-ingest differential parity (docs/22-r8-teraphase.md).
+//!
+//! `Sequencer::ingest_batch` MUST be observationally identical to feeding
+//! the same frames through `ingest_auto` one by one — same emissions, same
+//! counters, same watermark, same sink state — for every schedule. These
+//! tests pin that equivalence on a battery of schedules (clean dual-feed,
+//! lossy, delayed/reordered, session-split, single-feed) and three sink
+//! shapes (per-message count, span-emitting conformance, hydra fabric
+//! inline), plus the multi-pass reset cycle the sustained arms use.
+//!
+//! This is the unit-level core of the D12 differential oracle (which adds
+//! the reference arbitrator as a third leg in CI).
+
+use crate::sched::{build_schedule, Packetize, ReplayConfig};
+use crate::sink::SpanConformanceSink;
+use nf_arbitrator::Sequencer;
+use nf_transport::replay::ReplayTransport;
+use nf_transport::{FrameBatch, Transport};
+
+#[cfg(test)]
+use crate::sched::{DelayModel, LossModel};
+#[cfg(test)]
+use crate::sink::{ConformanceSink, FastConformanceSink};
+
+/// One classic (per-frame ingest_auto) pass → the observable tuple:
+/// (counters, watermark, count, hash, events seen).
+pub fn classic_pass(
+    transport: &mut ReplayTransport,
+    sess: [u8; 10],
+) -> (nf_arbitrator::Counters, u64, u64, u64, u64) {
+    transport.reset(sess);
+    let mut seq = Sequencer::new();
+    let mut sink = SpanConformanceSink::new();
+    let mut batch = FrameBatch::new();
+    let mut events = 0u64;
+    while transport.poll(&mut batch) > 0 {
+        let now = transport.now_ns();
+        for (pos, frame) in batch.frames().iter().enumerate() {
+            seq.ingest_auto(
+                frame.bytes(),
+                frame.feed,
+                now,
+                &mut sink,
+                transport.batch_blocks(pos),
+                transport.batch_memo(pos),
+            );
+        }
+        events += sink.session_boundaries + sink.gap_opens + sink.reanchors;
+    }
+    (
+        seq.counters(),
+        seq.watermark(),
+        sink.count,
+        sink.hash,
+        events,
+    )
+}
+
+/// One batched (ingest_batch) pass over the identical byte stream.
+pub fn batch_pass(
+    transport: &mut ReplayTransport,
+    sess: [u8; 10],
+) -> (nf_arbitrator::Counters, u64, u64, u64, u64) {
+    transport.reset(sess);
+    let mut seq = Sequencer::new();
+    let mut sink = SpanConformanceSink::new();
+    let mut batch = FrameBatch::new();
+    let mut events = 0u64;
+    while transport.poll(&mut batch) > 0 {
+        let now = transport.now_ns();
+        seq.ingest_batch(transport.batch_entries(&batch), now, &mut sink);
+        events += sink.session_boundaries + sink.gap_opens + sink.reanchors;
+    }
+    (
+        seq.counters(),
+        seq.watermark(),
+        sink.count,
+        sink.hash,
+        events,
+    )
+}
+
+pub fn assert_parity(
+    label: &str,
+    cfg: &ReplayConfig,
+    gt: &[u8],
+) {
+    let sched = build_schedule(gt, cfg);
+    let sess = *b"PARITY0001";
+    let mut t_classic = ReplayTransport::new(gt, sched.clone(), sess);
+    let mut t_batch = ReplayTransport::new(gt, sched, sess);
+    let c = classic_pass(&mut t_classic, sess);
+    let b = batch_pass(&mut t_batch, sess);
+    assert_eq!(c.0, b.0, "{label}: counters diverged\nclassic={:#?}\nbatch ={:#?}", c.0, b.0);
+    assert_eq!(c.1, b.1, "{label}: watermark diverged");
+    assert_eq!(c.2, b.2, "{label}: sink count diverged");
+    assert_eq!(c.3, b.3, "{label}: sink span hash diverged");
+    assert_eq!(c.4, b.4, "{label}: event counts diverged");
+}
+
+pub fn default_cfg() -> ReplayConfig {
+    ReplayConfig {
+        msgs_per_packet: Packetize::MtuBound(1400),
+        guarantee_coverage: true,
+        ..Default::default()
+    }
+}
+
+/// Clean dual-feed MtuBound schedule — the canonical bench workload.
+#[test]
+fn t_r8_batch_parity_default_schedule() {
+    let gt = mini_gt(4000);
+    assert_parity("default", &default_cfg(), &gt);
+}
+
+/// Lossy dual-feed (Bernoulli both feeds, coverage guaranteed): gaps open,
+/// out-of-order staging, drain emissions — the cold paths must interleave
+/// with steady stretches exactly like the classic ladder.
+#[test]
+fn t_r8_batch_parity_lossy_schedule() {
+    let gt = mini_gt(4000);
+    let cfg = ReplayConfig {
+        msgs_per_packet: Packetize::MtuBound(1400),
+        loss: [LossModel::Bernoulli { p_pm: 120 }, LossModel::Bernoulli { p_pm: 180 }],
+        guarantee_coverage: true,
+        ..Default::default()
+    };
+    assert_parity("lossy", &cfg, &gt);
+}
+
+/// Delayed/reordered dual-feed: Gaussian delays on one feed re-order frames
+/// across feeds — partial-dup skips and gap-fill staging must match.
+#[test]
+fn t_r8_batch_parity_reorder_schedule() {
+    let gt = mini_gt(4000);
+    let cfg = ReplayConfig {
+        msgs_per_packet: Packetize::MtuBound(1400),
+        delay: [
+            DelayModel::None,
+            DelayModel::GaussianApprox { mean_ns: 300_000, sigma_ns: 150_000 },
+        ],
+        guarantee_coverage: true,
+        ..Default::default()
+    };
+    assert_parity("reorder", &cfg, &gt);
+}
+
+/// Session split mid-stream: boundary events + fresh session anchor both
+/// take the cold path — emission order across the boundary must match.
+#[test]
+fn t_r8_batch_parity_session_split() {
+    let gt = mini_gt(4000);
+    let cfg = ReplayConfig {
+        msgs_per_packet: Packetize::MtuBound(1400),
+        session_change_at_msg: Some(1500),
+        guarantee_coverage: true,
+        ..Default::default()
+    };
+    assert_parity("session-split", &cfg, &gt);
+}
+
+/// Single-feed schedule (no duplicates) + SeededRange packetization.
+#[test]
+fn t_r8_batch_parity_single_feed_seeded() {
+    let gt = mini_gt(4000);
+    let cfg = ReplayConfig {
+        msgs_per_packet: Packetize::SeededRange { min: 3, max: 40 },
+        feeds_enabled: 1,
+        guarantee_coverage: true,
+        ..Default::default()
+    };
+    assert_parity("single-feed-seeded", &cfg, &gt);
+}
+
+/// Per-message (non-span) sinks: the batch loop's on_msg path must emit the
+/// identical message sequence (count + golden FNV hash + monotonicity).
+#[test]
+fn t_r8_batch_parity_per_message_sink() {
+    let gt = mini_gt(3000);
+    let sched = build_schedule(&gt, &default_cfg());
+    let sess = *b"PARITY0002";
+
+    let run = |batched: bool| -> (u64, u64, u64, nf_arbitrator::Counters) {
+        let mut t = ReplayTransport::new(&gt, sched.clone(), sess);
+        t.reset(sess);
+        let mut seq = Sequencer::new();
+        let mut sink = ConformanceSink::new();
+        let mut batch = FrameBatch::new();
+        while t.poll(&mut batch) > 0 {
+            let now = t.now_ns();
+            if batched {
+                seq.ingest_batch(t.batch_entries(&batch), now, &mut sink);
+            } else {
+                for (pos, frame) in batch.frames().iter().enumerate() {
+                    seq.ingest_auto(
+                        frame.bytes(),
+                        frame.feed,
+                        now,
+                        &mut sink,
+                        t.batch_blocks(pos),
+                        t.batch_memo(pos),
+                    );
+                }
+            }
+        }
+        (sink.count(), sink.hash(), sink.last_seq, seq.counters())
+    };
+    let c = run(false);
+    let b = run(true);
+    assert_eq!(c, b, "per-message sink diverged between classic and batch");
+}
+
+/// Fast (CRC32C) conformance sink variant.
+#[test]
+fn t_r8_batch_parity_fast_sink() {
+    let gt = mini_gt(3000);
+    let sched = build_schedule(&gt, &default_cfg());
+    let sess = *b"PARITY0003";
+
+    let run = |batched: bool| -> (u64, u64, u64) {
+        let mut t = ReplayTransport::new(&gt, sched.clone(), sess);
+        t.reset(sess);
+        let mut seq = Sequencer::new();
+        let mut sink = FastConformanceSink::new();
+        let mut batch = FrameBatch::new();
+        while t.poll(&mut batch) > 0 {
+            let now = t.now_ns();
+            if batched {
+                seq.ingest_batch(t.batch_entries(&batch), now, &mut sink);
+            } else {
+                for (pos, frame) in batch.frames().iter().enumerate() {
+                    seq.ingest_auto(
+                        frame.bytes(),
+                        frame.feed,
+                        now,
+                        &mut sink,
+                        t.batch_blocks(pos),
+                        t.batch_memo(pos),
+                    );
+                }
+            }
+        }
+        (sink.count(), sink.hash(), seq.watermark())
+    };
+    assert_eq!(run(false), run(true), "fast conformance sink diverged");
+}
+
+/// Multi-pass reset cycle (the sustained-arm pattern): fresh sessions per
+/// pass, batch loop re-hoisting after every reset — parity per pass.
+#[test]
+fn t_r8_batch_parity_multi_pass_reset() {
+    let gt = mini_gt(2500);
+    let sched = build_schedule(&gt, &default_cfg());
+    let mut t_classic = ReplayTransport::new(&gt, sched.clone(), *b"PARITY0004");
+    let mut t_batch = ReplayTransport::new(&gt, sched, *b"PARITY0004");
+
+    for pass in 0..4u64 {
+        let mut sess = *b"PARITY0004";
+        sess[7..10].copy_from_slice(&(1000 + pass).to_be_bytes()[5..8]);
+        let c = classic_pass(&mut t_classic, sess);
+        let b = batch_pass(&mut t_batch, sess);
+        assert_eq!(c, b, "pass {pass} diverged");
+        assert!(c.2 > 0, "pass {pass} emitted nothing");
+    }
+}
+
+/// Deterministic synthetic ground truth: [len|msg] chain of 12B System
+/// Event messages (same shape as the transport tests').
+#[allow(clippy::disallowed_types)]
+pub fn mini_gt(count: u64) -> Vec<u8> {
+    let mut gt = Vec::new();
+    for i in 0..count {
+        let mut msg = [b'S', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, b'O'];
+        msg[1..9].copy_from_slice(&(i + 1).to_be_bytes());
+        gt.extend_from_slice(&(msg.len() as u16).to_be_bytes());
+        gt.extend_from_slice(&msg);
+    }
+    gt
+}

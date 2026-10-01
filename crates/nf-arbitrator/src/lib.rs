@@ -18,6 +18,19 @@ use window::{ARENA_SIZE, WINDOW_SLOTS};
 use nf_protocol::moldudp64;
 use nf_protocol::{itch5, packet};
 
+/// R8: outcome of one steady-apply attempt (see `Sequencer::apply_steady`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SteadyOutcome {
+    /// Contiguous apply completed: emission done, `w` advanced (classic
+    /// sets `progress_vt` on this path — the batch loop defers that store).
+    Emitted,
+    /// Pure duplicate classified and counted (classic early-returns WITHOUT
+    /// touching `progress_vt` — so must the batch loop).
+    Dup,
+    /// Any anomaly: run the frame through the exact classic ladder.
+    Cold,
+}
+
 #[repr(align(64))]
 pub struct Sequencer {
     // ── line 0 ── written once per packet ──────────────────────
@@ -810,6 +823,203 @@ impl Sequencer {
             now_ns,
             &mut self.counters,
         )
+    }
+
+    /// R8: steady-state precondition for the batched apply loop — the exact
+    /// set of sequencer conditions under which `ingest_indexed`'s per-frame
+    /// tail is provably inert (no staged window content to clear or drain,
+    /// no open gap to check-close, no pending recovery intent to retire,
+    /// live adopted session, Contig state). When this holds, a frame's
+    /// entire observable effect is: counters, optional emission, and
+    /// `w`'s advance.
+    #[inline(always)]
+    fn steady_ready(&self) -> bool {
+        self.session_live
+            && self.state == State::Contig
+            && self.staged_count == 0
+            && !self.gap_active
+            && self.pending_to.is_none()
+    }
+
+    /// R8: one frame of the batched steady apply — an exact mirror of
+    /// `ingest_indexed`'s ladder for the case where every cold branch is
+    /// provably unreachable (see [`Self::steady_ready`]). Returns `true`
+    /// when the frame was fully applied (updating `*w`); `false` means the
+    /// caller must flush and run the frame through the exact classic path
+    /// (any anomaly: session change, HB/EOS, gap, unmemoized or partially
+    /// invalid frame, index-less frame, sub-header length).
+    ///
+    /// Equivalence argument, branch by branch (numbers refer to
+    /// `ingest_indexed`):
+    /// - S0 counters: identical RMWs in identical order (packets/bytes
+    ///   before classification, dups/dup_msgs on the duplicate paths,
+    ///   msgs_emitted after emission).
+    /// - S0 length gate: kept (`false` → classic records `truncated`).
+    /// - S0/S1 fused header decode + session compare: identical arithmetic;
+    ///   mismatch → classic `dispatch_session` (which refreshes the
+    ///   template the caller re-hoists).
+    /// - S2 kind classify: HB/EOS counts → classic handlers (identical).
+    ///   The `state == Ended` gate is subsumed: steady requires `Contig`.
+    /// - S3 span classify: `first`/`last` from the same triples; the Init
+    ///   anchor is unreachable (steady requires `Contig`); pure-dup
+    ///   (`last < w`) and contiguous (`first <= w <= last`) branches are
+    ///   replicated verbatim; `first > w` → classic gap ladder.
+    /// - S5 apply: same `skip` arithmetic, same `all_valid` memo gate, same
+    ///   emission call(s) (on_span closed-form or per-message on_msg with
+    ///   memo-skipped validation), same `w = last + 1`.
+    /// - Post-apply tail (Clear-on-Advance, drain, gap-close, intent
+    ///   retire): provably no-ops under the steady preconditions.
+    #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
+    fn apply_steady<'a, S: Sink>(
+        &mut self,
+        entry: packet::FrameEntry<'a>,
+        w: &mut u64,
+        sess_lo: u64,
+        sess_hi: u64,
+        gen: u64,
+        sink: &mut S,
+        wants_spans: bool,
+    ) -> SteadyOutcome {
+        let frame = entry.bytes;
+        let blocks = entry.blocks;
+        let n = blocks.len();
+        if n == 0 || frame.len() < moldudp64::HEADER_LEN {
+            // Index-less (HB/EOS/live) or sub-header frame: the classic
+            // ladder owns both (ingest_auto routes on empty blocks).
+            return SteadyOutcome::Cold;
+        }
+        // S0/S1 fused header decode (identical to ingest_indexed).
+        let frame_lo = u64::from_le_bytes([
+            frame[0], frame[1], frame[2], frame[3], frame[4], frame[5], frame[6], frame[7],
+        ]);
+        let frame_hi = u64::from_le_bytes([
+            frame[2], frame[3], frame[4], frame[5], frame[6], frame[7], frame[8], frame[9],
+        ]);
+        let hdr_count = u16::from_be_bytes([frame[18], frame[19]]);
+        if frame_lo != sess_lo || frame_hi != sess_hi {
+            // COLD: adoption or boundary — the full dispatch ladder.
+            return SteadyOutcome::Cold;
+        }
+        // S2: kind classify — HB/EOS carry no triples, but a session-matched
+        // control frame must still run its exact handler.
+        if hdr_count == moldudp64::HEARTBEAT_COUNT || hdr_count == moldudp64::EOS_COUNT {
+            return SteadyOutcome::Cold;
+        }
+        // S3: span from triples.
+        let first = blocks[0].0;
+        let last = blocks[n - 1].0;
+        if last < *w {
+            // Pure duplicate packet (HOT in dual-feed replay) — the exact
+            // classic counters. (No progress_vt write, matching classic.)
+            let feed_cnt = self.counters.feed_mut(entry.feed);
+            feed_cnt.packets += 1;
+            feed_cnt.bytes += frame.len() as u64;
+            feed_cnt.dups += 1;
+            self.counters.dup_msgs += hdr_count as u64;
+            return SteadyOutcome::Dup;
+        }
+        if first > *w {
+            // Gap: evidence + staging ladder is the classic path's job.
+            return SteadyOutcome::Cold;
+        }
+        // S5 contiguous apply. R2 memo gate — identical semantics.
+        let all_valid = entry.memo.is_some_and(|m| m.valid_count as usize == n);
+        if !all_valid {
+            return SteadyOutcome::Cold; // per-message validate + exact error mapping
+        }
+        let feed_cnt = self.counters.feed_mut(entry.feed);
+        feed_cnt.packets += 1;
+        feed_cnt.bytes += frame.len() as u64;
+        let skip = (*w).wrapping_sub(first) as usize;
+        let skip = if skip < n { skip } else { n };
+        if skip != 0 {
+            self.counters.dup_msgs += skip as u64;
+        }
+        let proof = LiveFeedProof { gen };
+        if wants_spans {
+            // R3 closed-form span emission (n > skip always: last >= w).
+            let body = &frame[blocks[skip].1 as usize..blocks[n - 1].2 as usize];
+            sink.on_span(
+                &proof,
+                first + skip as u64,
+                (n - skip) as u16,
+                body,
+                &blocks[skip..],
+            );
+        } else {
+            for &(seq, start, end) in &blocks[skip..] {
+                sink.on_msg(&proof, seq, &frame[start as usize..end as usize]);
+            }
+        }
+        self.counters.msgs_emitted += (n - skip) as u64;
+        *w = last + 1;
+        SteadyOutcome::Emitted // w advanced: last + 1 > old w
+    }
+
+    /// R8: batch-level ingest — the doc-21 "main-core batching of the
+    /// sequencer apply" lever. Consumes a whole poll's frames (see
+    /// `ReplayTransport::batch_entries`) with the sequencer's steady state
+    /// hoisted into registers: `w`, the session compare template, and the
+    /// proof era. Steady frames run the exact `ingest_indexed` ladder
+    /// (see [`Self::apply_steady`] for the branch-by-branch equivalence);
+    /// any anomaly flushes the hoisted state and reruns that frame through
+    /// the unmodified classic `ingest_auto`, then re-hoists.
+    ///
+    /// Observables are bit-identical to feeding the same frames through
+    /// `ingest_auto` one by one: emissions happen in frame order (steady
+    /// emissions are eager; a cold frame's emissions always follow the
+    /// flush), counters are updated in the same order with the same values,
+    /// and `w`/`progress_vt` land on the same final values (`now_ns` is
+    /// constant for the whole batch, so deferring the `progress_vt` store
+    /// to the flush points cannot change any reader's view).
+    ///
+    /// The caller owns the frames' lifetime (the transport's pre-rendered
+    /// blob — valid until the next `poll`), matching the existing
+    /// `Transport` contract.
+    #[inline(always)]
+    pub fn ingest_batch<'a, S: Sink, I>(&mut self, entries: I, now_ns: u64, sink: &mut S)
+    where
+        I: IntoIterator<Item = packet::FrameEntry<'a>>,
+    {
+        let wants_spans = sink.wants_spans();
+        let mut w = self.w;
+        let mut steady = self.steady_ready();
+        let mut sess_lo = self.session_lo;
+        let mut sess_hi = self.session_hi;
+        let mut gen = self.gen;
+        let mut progressed = false;
+
+        for entry in entries {
+            if steady {
+                match self.apply_steady(
+                    entry, &mut w, sess_lo, sess_hi, gen, sink, wants_spans,
+                ) {
+                    SteadyOutcome::Emitted => {
+                        progressed = true;
+                        continue;
+                    }
+                    SteadyOutcome::Dup => continue,
+                    SteadyOutcome::Cold => {}
+                }
+            }
+            // ── COLD: flush hoisted state, exact classic ladder, re-hoist ──
+            self.w = w;
+            if progressed {
+                self.progress_vt = now_ns;
+                progressed = false;
+            }
+            self.ingest_auto(entry.bytes, entry.feed, now_ns, sink, entry.blocks, entry.memo);
+            w = self.w;
+            sess_lo = self.session_lo;
+            sess_hi = self.session_hi;
+            gen = self.gen;
+            steady = self.steady_ready();
+        }
+        self.w = w;
+        if progressed {
+            self.progress_vt = now_ns;
+        }
     }
 
     /// Seals the sequencer into permanent DEAD state.

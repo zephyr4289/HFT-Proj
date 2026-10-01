@@ -2,6 +2,7 @@
 
 #![allow(clippy::all)]
 
+pub mod batch_parity;
 pub mod crcfold;
 pub mod fakeserver;
 pub mod golden;
