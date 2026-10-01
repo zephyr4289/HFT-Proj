@@ -284,16 +284,27 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
     };
     let sched = build_schedule(gt, &cfg);
     let sess = *b"HYDRASESS1";
-    let workers = nf_testkit::hydra::HydraFabric::default_workers();
-    // R8: topology-aware affinity — capture the order BEFORE pinning main
-    // (threads inherit the creator's mask): main -> topo[0], workers ->
-    // topo[1..], the pipeline's RX thread -> a shared worker cpu (it is
-    // ~15% busy at these rates).
+    // R8: topology-aware sizing + placement — capture the order BEFORE any
+    // pinning (threads inherit the creator's mask, and available_parallelism
+    // would read main's restricted mask afterwards). Threads: main -> topo[0],
+    // RX -> topo[1], workers -> topo[2..] wrapping (a worker eventually
+    // shares the RX's cpu — the RX is ~15% busy; NEVER main's). On SMT
+    // hosts (2 physical cores, 4 vCPU) the worker count drops so the
+    // thread count fits the hyperthreads without stacking a physical core
+    // with spin-happy threads (measured collapse: 55M vs 411M msg/s).
     let topo = nf_testkit::affinity::cpu_order();
+    let n_phys = nf_testkit::affinity::physical_core_count();
+    let workers = if n_phys >= 4 {
+        3
+    } else {
+        topo.len().saturating_sub(2).max(1)
+    };
     if let Some(c) = topo.first() {
         let _ = nf_testkit::affinity::pin_current_to(*c);
     }
-    let worker_cpus: Vec<usize> = topo.iter().skip(1).copied().collect();
+    let worker_cpus: Vec<usize> = (0..workers)
+        .map(|i| topo.get(2 + ((i + 1) % (topo.len().saturating_sub(2).max(1)))).copied().unwrap_or(1))
+        .collect();
     let rx_cpu = topo.get(1).copied();
     let fabric = nf_testkit::hydra::HydraFabric::spawn_pinned(workers, &worker_cpus);
     let mut rates = Vec::with_capacity(runs);
@@ -433,12 +444,22 @@ fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -
         ..Default::default()
     };
     let sched = build_schedule(gt, &cfg);
-    let workers = nf_testkit::hydra::HydraFabric::default_workers();
+    // R8: topology-aware sizing + placement (see the burst arm — and note
+    // this arm runs AFTER the burst pinned main, so available_parallelism()
+    // is useless here; the physical topology is not).
     let topo = nf_testkit::affinity::cpu_order();
+    let n_phys = nf_testkit::affinity::physical_core_count();
+    let workers = if n_phys >= 4 {
+        3
+    } else {
+        topo.len().saturating_sub(2).max(1)
+    };
     if let Some(c) = topo.first() {
         let _ = nf_testkit::affinity::pin_current_to(*c);
     }
-    let worker_cpus: Vec<usize> = topo.iter().skip(1).copied().collect();
+    let worker_cpus: Vec<usize> = (0..workers)
+        .map(|i| topo.get(2 + ((i + 1) % (topo.len().saturating_sub(2).max(1)))).copied().unwrap_or(1))
+        .collect();
     let rx_cpu = topo.get(1).copied();
     let fabric = nf_testkit::hydra::HydraFabric::spawn_pinned(workers, &worker_cpus);
     let mut total_msgs = 0u64;

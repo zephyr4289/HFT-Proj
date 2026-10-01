@@ -131,3 +131,26 @@ mod tests {
         }
     }
 }
+
+/// R8: how many DISTINCT physical cores the allowed set spans (SMT sibling
+/// groups collapse to one). Drives thread-count decisions on mixed SMT /
+/// non-SMT runner pools: oversubscribing a physical core with spin-happy
+/// threads collapses the fabric (measured: 55M vs 411M msg/s).
+pub fn physical_core_count() -> usize {
+    let order = cpu_order();
+    if order.is_empty() {
+        return 0;
+    }
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for &cpu in &order {
+        match read_sibling_group(cpu) {
+            Some(g) => {
+                if !groups.iter().any(|h| h == &g) {
+                    groups.push(g);
+                }
+            }
+            None => groups.push(vec![cpu]),
+        }
+    }
+    groups.len()
+}
