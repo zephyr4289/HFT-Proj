@@ -134,7 +134,11 @@ else
   tail -n 20 /tmp/musl_build.log || true
   echo "MUSL_BUILD_FAILED fallback gnu" > /tmp/musl_build.log
 fi
-$HFT_TASKSET "$HFT_BIN" --sample data/tests/sample-mini.itch --runs 30 --warmup 5 --output-format json | tee /tmp/bench_results.json
+# R8: hft_bench runs the RX-pipelined span arm (2 threads) — the external
+# single-core taskset would timeslice them. The binary pins its own threads
+# topology-aware (main -> first allowed cpu, RX -> second); the classic
+# per-message arm runs on the pinned main thread (deterministic, as before).
+"$HFT_BIN" --sample data/tests/sample-mini.itch --runs 30 --warmup 5 --output-format json | tee /tmp/bench_results.json
 grep -q "median_cycles" /tmp/bench_results.json
 python3 - <<'PYEOF'
 import json, sys

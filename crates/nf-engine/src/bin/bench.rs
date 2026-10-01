@@ -276,7 +276,12 @@ fn run_sustained_loop_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
 ///   2. hydra reference pass (untimed): HydraSpanSink over the same bytes —
 ///      must equal (1) field-for-field;
 ///   3. every measured pass must reproduce (2) exactly (and ALLOC_DELTA = 0).
-fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibration) -> u64 {
+fn run_hydra_burst(
+    gt: &[u8],
+    runs: usize,
+    cal: &nf_engine::clock::ClockCalibration,
+    topo: &[usize],
+) -> u64 {
     let cfg = ReplayConfig {
         msgs_per_packet: Packetize::MtuBound(1400),
         guarantee_coverage: true,
@@ -284,15 +289,15 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
     };
     let sched = build_schedule(gt, &cfg);
     let sess = *b"HYDRASESS1";
-    // R8: topology-aware sizing + placement — capture the order BEFORE any
-    // pinning (threads inherit the creator's mask, and available_parallelism
-    // would read main's restricted mask afterwards). Threads: main -> topo[0],
-    // RX -> topo[1], workers -> topo[2..] wrapping (a worker eventually
-    // shares the RX's cpu — the RX is ~15% busy; NEVER main's). On SMT
-    // hosts (2 physical cores, 4 vCPU) the worker count drops so the
-    // thread count fits the hyperthreads without stacking a physical core
-    // with spin-happy threads (measured collapse: 55M vs 411M msg/s).
-    let topo = nf_testkit::affinity::cpu_order();
+    // R8: topology-aware sizing + placement — the caller captured the
+    // order BEFORE any pinning (threads inherit the creator's mask, and
+    // cpu_order()/available_parallelism() would read main's restricted
+    // mask afterwards — the sustained arm ran after the burst's pin once
+    // and sized itself to 1 worker). Threads: main -> topo[0], RX ->
+    // topo[1], workers -> the remaining slots (a worker eventually shares
+    // the RX's cpu — the RX is ~15% busy; NEVER main's). On SMT hosts the
+    // worker count drops so the thread count fits the hyperthreads.
+    let topo: Vec<usize> = topo.to_vec();
     let n_phys = nf_testkit::affinity::physical_core_count();
     let workers = if n_phys >= 4 {
         3
@@ -437,17 +442,19 @@ fn assert_sustained_pass(got: (u64, u64, u64), want: (u64, u64, u64), null_diag:
 /// Every completed pass must reproduce the pinned reference tuple
 /// (count, hash, msg_hash) exactly — stronger than the R6 count-only
 /// assert.
-fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -> u64 {
+fn run_hydra_sustained_5s(
+    gt: &[u8],
+    cal: &nf_engine::clock::ClockCalibration,
+    topo: &[usize],
+) -> u64 {
     let cfg = ReplayConfig {
         msgs_per_packet: Packetize::MtuBound(1400),
         guarantee_coverage: true,
         ..Default::default()
     };
     let sched = build_schedule(gt, &cfg);
-    // R8: topology-aware sizing + placement (see the burst arm — and note
-    // this arm runs AFTER the burst pinned main, so available_parallelism()
-    // is useless here; the physical topology is not).
-    let topo = nf_testkit::affinity::cpu_order();
+    // R8: topology-aware sizing + placement (see the burst arm).
+    let topo: Vec<usize> = topo.to_vec();
     let n_phys = nf_testkit::affinity::physical_core_count();
     let workers = if n_phys >= 4 {
         3
@@ -1460,8 +1467,10 @@ fn main() {
         // spans the runner's cores; single-core taskset would force inline
         // mode and defeat the purpose.
         println!("=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===");
-        let _hydra_burst = run_hydra_burst(&gt, runs, &cal);
-        let _hydra_sustained = run_hydra_sustained_5s(&gt, &cal);
+        // R8: capture the topology BEFORE any arm pins anything.
+        let topo = nf_testkit::affinity::cpu_order();
+        let _hydra_burst = run_hydra_burst(&gt, runs, &cal, &topo);
+        let _hydra_sustained = run_hydra_sustained_5s(&gt, &cal, &topo);
         return;
     }
 

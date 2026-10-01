@@ -141,6 +141,10 @@ pub fn physical_core_count() -> usize {
     if order.is_empty() {
         return 0;
     }
+    // Group by identical sibling lists; a true SMT pair (2 members) is one
+    // physical core, a singleton is one, and larger groups (some VMs report
+    // all vCPUs sharing one thread_siblings_list) count as their size — the
+    // oversubscription guard only needs the right ORDER of magnitude.
     let mut groups: Vec<Vec<usize>> = Vec::new();
     for &cpu in &order {
         match read_sibling_group(cpu) {
@@ -152,5 +156,12 @@ pub fn physical_core_count() -> usize {
             None => groups.push(vec![cpu]),
         }
     }
-    groups.len()
+    groups
+        .iter()
+        .map(|g| match g.len() {
+            0 => 0,
+            2 => 1,
+            n => n,
+        })
+        .sum()
 }
