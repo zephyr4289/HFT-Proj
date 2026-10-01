@@ -57,6 +57,13 @@ pub struct FrameEntry<'a> {
     pub feed: u8,
     pub blocks: &'a [(u64, u32, u32)],
     pub memo: Option<FrameMemo>,
+    /// R8: the frame's first block sequence number, carried inline by the
+    /// transport's slot (from the schedule at render time). With
+    /// `blocks.len()` this yields last = first + n - 1 without touching the
+    /// triple store; for triple-carrying rendered frames it equals
+    /// `blocks[0].0` by construction (the render walk emits exactly
+    /// `first_seq + i` triples or tombstones the frame).
+    pub first_seq: u64,
 }
 
 /// Single-pass fused framing + per-block callback walk for the ingest hot path

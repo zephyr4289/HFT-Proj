@@ -53,10 +53,11 @@ pub const ARENA_SLOTS: usize = 256;
 /// immutable rendered bytes. Session patching never touches bodies, so the
 /// verdict survives reset(). Consumed via `batch_memo()`.
 ///
-/// R8 layout: exactly 16 bytes — `release_vt` moved to the parallel `vts`
-/// array so the directory stream is 4 entries per cache line (the poll loop
-/// and its lookahead walk metas at 4/line instead of 2.67). One u32 of the
-/// old 24B padded struct per frame, back in L1.
+/// R8 layout: 24 bytes — `release_vt` moved to the parallel `vts` array,
+/// and `first_seq` (the frame's first block sequence number, from the
+/// schedule) added so the sequencer's steady scan never touches the triple
+/// store (first/last come from the slot; body bounds are derived — see the
+/// FrameView doc).
 #[derive(Debug, Clone, Copy)]
 struct FrameMeta {
     offset: u32,
@@ -66,6 +67,7 @@ struct FrameMeta {
     blk_base: u32,
     blk_count: u16,
     valid: u16,
+    first_seq: u64,
 }
 
 pub struct ReplayTransport {
@@ -236,6 +238,10 @@ impl ReplayTransport {
                         SchedKind::Heartbeat { .. } | SchedKind::EndOfSession { .. } => 0,
                     };
                     let tombstoned = ev_count > 0 && blk_count == 0;
+                    let meta_first_seq = match ev.kind {
+                        SchedKind::Packet { first_seq, .. } => first_seq,
+                        _ => 0,
+                    };
                     if tombstoned {
                         std::hint::cold_path();
                         meta.push(FrameMeta {
@@ -246,6 +252,7 @@ impl ReplayTransport {
                             blk_base: 0,
                             blk_count: 0,
                             valid: 0,
+                            first_seq: 0,
                         });
                     } else {
                         meta.push(FrameMeta {
@@ -256,6 +263,7 @@ impl ReplayTransport {
                             blk_base,
                             blk_count,
                             valid: valid_prefix,
+                            first_seq: meta_first_seq,
                         });
                     }
                     vts.push(ev.release_vt);
@@ -272,6 +280,7 @@ impl ReplayTransport {
                         blk_base: 0,
                         blk_count: 0,
                         valid: 0,
+                        first_seq: 0,
                     });
                     vts.push(ev.release_vt);
                 }
@@ -477,15 +486,19 @@ impl ReplayTransport {
                 m.blk_base,
                 m.blk_count,
                 m.valid,
+                m.first_seq,
             );
             // Map batch position back to its event for batch_blocks(),
             // tombstone-safe (only pushed frames occupy batch slots).
             self.batch_event[slot_idx] = evt as u32;
             // R4/R8: DLP warm-up — software-prefetch the FIRST cache line of
-            // the frames arriving over the next few events, plus the first
-            // line of their block triples. The metas are a sequential 16B
-            // stream (hardware-prefetched; one 16B load per level); the
-            // bodies and triples are the streams the prefetch must bridge.
+            // the frames arriving over the next few events (header + first
+            // body bytes: the main thread's session compare reads frame
+            // bytes [0..20], and the verification consumers stream the body
+            // from there). The metas are a sequential stream the hardware
+            // prefetcher carries; the R8 steady scan no longer reads the
+            // triple store at all (first/last/body bounds are derived from
+            // the slot), so the triple-side prefetch is gone.
             // `prefetcht0` accepts any readable address and never faults, so
             // a tombstoned level is a harmless nearby line.
             #[cfg(target_arch = "x86_64")]
@@ -505,12 +518,6 @@ impl ReplayTransport {
                     if self.body_prefetch {
                         std::arch::x86_64::_mm_prefetch(
                             self.frames.as_ptr().add(b) as *const i8,
-                            std::arch::x86_64::_MM_HINT_T0,
-                        );
-                    }
-                    if mk.blk_count > 0 {
-                        std::arch::x86_64::_mm_prefetch(
-                            self.triples.as_ptr().add(mk.blk_base as usize) as *const i8,
                             std::arch::x86_64::_MM_HINT_T0,
                         );
                     }
@@ -566,6 +573,7 @@ impl ReplayTransport {
                 feed: f.feed,
                 blocks,
                 memo,
+                first_seq: f.first_seq,
             }
         })
     }

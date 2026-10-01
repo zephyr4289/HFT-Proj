@@ -18,6 +18,14 @@ pub struct FrameView {
     /// R8: inline R2 memo — the frame's ITCH validation verdict prefix
     /// (`FrameMemo::valid_count`; 0 when `blk_count == 0`).
     pub(crate) valid: u16,
+    /// R8: inline first sequence number (from the schedule). With blk_count
+    /// this yields last = first + blk_count - 1 WITHOUT touching the triple
+    /// store. Body bounds are likewise derived: for every non-tombstoned
+    /// rendered data packet the tombstone rule (`pos == len` after the walk)
+    /// forces the last block's end to equal `len`, and the first block
+    /// always starts at HEADER_LEN + 2 — so body = frame[HEADER_LEN+2..len]
+    /// exactly, and the steady scan needs ZERO triple loads.
+    pub(crate) first_seq: u64,
 }
 
 impl FrameView {
@@ -49,6 +57,7 @@ impl FrameBatch {
                 blk_base: 0,
                 blk_count: 0,
                 valid: 0,
+                first_seq: 0,
             }),
             len: 0,
         }
@@ -94,6 +103,7 @@ impl FrameBatch {
     /// checked `len < capacity` (the poll loop condition does); a debug
     /// assert guards it in test builds.
     #[inline(always)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn push_indexed(
         &mut self,
         ptr: *const u8,
@@ -102,6 +112,7 @@ impl FrameBatch {
         blk_base: u32,
         blk_count: u16,
         valid: u16,
+        first_seq: u64,
     ) {
         debug_assert!(self.len < 256, "FrameBatch index push overflow");
         self.slots[self.len] = FrameView {
@@ -111,6 +122,7 @@ impl FrameBatch {
             blk_base,
             blk_count,
             valid,
+            first_seq,
         };
         self.len += 1;
     }
@@ -125,6 +137,7 @@ impl FrameBatch {
                 blk_base: 0,
                 blk_count: 0,
                 valid: 0,
+                first_seq: 0,
             };
             self.len += 1;
             true

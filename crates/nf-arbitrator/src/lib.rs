@@ -1007,8 +1007,8 @@ where
     // delivered with ONE on_span_batch call per buffer-fill / scan-exit (the
     // default Sink impl replays them exactly, so this is purely mechanical
     // batching; sinks like the count/hydra/fabric sinks amortize their
-    // per-call guard work across the batch). 8 covers a coalesced poll's
-    // emitting frames; overflow flushes mid-scan in order.
+    // per-call guard work across the batch). 32 covers a coalesced poll's
+    // emitting frames at k=8..32; overflow flushes mid-scan in order.
     let mut recs = [
         crate::types::SpanRec {
             first_seq: 0,
@@ -1016,7 +1016,7 @@ where
             body: &[],
             blocks: &[],
         };
-        8
+        32
     ];
     let mut nrecs = 0usize;
     let proof = LiveFeedProof { gen };
@@ -1024,48 +1024,54 @@ where
         let frame = entry.bytes;
         let blocks = entry.blocks;
         let n = blocks.len();
-        if n == 0 || frame.len() < moldudp64::HEADER_LEN {
+        // R8: HB/EOS frames carry no triples (blk_count == 0), so this one
+        // gate subsumes the classic kind-classify for the steady scan: any
+        // triple-less frame (control frame, index-less live frame, empty
+        // data packet) is the classic ladder's business.
+        if n == 0 {
             cold = Some(entry);
             break;
         }
-        // S0/S1 fused header decode (identical to ingest_indexed).
+        // S0/S1 fused header decode — the session compare is the ONLY frame
+        // read left on the steady path (header line, prefetched by poll).
         let frame_lo = u64::from_le_bytes([
             frame[0], frame[1], frame[2], frame[3], frame[4], frame[5], frame[6], frame[7],
         ]);
         let frame_hi = u64::from_le_bytes([
             frame[2], frame[3], frame[4], frame[5], frame[6], frame[7], frame[8], frame[9],
         ]);
-        let hdr_count = u16::from_be_bytes([frame[18], frame[19]]);
         if frame_lo != sess_lo || frame_hi != sess_hi {
             // Adoption or boundary: the full dispatch ladder.
             cold = Some(entry);
             break;
         }
-        // S2: kind classify — HB/EOS carry no triples, but a session-matched
-        // control frame must still run its exact handler.
-        if hdr_count == moldudp64::HEARTBEAT_COUNT || hdr_count == moldudp64::EOS_COUNT {
-            cold = Some(entry);
-            break;
-        }
-        // S3: span from triples.
-        let first = blocks[0].0;
-        let last = blocks[n - 1].0;
+        // S3: span from the slot's inline first_seq — NO triple loads (for
+        // triple-carrying rendered frames first == blocks[0].0 and
+        // n == hdr_count by the tombstone rule; the parity suite pins it).
+        let first = entry.first_seq;
+        let last = first + n as u64 - 1;
         if last < *w {
             // Pure duplicate packet (HOT in dual-feed replay) — the exact
-            // classic counters (no progress_vt write, matching classic).
+            // classic counters (blk_count == hdr_count here; no progress_vt
+            // write, matching classic).
             let fi = (entry.feed & 1) as usize;
             pk[fi] += 1;
             byt[fi] += frame.len() as u64;
             dup[fi] += 1;
-            dup_msgs += hdr_count as u64;
+            dup_msgs += n as u64;
             continue;
         }
-        if first > *w {
-            // Gap: evidence + staging ladder is the classic path's job.
+        if first != *w {
+            // Partial overlap (first < w <= last: re-ordered dual-feed copy)
+            // or gap (first > w): the classic ladder's skip/stage logic.
             cold = Some(entry);
             break;
         }
-        // S5 contiguous apply. R2 memo gate — identical semantics.
+        // S5 contiguous apply at skip == 0. R2 memo gate — identical
+        // semantics. Body bounds are DERIVED: the tombstone rule forces the
+        // last block's end to the frame end and the first block to start at
+        // HEADER_LEN + 2, so body == frame[HEADER_LEN+2..len] exactly (the
+        // classic path's blocks[0].1..blocks[n-1].2 for skip == 0).
         let all_valid = entry.memo.is_some_and(|m| m.valid_count as usize == n);
         if !all_valid {
             cold = Some(entry);
@@ -1074,20 +1080,13 @@ where
         let fi = (entry.feed & 1) as usize;
         pk[fi] += 1;
         byt[fi] += frame.len() as u64;
-        let skip = (*w).wrapping_sub(first) as usize;
-        let skip = if skip < n { skip } else { n };
-        if skip != 0 {
-            dup_msgs += skip as u64;
-        }
         if wants_spans {
-            // R3 closed-form span emission (n > skip always: last >= w),
-            // captured into the batch buffer (R8).
-            let body = &frame[blocks[skip].1 as usize..blocks[n - 1].2 as usize];
+            let body = &frame[moldudp64::HEADER_LEN + 2..frame.len()];
             recs[nrecs] = crate::types::SpanRec {
-                first_seq: first + skip as u64,
-                count: (n - skip) as u16,
+                first_seq: first,
+                count: n as u16,
                 body,
-                blocks: &blocks[skip..],
+                blocks,
             };
             nrecs += 1;
             if nrecs == recs.len() {
@@ -1095,11 +1094,11 @@ where
                 nrecs = 0;
             }
         } else {
-            for &(seq, start, end) in &blocks[skip..] {
+            for &(seq, start, end) in blocks {
                 sink.on_msg(&proof, seq, &frame[start as usize..end as usize]);
             }
         }
-        emitted += (n - skip) as u64;
+        emitted += n as u64;
         *w = last + 1;
         progressed = true;
     }

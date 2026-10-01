@@ -126,6 +126,9 @@ fn run_uninstrumented_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::Cloc
     // R1: single pre-rendered transport; reset() only rewinds event_idx/clock with an
     // identical session — frames byte-identical, pages faulted and warm per pass.
     let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
+    // R8: NAPI-style RX coalescing for the throughput arms (see
+    // set_poll_coalesce; conformance/golden paths keep the default pacing).
+    transport.set_poll_coalesce(8);
 
     // R4: untimed reference pass pins the deterministic expected values.
     let (ref_count, ref_hash, ref_msg_hash) = {
@@ -204,6 +207,8 @@ fn run_sustained_loop_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
 
     let initial_sess = *b"SUSTAIN000";
     let mut transport = ReplayTransport::new(gt, sched, initial_sess);
+    // R8: NAPI-style RX coalescing (throughput arms only).
+    transport.set_poll_coalesce(8);
     let mut seq = Sequencer::new();
     let mut sink = SpanConformanceSink::new();
     let mut batch = FrameBatch::new();
@@ -283,9 +288,13 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
     let fabric = nf_testkit::hydra::HydraFabric::spawn(workers);
     let mut rates = Vec::with_capacity(runs);
     let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
-    // R6: workers read the bodies directly — main-side body prefetch is pure
-    // overhead in fabric mode (workers issue their own head-start prefetch).
-    transport.set_body_prefetch(false);
+    // R8 (revised): main-side first-line prefetch is back ON — the main
+    // thread's steady scan reads every frame's session bytes [0..20], and
+    // the R6-era OFF setting left those header lines cold on the main
+    // core's critical path. Workers still issue their own deeper body
+    // prefetch; the shared lines land in L2/L3 either way. Also NAPI-style
+    // RX coalescing for the throughput arms.
+    transport.set_poll_coalesce(8);
 
     // Layer 1: sequential reference (the TITAN arm's own verifier, pinned).
     let seq_ref = {
@@ -428,7 +437,9 @@ fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -
 
     let initial_sess = *b"HYDRASUST1";
     let mut transport = ReplayTransport::new(gt, sched, initial_sess);
-    transport.set_body_prefetch(false);
+    // R8 (revised): see the burst arm — first-line prefetch ON (main reads
+    // frame headers), RX coalescing ON.
+    transport.set_poll_coalesce(8);
     let mut seq = Sequencer::new();
     let mut sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
     let mut batch = FrameBatch::new();
