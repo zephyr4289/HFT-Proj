@@ -9,6 +9,15 @@ pub struct FrameView {
     pub(crate) ptr: *const u8,
     pub len: u16,
     pub feed: FeedId,
+    /// R8: inline Q1 index — the frame's block triples live at
+    /// `triples[blk_base .. blk_base + blk_count]` in the owning
+    /// `ReplayTransport` (0/0 for index-less transports such as live XDP,
+    /// and for HB/EOS frames which never carry triples).
+    pub(crate) blk_base: u32,
+    pub(crate) blk_count: u16,
+    /// R8: inline R2 memo — the frame's ITCH validation verdict prefix
+    /// (`FrameMemo::valid_count`; 0 when `blk_count == 0`).
+    pub(crate) valid: u16,
 }
 
 impl FrameView {
@@ -37,6 +46,9 @@ impl FrameBatch {
                 ptr: std::ptr::null(),
                 len: 0,
                 feed: 0,
+                blk_base: 0,
+                blk_count: 0,
+                valid: 0,
             }),
             len: 0,
         }
@@ -78,6 +90,31 @@ impl FrameBatch {
         }
     }
 
+    /// R8: index-carrying push (rendered replay frames). Callers must have
+    /// checked `len < capacity` (the poll loop condition does); a debug
+    /// assert guards it in test builds.
+    #[inline(always)]
+    pub(crate) fn push_indexed(
+        &mut self,
+        ptr: *const u8,
+        len: u16,
+        feed: FeedId,
+        blk_base: u32,
+        blk_count: u16,
+        valid: u16,
+    ) {
+        debug_assert!(self.len < 256, "FrameBatch index push overflow");
+        self.slots[self.len] = FrameView {
+            ptr,
+            len,
+            feed,
+            blk_base,
+            blk_count,
+            valid,
+        };
+        self.len += 1;
+    }
+
     #[inline(always)]
     pub fn push_raw(&mut self, ptr: *const u8, len: usize, feed: FeedId) -> bool {
         if self.len < 256 {
@@ -85,12 +122,24 @@ impl FrameBatch {
                 ptr,
                 len: len as u16,
                 feed,
+                blk_base: 0,
+                blk_count: 0,
+                valid: 0,
             };
             self.len += 1;
             true
         } else {
             false
         }
+    }
+
+    /// R8: the frame's inline Q1 index (blk_base/blk_count/valid_count) —
+    /// read by `ReplayTransport::batch_entries` to feed the sequencer's
+    /// batch apply loop with zero side-table indirection.
+    #[inline(always)]
+    pub(crate) fn slot_index(&self, pos: usize) -> (u32, u16, u16) {
+        let f = &self.slots[pos];
+        (f.blk_base, f.blk_count, f.valid)
     }
 }
 

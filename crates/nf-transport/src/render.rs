@@ -3,7 +3,7 @@
 #![cfg_attr(not(test), deny(clippy::disallowed_types))]
 
 use crate::sched_types::{ReplaySchedule, SchedEvent, SchedKind};
-use crate::{FeedId, FrameBatch, FrameView, Transport};
+use crate::{FeedId, FrameBatch, Transport};
 use nf_protocol::itch5;
 use nf_protocol::moldudp64::{EOS_COUNT, HEADER_LEN, HEARTBEAT_COUNT};
 use nf_protocol::packet::FrameMemo;
@@ -52,9 +52,13 @@ pub const ARENA_SLOTS: usize = 256;
 /// prefix of blocks passing `itch5::validate`, computed once here from the
 /// immutable rendered bytes. Session patching never touches bodies, so the
 /// verdict survives reset(). Consumed via `batch_memo()`.
+///
+/// R8 layout: exactly 16 bytes — `release_vt` moved to the parallel `vts`
+/// array so the directory stream is 4 entries per cache line (the poll loop
+/// and its lookahead walk metas at 4/line instead of 2.67). One u32 of the
+/// old 24B padded struct per frame, back in L1.
 #[derive(Debug, Clone, Copy)]
 struct FrameMeta {
-    release_vt: u64,
     offset: u32,
     len: u16,
     feed: FeedId,
@@ -73,6 +77,11 @@ pub struct ReplayTransport {
     /// ~15MB for the 505k-msg mini schedule; dropped with the transport.
     frames: Box<[u8]>,
     meta: Box<[FrameMeta]>,
+    /// R8: parallel release-time stream (event order, one u64 per event).
+    /// Split from `meta` so the directory is 16B/entry; the clock check
+    /// reads this stream and the per-frame metadata reads the other — both
+    /// sequential, both hardware-prefetched.
+    vts: Box<[u64]>,
     /// Flat precomputed block index: one `(seq, start, end)` triple per message
     /// block (~8MB mini schedule), grouped per event via `FrameMeta.blk_base /
     /// blk_count`. Read via `batch_blocks()`; session-patch never touches the
@@ -111,6 +120,9 @@ impl ReplayTransport {
             Vec::with_capacity(schedule.events.len().saturating_mul(768));
         #[allow(clippy::disallowed_types)]
         let mut meta: Vec<FrameMeta> = Vec::with_capacity(schedule.events.len());
+        // R8: parallel release-time stream (one u64 per event).
+        #[allow(clippy::disallowed_types)]
+        let mut vts: Vec<u64> = Vec::with_capacity(schedule.events.len());
         // Flat triple store: ~16B per message block, appended per rendered frame.
         #[allow(clippy::disallowed_types)]
         let mut triples: Vec<(u64, u32, u32)> = Vec::new();
@@ -211,7 +223,6 @@ impl ReplayTransport {
                     if tombstoned {
                         std::hint::cold_path();
                         meta.push(FrameMeta {
-                            release_vt: ev.release_vt,
                             offset: 0,
                             len: 0,
                             feed: ev.feed,
@@ -222,7 +233,6 @@ impl ReplayTransport {
                         });
                     } else {
                         meta.push(FrameMeta {
-                            release_vt: ev.release_vt,
                             offset: off,
                             len: len as u16,
                             feed: ev.feed,
@@ -232,13 +242,13 @@ impl ReplayTransport {
                             valid: valid_prefix,
                         });
                     }
+                    vts.push(ev.release_vt);
                 } else {
                     // Unrenderable event (frame >1500B scratch — unreachable for
                     // MTU-bound schedules): tombstone keeps event_idx aligned,
                     // exactly as the old skip-without-push did.
                     std::hint::cold_path();
                     meta.push(FrameMeta {
-                        release_vt: ev.release_vt,
                         offset: 0,
                         len: 0,
                         feed: ev.feed,
@@ -247,6 +257,7 @@ impl ReplayTransport {
                         blk_count: 0,
                         valid: 0,
                     });
+                    vts.push(ev.release_vt);
                 }
             }
         }
@@ -256,6 +267,7 @@ impl ReplayTransport {
             virtual_clock: first_vt,
             frames: blob.into_boxed_slice(),
             meta: meta.into_boxed_slice(),
+            vts: vts.into_boxed_slice(),
             triples: triples.into_boxed_slice(),
             batch_event: [0u32; 256],
             batch_event_len: 0,
@@ -294,6 +306,12 @@ impl ReplayTransport {
     /// P3: always-inline + hoisted len/capacity, cold clamp path.
     /// P9a: per released frame: 2 indexed loads + 10B session patch + batch push.
     /// No cursor seeks, no length re-walk, no payload memcpy in-window.
+    /// R8: (a) the release-time check reads the parallel `vts` stream while
+    /// the per-frame metadata comes from the 16B directory — two sequential
+    /// streams instead of one straddling 24B struct; (b) the frame slice is
+    /// unchecked (construction-valid offsets — bounds re-proven per push in
+    /// debug builds only); (c) the slot carries the Q1/R2 index inline, so
+    /// the sequencer's batch apply loop needs no side-table lookups.
     #[inline(always)]
     pub fn poll_clamped(&mut self, batch: &mut FrameBatch, max_vt: Option<u64>) -> usize {
         batch.clear();
@@ -303,7 +321,7 @@ impl ReplayTransport {
             return 0;
         }
 
-        let next_vt = self.meta[self.event_idx].release_vt;
+        let next_vt = self.vts[self.event_idx];
         // HOT: max_vt=None + clock_clamp=None (steady replay) — clamp is cold.
         let jump_to = match max_vt.or(self.clock_clamp) {
             Some(clamp) => {
@@ -321,64 +339,71 @@ impl ReplayTransport {
         let session = self.session;
 
         while self.event_idx < events_len && batch.len() < cap {
-            let m = self.meta[self.event_idx];
-            if m.release_vt > vclock {
+            let evt = self.event_idx;
+            if self.vts[evt] > vclock {
                 break;
             }
-            if m.len > 0 {
-                let base = m.offset as usize;
-                let end = base + m.len as usize;
-                let frame = &mut self.frames[base..end];
-                if m.patch {
-                    frame[0..10].copy_from_slice(&session);
-                }
-                let slot_idx = batch.len();
-                batch.push(FrameView {
-                    ptr: frame.as_ptr(),
-                    len: m.len,
-                    feed: m.feed,
-                });
-                // Map batch position back to its event for batch_blocks(),
-                // tombstone-safe (only pushed frames occupy batch slots).
-                self.batch_event[slot_idx] = self.event_idx as u32;
+            let m = self.meta[evt];
+            self.event_idx = evt + 1;
+            if m.len == 0 {
+                continue; // tombstone: advances the cursor, never emitted
             }
-            self.event_idx += 1;
-            // R4: DLP warm-up — software-prefetch the FIRST cache line of the
-            // frame bodies arriving over the next few events, plus the first
-            // line of their block triples. Intra-body streaming is then
-            // carried by the hardware streamer; what starves it (and what
-            // this fixes) are the inter-frame gaps: 20B headers and the bodies
-            // of duplicate frames the sequencer will never read. With bodies
-            // at ~12 lines each, warming 4 events ahead covers L3/DRAM latency
-            // at streaming cost — turning latency stalls into bandwidth.
-            // R6: body prefetch gated (workers prefetch their own bodies in
-            // fabric mode); triple prefetch stays (main-thread ingest reads
-            // triples[0]/triples[n-1] per frame).
+            let base = m.offset as usize;
+            let end = base + m.len as usize;
+            // SAFETY: `offset`/`len` were written at construction from the
+            // blob's own append cursor (off = blob.len() before
+            // extend_from_slice, len = the rendered length), so base..end is
+            // in-bounds of `frames` by construction; the debug assert keeps
+            // the invariant honest under mutation-heavy test builds.
+            debug_assert!(end <= self.frames.len());
+            let frame = unsafe { self.frames.get_unchecked_mut(base..end) };
+            if m.patch {
+                frame[0..10].copy_from_slice(&session);
+            }
+            let slot_idx = batch.len();
+            batch.push_indexed(
+                frame.as_ptr(),
+                m.len,
+                m.feed,
+                m.blk_base,
+                m.blk_count,
+                m.valid,
+            );
+            // Map batch position back to its event for batch_blocks(),
+            // tombstone-safe (only pushed frames occupy batch slots).
+            self.batch_event[slot_idx] = evt as u32;
+            // R4/R8: DLP warm-up — software-prefetch the FIRST cache line of
+            // the frames arriving over the next few events, plus the first
+            // line of their block triples. The metas are a sequential 16B
+            // stream (hardware-prefetched; one 16B load per level); the
+            // bodies and triples are the streams the prefetch must bridge.
+            // `prefetcht0` accepts any readable address and never faults, so
+            // a tombstoned level is a harmless nearby line.
             #[cfg(target_arch = "x86_64")]
-            for k in 1..=4usize {
-                let ahead = self.event_idx + k - 1;
-                if ahead < events_len {
-                    let mk = self.meta[ahead];
-                    if mk.len > 0 {
-                        let base = mk.offset as usize;
-                        // SAFETY: base < frames.len() by construction (offset
-                        // pushed only for rendered frames); prefetcht0 accepts
-                        // any readable address and faults never.
-                        unsafe {
-                            if self.body_prefetch {
-                                std::arch::x86_64::_mm_prefetch(
-                                    self.frames.as_ptr().add(base) as *const i8,
-                                    std::arch::x86_64::_MM_HINT_T0,
-                                );
-                            }
-                            if mk.blk_count > 0 {
-                                std::arch::x86_64::_mm_prefetch(
-                                    self.triples.as_ptr()
-                                        .add(mk.blk_base as usize) as *const i8,
-                                    std::arch::x86_64::_MM_HINT_T0,
-                                );
-                            }
-                        }
+            for k in 0..4usize {
+                let ahead = evt + 1 + k;
+                if ahead >= events_len {
+                    break;
+                }
+                let mk = self.meta[ahead];
+                if mk.len == 0 {
+                    continue;
+                }
+                let b = mk.offset as usize;
+                // SAFETY: prefetcht0 never faults; `b` is a construction-
+                // valid offset (or a tombstone's 0, i.e. the blob start).
+                unsafe {
+                    if self.body_prefetch {
+                        std::arch::x86_64::_mm_prefetch(
+                            self.frames.as_ptr().add(b) as *const i8,
+                            std::arch::x86_64::_MM_HINT_T0,
+                        );
+                    }
+                    if mk.blk_count > 0 {
+                        std::arch::x86_64::_mm_prefetch(
+                            self.triples.as_ptr().add(mk.blk_base as usize) as *const i8,
+                            std::arch::x86_64::_MM_HINT_T0,
+                        );
                     }
                 }
             }
@@ -412,6 +437,44 @@ impl ReplayTransport {
             return &[];
         }
         &self.triples[base..end]
+    }
+
+    /// R8: the frames of the most recent `poll()` as `FrameEntry` values —
+    /// bytes + feed + inline Q1/R2 index with ZERO side-table indirection
+    /// (the slot itself carries blk_base/blk_count/valid). Feeds the
+    /// sequencer's `ingest_batch` apply loop. The iterator borrows the
+    /// transport immutably; the caller must finish it before the next poll
+    /// (the borrow checker enforces this).
+    #[inline(always)]
+    pub fn batch_entries<'b>(
+        &'b self,
+        batch: &'b FrameBatch,
+    ) -> impl Iterator<Item = nf_protocol::packet::FrameEntry<'b>> + 'b {
+        batch.frames().iter().enumerate().map(move |(pos, f)| {
+            let (blk_base, blk_count, valid) = batch.slot_index(pos);
+            let blocks: &'b [(u64, u32, u32)] = if blk_count == 0 {
+                &[]
+            } else {
+                // SAFETY: batch slots are written only inside this crate —
+                // `push_indexed` copies construction-valid blk_base/blk_count
+                // (bounded by the triples store built at transport
+                // construction), and `push_raw`/`FrameBatch::new` write
+                // 0/0, which the guard above routes to the empty slice.
+                // `pos < batch.len()` by the enumerate bounds.
+                unsafe {
+                    let tp = self.triples.as_ptr().add(blk_base as usize);
+                    std::slice::from_raw_parts(tp, blk_count as usize)
+                }
+            };
+            nf_protocol::packet::FrameEntry {
+                bytes: f.bytes(),
+                feed: f.feed,
+                blocks,
+                memo: (blk_count != 0).then_some(nf_protocol::packet::FrameMemo {
+                    valid_count: valid,
+                }),
+            }
+        })
     }
 
     /// R2: validation-verdict memo for the frame at batch position `batch_pos`
@@ -677,5 +740,29 @@ mod tests {
         let t = NoIndexTransport;
         assert!(t.batch_memo(0).is_none());
         assert!(t.batch_blocks(0).is_empty());
+    }
+
+    /// R8: the inline slot index (batch_entries) must agree field-for-field
+    /// with the legacy side-table API (batch_blocks/batch_memo) on every
+    /// position of every poll — the two views of the same per-frame index
+    /// can never diverge, or the batch apply loop would see different data
+    /// than the classic per-frame path.
+    #[test]
+    fn t_r8_batch_entries_match_side_tables() {
+        let gt = gt_with(40);
+        let sched = sched_packet(1, 0, 40);
+        let mut t = ReplayTransport::new(&gt, sched, *b"TESTSESS01");
+        let mut batch = FrameBatch::new();
+        while t.poll(&mut batch) > 0 {
+            let entries: Vec<_> = t.batch_entries(&batch).collect();
+            assert_eq!(entries.len(), batch.len());
+            for (pos, e) in entries.iter().enumerate() {
+                assert_eq!(e.blocks, t.batch_blocks(pos), "slot/side-table blocks diverge");
+                assert_eq!(e.memo, t.batch_memo(pos), "slot/side-table memo diverge");
+                assert_eq!(e.feed, batch.frames()[pos].feed);
+                assert_eq!(e.bytes.len(), batch.frames()[pos].len as usize);
+                assert_eq!(e.bytes.as_ptr(), batch.frames()[pos].bytes().as_ptr());
+            }
+        }
     }
 }

@@ -32,6 +32,33 @@ pub struct FrameMemo {
     pub valid_count: u16,
 }
 
+/// R8: one frame ready for batched ingest — the frame bytes together with
+/// the transport's precomputed per-frame index (Q1 block triples + R2
+/// validation memo) in a single value, so the sequencer's batch apply loop
+/// consumes frames with zero side-table indirection.
+///
+/// `blocks`/`memo` follow the exact contracts of
+/// `Transport::batch_blocks`/`Transport::batch_memo`: empty blocks means
+/// "no index" (HB/EOS frame, live transport, or defensive fallback — the
+/// sequencer then takes the classic per-frame path, identical observables);
+/// `None` memo means "unmemoized — validate in-window".
+///
+/// The batched apply path is observationally identical to feeding the same
+/// frames through `ingest_auto` one by one: the same per-frame arbitration
+/// ladder runs (session dispatch, kind classify, span/dup classify, apply),
+/// in the same order, with the same counters and emissions. The only
+/// difference is mechanical: sequencer state is hoisted across the steady
+/// run and span emissions are buffered until a cold path or batch end
+/// flushes them in order.
+#[derive(Debug, Clone, Copy)]
+pub struct FrameEntry<'a> {
+    pub bytes: &'a [u8],
+    /// Origin feed (arbitrator `FeedId` — plain u8, aliased at the consumer).
+    pub feed: u8,
+    pub blocks: &'a [(u64, u32, u32)],
+    pub memo: Option<FrameMemo>,
+}
+
 /// Single-pass fused framing + per-block callback walk for the ingest hot path
 /// (P9c). Replaces parse-then-validate-then-emit (3 block-walks/packet) with ONE
 /// pass: framing bounds are checked per block and `f` runs for blocks past
