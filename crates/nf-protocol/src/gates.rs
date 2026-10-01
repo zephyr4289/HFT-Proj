@@ -27,6 +27,26 @@ pub const PR1_HYDRA_MIN_MSG_PER_SEC: u64 = 800_000_000;
 // R6 program level; GIGAHFT is the 1B milestone the sustained arm gates on.
 pub const PR1_GIGAHFT_MIN_MSG_PER_SEC: u64 = 1_000_000_000;
 
+// R8: PR-1 pure-ingest target (docs/22-r8-teraphase.md) — >= 2,000,000,000
+// msg/s on the SAME single core the statistical gate pins (ci.sh step 16
+// `taskset -c 1`), with the full ingest pipeline live every pass: transport
+// poll, MoldUDP64 framing, session arbitration, duplicate rejection,
+// watermark sequencing, and span emission over the exact canonical schedule.
+// No byte-level verification is claimed in this arm (that is the full-verify
+// gate below) — but nothing about the ingest itself may be skipped,
+// memoized across passes, or redefined: the sequencer state machine runs
+// for real on every frame, and the golden message population (505,849)
+// must be emitted and counted every pass.
+pub const PR1_R8_PURE_INGEST_MIN_MSG_PER_SEC: u64 = 2_000_000_000;
+
+// R8: PR-1 full-verification target — >= 1,000,000,000 msg/s sustained
+// (>= 5 s, fresh sessions, cross-pass double-buffered fabric) with the
+// complete HYDRA/GIGAHFT invariant set: bit-exact three-layer parity
+// (sequential == fabric == reference), every emitted byte read and
+// CRC32C-verified in-window on worker cores, ALLOC_DELTA = 0. This is the
+// GIGAHFT milestone carried to its 1B sustained level on the runner fabric.
+pub const PR1_R8_FULL_VERIFY_MIN_MSG_PER_SEC: u64 = 1_000_000_000;
+
 // Strict Tier 3 Bare-Metal / Reference Target (doc 00)
 pub const PR2_TARGET_P50_CYCLES: u64 = 60;
 pub const PR2_TARGET_P99_CYCLES: u64 = 150;
@@ -90,6 +110,30 @@ pub fn evaluate_pr1_hydra(wall_rate_msg_per_sec: u64) -> GateVerdict {
 #[inline]
 pub fn evaluate_pr1_gigahft(sustained_rate_msg_per_sec: u64) -> GateVerdict {
     if sustained_rate_msg_per_sec >= PR1_GIGAHFT_MIN_MSG_PER_SEC {
+        GateVerdict::Pass
+    } else {
+        GateVerdict::Fail
+    }
+}
+
+/// R8: PR-1 pure-ingest verdict — the 2B msg/s single-core span-arm ceiling
+/// (see PR1_R8_PURE_INGEST_MIN_MSG_PER_SEC). The span arm's median wall-rate
+/// over the statistical-gate run set (30 runs + 5 warmup, pinned core) must
+/// cross the threshold with the golden population emitted every pass.
+#[inline]
+pub fn evaluate_pr1_r8_pure_ingest(span_rate_msg_per_sec: u64) -> GateVerdict {
+    if span_rate_msg_per_sec >= PR1_R8_PURE_INGEST_MIN_MSG_PER_SEC {
+        GateVerdict::Pass
+    } else {
+        GateVerdict::Fail
+    }
+}
+
+/// R8: PR-1 full-verification verdict — the 1B msg/s sustained fabric target
+/// (see PR1_R8_FULL_VERIFY_MIN_MSG_PER_SEC), same invariant set as GIGAHFT.
+#[inline]
+pub fn evaluate_pr1_r8_full_verify(sustained_rate_msg_per_sec: u64) -> GateVerdict {
+    if sustained_rate_msg_per_sec >= PR1_R8_FULL_VERIFY_MIN_MSG_PER_SEC {
         GateVerdict::Pass
     } else {
         GateVerdict::Fail
@@ -186,5 +230,17 @@ mod tests {
         assert_eq!(evaluate_reconciliation_residual(2.01), GateVerdict::Fail);
         assert_eq!(evaluate_reconciliation_residual(2.00), GateVerdict::Pass);
         assert_eq!(evaluate_reconciliation_residual(0.50), GateVerdict::Pass);
+
+        // R8 tripwires: both new gates must FAIL on out-of-band inputs and
+        // PASS exactly at the threshold (2B pure ingest / 1B full verify).
+        assert_eq!(evaluate_pr1_r8_pure_ingest(1_999_999_999), GateVerdict::Fail);
+        assert_eq!(evaluate_pr1_r8_pure_ingest(0), GateVerdict::Fail);
+        assert_eq!(evaluate_pr1_r8_pure_ingest(2_000_000_000), GateVerdict::Pass);
+        assert_eq!(evaluate_pr1_r8_pure_ingest(2_500_000_000), GateVerdict::Pass);
+
+        assert_eq!(evaluate_pr1_r8_full_verify(999_999_999), GateVerdict::Fail);
+        assert_eq!(evaluate_pr1_r8_full_verify(0), GateVerdict::Fail);
+        assert_eq!(evaluate_pr1_r8_full_verify(1_000_000_000), GateVerdict::Pass);
+        assert_eq!(evaluate_pr1_r8_full_verify(1_400_000_000), GateVerdict::Pass);
     }
 }

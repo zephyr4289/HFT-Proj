@@ -597,6 +597,14 @@ fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -
         nf_protocol::gates::PR1_GIGAHFT_MIN_MSG_PER_SEC,
         nf_protocol::gates::evaluate_pr1_gigahft(sustained_rate).as_str()
     );
+    // R8: the full-verification gate — same arm, same invariants, carried to
+    // the 1B sustained level on the runner fabric (gates.rs single source).
+    println!(
+        "PR1_R8_FULL_VERIFY_VERDICT rate={} target={} -> {} (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)",
+        sustained_rate,
+        nf_protocol::gates::PR1_R8_FULL_VERIFY_MIN_MSG_PER_SEC,
+        nf_protocol::gates::evaluate_pr1_r8_full_verify(sustained_rate).as_str()
+    );
     assert_eq!(alloc_delta, 0, "ALLOC_DELTA must be 0 in hydra sustained loop");
     sustained_rate
 }

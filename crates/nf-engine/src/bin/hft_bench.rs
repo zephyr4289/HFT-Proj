@@ -292,6 +292,16 @@ fn main() {
     let span_cv = span_stddev / span_median.max(1e-9) * 100.0;
     // Wall-rate of the span arm's median pass (msg/s) — the PR1-TITAN metric.
     let span_rate = (freq / span_median.max(1e-9)) as u64;
+    // R8: pure-ingest verdict on the SAME statistical median (gates.rs is
+    // the single threshold source; 2B on the pinned core, golden population
+    // asserted every pass by wall_pass above).
+    let r8_verdict = nf_protocol::gates::evaluate_pr1_r8_pure_ingest(span_rate).as_str();
+    eprintln!(
+        "PR1_R8_PURE_INGEST_VERDICT rate={} target={} -> {} (R8: 2B msg/s pure ingest — full pipeline live, span emission, zero verification skipped)",
+        span_rate,
+        nf_protocol::gates::PR1_R8_PURE_INGEST_MIN_MSG_PER_SEC,
+        r8_verdict
+    );
 
     if output_format == "json" {
         let cpu = get_cpu_model().replace('"', " ");
@@ -302,9 +312,10 @@ fn main() {
             "x86_64-unknown-linux-gnu"
         };
         println!(
-            "{{\n  \"median_cycles\": {:.4},\n  \"p95_cycles\": {:.4},\n  \"p99_cycles\": {:.4},\n  \"stddev\": {:.4},\n  \"cv_percent\": {:.4},\n  \"runs\": {},\n  \"warmup\": {},\n  \"cpu_model\": \"{}\",\n  \"freq_mhz\": {:.2},\n  \"target\": \"{}\",\n  \"sink\": \"count+span\",\n  \"sample\": \"{}\",\n  \"span_median_cycles\": {:.4},\n  \"span_p95_cycles\": {:.4},\n  \"span_p99_cycles\": {:.4},\n  \"span_stddev\": {:.4},\n  \"span_cv_percent\": {:.4},\n  \"span_rate_msg_per_sec\": {}\n}}",
+            "{{\n  \"median_cycles\": {:.4},\n  \"p95_cycles\": {:.4},\n  \"p99_cycles\": {:.4},\n  \"stddev\": {:.4},\n  \"cv_percent\": {:.4},\n  \"runs\": {},\n  \"warmup\": {},\n  \"cpu_model\": \"{}\",\n  \"freq_mhz\": {:.2},\n  \"target\": \"{}\",\n  \"sink\": \"count+span\",\n  \"sample\": \"{}\",\n  \"span_median_cycles\": {:.4},\n  \"span_p95_cycles\": {:.4},\n  \"span_p99_cycles\": {:.4},\n  \"span_stddev\": {:.4},\n  \"span_cv_percent\": {:.4},\n  \"span_rate_msg_per_sec\": {},\n  \"r8_pure_ingest_target\": {},\n  \"r8_pure_ingest_verdict\": \"{}\"\n}}",
             median, p95, p99, stddev, cv, n, warmup, cpu, cal.freq_mhz, target, sample,
-            span_median, span_p95, span_p99, span_stddev, span_cv, span_rate
+            span_median, span_p95, span_p99, span_stddev, span_cv, span_rate,
+            nf_protocol::gates::PR1_R8_PURE_INGEST_MIN_MSG_PER_SEC, r8_verdict
         );
     } else {
         println!(
@@ -312,8 +323,8 @@ fn main() {
             median, p95, p99, stddev, cv, n, warmup
         );
         println!(
-            "HFT_BENCH_SPAN_RESULT span_median={:.2} span_p95={:.2} span_p99={:.2} span_stddev={:.4} span_cv={:.2}% span_rate_msg_per_sec={}",
-            span_median, span_p95, span_p99, span_stddev, span_cv, span_rate
+            "HFT_BENCH_SPAN_RESULT span_median={:.2} span_p95={:.2} span_p99={:.2} span_stddev={:.4} span_cv={:.2}% span_rate_msg_per_sec={} r8_pure_ingest_verdict={}",
+            span_median, span_p95, span_p99, span_stddev, span_cv, span_rate, r8_verdict
         );
     }
 }
