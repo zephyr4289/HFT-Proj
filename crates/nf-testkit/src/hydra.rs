@@ -1105,6 +1105,16 @@ impl<'a> HydraSpanSink<'a> {
     /// stays mapped in this core's L1). The chunk is published with ONE
     /// Release store when full. H6: lane tracking is incremental — no
     /// division in the hot path.
+    ///
+    /// R9 DSB discipline: the two cold paths — the chunk-open (once per
+    /// CHUNK spans: space check, assist decision, backpressure spin with
+    /// its fold_available call chain) and the assist evaluation (the
+    /// inline kernel dispatch) — live in #[inline(never)] helpers so the
+    /// steady loop's µop-cache footprint stays minimal. The R8 campaign
+    /// measured a 25% scan regression from exactly this class of bloat
+    /// (the cold_apply out-of-lining fixed the worst of it); the per-span
+    /// hot path (the 128-bit store + tracker advance) is all that stays
+    /// inlined.
     #[inline]
     fn submit_span(&mut self, body: &[u8]) {
         let fabric = match self.fabric {
@@ -1112,54 +1122,10 @@ impl<'a> HydraSpanSink<'a> {
             None => unreachable!("submit_span called in inline mode"),
         };
         if self.pending_len == 0 {
-            // Start a new chunk on the lane that owns this span id.
-            self.pending_lane = self.submit_lane;
-            let lane = &fabric.lanes[self.pending_lane];
-            let h0 = lane.desc_head.load(Ordering::Relaxed);
-            // R8 phase-5 — WORK-ASSIST: check space once; if the lane is
-            // saturated AND an inline slot is free, take the chunk inline
-            // (evaluate on THIS core when the workers cannot keep up —
-            // the cycles come out of the backpressure spin they would
-            // otherwise burn). Forced-inline mode (parity tests) takes
-            // this path unconditionally.
-            let t = lane.desc_tail.load(Ordering::Acquire);
-            let lane_full = h0.saturating_sub(t) + CHUNK > DESC_CAP;
-            let take_inline = self.n_lanes > 0
-                && self.inline_slot_free()
-                && (self.force_inline || lane_full);
-            if take_inline {
-                self.assist_chunks += 1;
-                self.cur_inline = Some(self.inline_claim());
-            } else {
-                // Space check for the WHOLE chunk up front (the in-place
-                // writes below must never touch slots the worker still
-                // owns). Backpressure: fold what's ready (keeps result
-                // rings flowing), then re-check — deadlock-free by the
-                // lane-balance proof.
-                let mut sb = 0u32;
-                loop {
-                    let t = lane.desc_tail.load(Ordering::Acquire);
-                    if h0.saturating_sub(t) + CHUNK <= DESC_CAP {
-                        break;
-                    }
-                    self.pending_head = h0;
-                    self.fold_available();
-                    // R8: SMT-polite backpressure spin.
-                    crate::affinity::polite_spin(&mut sb);
-                }
-                self.pending_head = h0;
-            }
+            self.open_chunk(fabric);
         }
         if let Some(slot) = self.cur_inline {
-            // Inline path: evaluate NOW, buffer the value for the ordered
-            // fold. SAFETY: same feature contract as the workers (the
-            // fabric's detected kernel).
-            let value = unsafe { self.kernel.eval(body) };
-            let c = &mut self.inline_ring[slot];
-            c.vals[self.pending_len as usize] = value;
-            c.ids[self.pending_len as usize] = self.next_span as u32;
-            c.len = self.pending_len as u32 + 1;
-            self.pending_len += 1;
+            self.submit_inline_span(slot, body);
         } else {
             debug_assert_eq!(
                 ((self.next_span / CHUNK) % self.n_lanes as u64) as usize,
@@ -1203,6 +1169,68 @@ impl<'a> HydraSpanSink<'a> {
         if chunk_done {
             self.flush_pending();
         }
+    }
+
+    /// The chunk-open cold path (runs once per CHUNK spans): pick the lane,
+    /// check space, and decide the work-assist. #[inline(never)] keeps the
+    /// backpressure spin (and its fold_available call chain) out of the
+    /// steady scan's µop-cache window.
+    #[inline(never)]
+    fn open_chunk(&mut self, fabric: &HydraFabric) {
+        // Start a new chunk on the lane that owns this span id.
+        self.pending_lane = self.submit_lane;
+        let lane = &fabric.lanes[self.pending_lane];
+        let h0 = lane.desc_head.load(Ordering::Relaxed);
+        // R8 phase-5 — WORK-ASSIST: check space once; if the lane is
+        // saturated AND an inline slot is free, take the chunk inline
+        // (evaluate on THIS core when the workers cannot keep up —
+        // the cycles come out of the backpressure spin they would
+        // otherwise burn). Forced-inline mode (parity tests) takes
+        // this path unconditionally.
+        let t = lane.desc_tail.load(Ordering::Acquire);
+        let lane_full = h0.saturating_sub(t) + CHUNK > DESC_CAP;
+        let take_inline =
+            self.n_lanes > 0 && self.inline_slot_free() && (self.force_inline || lane_full);
+        if take_inline {
+            self.assist_chunks += 1;
+            self.cur_inline = Some(self.inline_claim());
+        } else {
+            // Space check for the WHOLE chunk up front (the in-place
+            // writes below must never touch slots the worker still
+            // owns). Backpressure: fold what's ready (keeps result
+            // rings flowing), then re-check — deadlock-free by the
+            // lane-balance proof.
+            let mut sb = 0u32;
+            loop {
+                let t = lane.desc_tail.load(Ordering::Acquire);
+                if h0.saturating_sub(t) + CHUNK <= DESC_CAP {
+                    break;
+                }
+                self.pending_head = h0;
+                self.fold_available();
+                // R8: SMT-polite backpressure spin.
+                crate::affinity::polite_spin(&mut sb);
+            }
+            self.pending_head = h0;
+        }
+    }
+
+    /// The assist evaluation (the inline kernel dispatch + inline-ring
+    /// store). #[inline(never)] keeps the kernel-dispatch machinery out of
+    /// the steady scan's µop-cache window; the assist fires only when the
+    /// workers cannot keep up, so its per-span call overhead is paid from
+    /// the budget the spin was burning anyway.
+    #[inline(never)]
+    fn submit_inline_span(&mut self, slot: usize, body: &[u8]) {
+        // Inline path: evaluate NOW, buffer the value for the ordered
+        // fold. SAFETY: same feature contract as the workers (the
+        // fabric's detected kernel).
+        let value = unsafe { self.kernel.eval(body) };
+        let c = &mut self.inline_ring[slot];
+        c.vals[self.pending_len as usize] = value;
+        c.ids[self.pending_len as usize] = self.next_span as u32;
+        c.len = self.pending_len as u32 + 1;
+        self.pending_len += 1;
     }
 
     /// R8 phase-5: is an inline ring slot free (excluding the one being
