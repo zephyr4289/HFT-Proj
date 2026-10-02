@@ -235,3 +235,36 @@ grant must log the grant.
 
 Local: 16.5MB map, `anon_huge_kb=16384`, granted; span 1.80B on the
 noisy sandbox. The CI draws decide the rest.
+
+### 9.1 The fix's verdict (run 37034162914, third consecutive Zen3 draw)
+
+`BLOB_BACKING ... anon_huge_kb=16384 verdict=thp-granted` on every
+process; Front A **PASS at 2.898B** (0.844 cyc/msg median) where the
+identical-code lottery draw failed at 1.867B. The grant is now
+deterministic and the log proves it per draw.
+
+Three-draw stability (Zen3 7763, R10 stack):
+
+| Arm | draw 1 (c3cea3e) | draw 2 (f5c874e) | draw 3 (3458884) |
+|---|---|---|---|
+| 11b default (slots=64) | 898.0M | 903.9M | 893.5M |
+| 11e prepatch armed | 917.0M | 910.4M | 907.4M |
+| 11i slots=4 | 717.7M | 714.4M | 717.5M |
+| 11i slots=256 | 908.8M | 897.7M | 910.4M |
+| 11j pipe | 895.4M | 896.8M | 897.5M |
+| Front A (span) | 3.07B | 1.867B FAIL | 2.898B |
+
+The slots=4 arm is the campaign's metronome: 717.7/714.4/717.5 across
+three draws (0.4% spread). The 256-vs-64 ordering is inconsistent
+(+1.2%/-0.7%/+1.9%) — the default stays 64, the sweep accumulates.
+The prepatch's armed edge is 3-for-3 on Zen3 but was refuted on Intel
+in R9d's pre-R10 equilibrium; the flip waits for an Intel draw of the
+R10 stack (the R9c->R9d reversal is the recorded lesson). The
+deterministic THP grant did NOT move the sustained arms (the workers'
+spray prefetch was already hiding the TLB cost) — the lottery was the
+span arm's alone, matching its 3.4x bake-rate write exposure.
+
+Frontier after three draws: Zen3 scalar class at 917.0M best, 8.3%
+from the 1B gate. The gate-breaking candidates (Intel fold512 + the
+deep ring + eval_pair + the now-deterministic THP) await an Intel or
+Zen5 draw.
