@@ -147,3 +147,49 @@ drain and the golden population assert still fires every pass.
 | f3b7e37 | fold_word_pairs inline(always) — the outlining landmine documented and pinned |
 | 6939a86 | eval_pair + HFT_WORKER_PIPE + kbench fold512_pair + D11 extension + ci.sh 11j |
 | 8b7e04e | the span arm's DIAG timing leaves the measured window |
+| (docs) | §8: the first CI verdict — Zen3 718.1→898.0M default / 917.0M armed, +25% on the worst silicon |
+
+## 8. The first CI verdict (Zen3 7763, run 37030556327)
+
+c3cea3e, the pool's worst silicon (scalar8lane, 2445 MHz). Same runner
+class as the R9e draw (37005861779, 718.1M) — a direct before/after:
+
+| Arm | Config | sustained |
+|---|---|---|
+| 11b | **slots=64 default** | **898.0M** (+25.0% vs 718.1M) |
+| 11i | slots=4 (the R8 equilibrium) | 717.7M — the pre-R10 number reproduced within 0.1% |
+| 11i | slots=256 | 908.8M |
+| 11e | prepatch armed | 917.0M — armed now BEATS unarmed on Zen3 |
+| 11h | deep prefetch (6,32,32) | 905.3M — within arm variance of default |
+| 11j | worker pipe | 895.4M — neutral on scalar, as expected (a fold512 lever) |
+| 11f | third worker | 785.0M — dead on Zen3 (-13%) |
+| 11g | eval2 interleave | 883.9M — dead, as R9 measured |
+
+The mechanism, confirmed by the runner's own DIAG: `assist_chunks`
+65k→364k (5.6x — the submitting core's spin budget converting to CRC),
+`crc_demand_gb_s` 19.73→24.83 (the fabric now DELIVERS 4.5 GB/s more
+verified bytes), `work_ms` 86%→81% at a 25% higher rate (the same wall
+buys more output), workers pinned at 98.4% busy throughout. The 898M
+default sits at 108% of the fbench F-stage replica (22.88 GB/s) because
+the assist adds main-core CRC on top of the worker pair's ceiling —
+exactly the designed arithmetic. Front A on the same draw: **3.07B
+PASS** (the class historically drew 2.04–2.48B; the DIAG-tax removal
+and the ring both feed the span arm).
+
+Verification on the draw: D1..D12 green (2109 bodies incl. eval_pair),
+17/17 matrix cells golden, ALLOC_DELTA=0, per-pass bit-exact tuples on
+every arm, ALL CONSTRAINTS PASSED.
+
+Open after this draw:
+
+* **the prepatch ordering flipped on Zen3** (917.0 armed vs 898.0
+  unarmed, outside the ~1.5% arm-variance band). R9d's default-OFF
+  verdict was measured on Intel/Zen3/9V74 WITHOUT the deep ring; the
+  equilibrium changed. An Intel draw with the R10 stack decides the
+  default flip — a scalar-class win alone doesn't flip it.
+* **slots saturation**: 64→256 buys +1.2% on Zen3; the curve is
+  saturating near the default. No default change pending more draws.
+* **Intel fold512 + Zen5**: untested with the R10 stack. The 962.5M
+  record (slots=4, no pipe) + the assist conversion + `eval_pair` +
+  the never-measured Intel THP dividend is the gate-breaking stack —
+  11j and the kbench `fold512_pair` row attribute it per draw.
