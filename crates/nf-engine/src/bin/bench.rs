@@ -464,16 +464,15 @@ fn run_hydra_sustained_5s(
     // R8: topology-aware sizing + placement (see the burst arm).
     let topo: Vec<usize> = topo.to_vec();
     // R8: FABRIC placement (see the burst arm).
-    // R8 phase-6: on 2-physical-core SMT runners, a third worker joins the
-    // RX's hyperthread (fabric_placement appends it to the pool) — the
-    // work-assist contains its straggler risk, and the machine's second
-    // physical core otherwise idles its SMT capacity behind the workers'
-    // saturation.
+    // R8 phase-6: the third worker (RX-hyperthread scavenging) stays
+    // OPT-IN: it paid +2% on the Zen5 draw but cost 15% on Zen3 — on the
+    // scalar runners the shared-hyperthread lane steals the submitting
+    // core's issue slots (main's work share fell 88% -> 67%) and the
+    // assist cannot repay it. Two dedicated workers remain the default;
+    // fabric_placement still extends the pool for explicit experiments.
     let n_phys = nf_testkit::affinity::physical_core_count();
     let workers = if n_phys >= 4 {
         3
-    } else if topo.len() >= 3 {
-        3.min(topo.len())
     } else {
         2.min(topo.len().saturating_sub(1)).max(1)
     };
