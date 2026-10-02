@@ -24,7 +24,7 @@
 //!   and writes batch slots into mailbox buffer `i` for turn `T`, then
 //!   publishes with ONE Release store;
 //! * the consumer Acquires, scans the batch, and frees the buffer with ONE
-//!   Release store (buffer `i` serves turns `i, i+2, i+4, ...`);
+//!   Release store (buffer `i` serves turns `i, i+NBUF, i+2*NBUF, ...`);
 //! * the slot's raw frame pointers point into the RX thread's blob — valid
 //!   for as long as the pipeline lives (the RX thread is joined in `Drop`)
 //!   and never dereferenced after the consumer frees the buffer.
@@ -62,6 +62,23 @@ use crate::{FrameBatch, Transport};
 use nf_protocol::packet::FrameEntry;
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+
+/// R8 phase-3: mailbox depth. The 4-buffer mailbox kept the RX pinned to
+/// the consumer's elbow — every buffer free had to be noticed and repaid
+/// with a fresh publication before the consumer's next next_batch, and the
+/// wake-latency chain (yield-storm → park → schedule → wake) cost ~42µs
+/// per batch on the 2-core runners (66% of the sustained arm's wall). A
+/// 16-deep mailbox gives the RX a full pass of runahead: mid-pass the
+/// consumer's next_batch is a cache-hot ring hit, the RX parks in timed
+/// futex slots instead of churning the runqueue, and the only serialized
+/// point left is the per-pass reset handshake. Power of two (mask + shift
+/// protocols below); a pass is ~12.3 publications, so 16 buffers ≈ 1.3
+/// passes of slack.
+const NBUF: u64 = 16;
+const NBUF_MASK: u64 = NBUF - 1;
+/// RX timed-park quantum for the buffer-free wait (see futex_wait_timeout).
+const BUF_PARK_NS: u64 = 50_000;
+
 // R8: construction-time shared handles (mailbox + triple store) — the hot
 // path dereferences plain references; the Arcs exist only to cross the
 // thread spawn boundary. Tier-F allow mirrors render.rs's construction
@@ -194,21 +211,21 @@ impl ConsStats {
     }
 }
 
-/// The four-buffer entry mailbox + command channel.
+/// The deep entry mailbox + command channel (NBUF buffers; see NBUF).
 struct Mailbox {
     /// RX-built entry buffers; ownership transfers by the turn/use counters
     /// (SPSC: RX writes, consumer reads).
-    bufs: [UnsafeCell<EntryBuf>; 4],
+    bufs: [UnsafeCell<EntryBuf>; NBUF as usize],
     /// RX -> consumer: buffer `i` holds turn `T` (Release after the entry
     /// writes; the consumer's Acquire orders all reads). Initialized to
     /// NEVER; the RX publishes turns in order and is bounded by the
     /// freed-count protocol below, so an exact `== turn` match is
     /// unambiguous.
-    filled: [Pad; 4],
+    filled: [Pad; NBUF as usize],
     /// Consumer -> RX: how many times buffer `i` has been freed (one per
     /// consumed OR skipped publication). The RX may write buffer `i` for
-    /// turn `T` (its `T/4 + 1`-th use) once `freed[i] >= T/4`.
-    freed: [Pad; 4],
+    /// turn `T` (its `T/NBUF + 1`-th use) once `freed[i] >= T/NBUF`.
+    freed: [Pad; NBUF as usize],
     cmd: AtomicU8,
     shutdown: AtomicBool,
     /// R8: futex wake word for the cold-path handshake — the consumer's
@@ -252,6 +269,31 @@ fn futex_wait(wake: &AtomicU64, expected: u64) {
             libc::FUTEX_WAIT,
             expected as u32,
             std::ptr::null::<libc::timespec>(),
+        );
+    }
+}
+
+/// R8 phase-3: futex wait with a RELATIVE timeout. The RX thread's
+/// buffer-free wait parks here instead of escalating into a `sched_yield`
+/// storm: on the 2-physical-core runners a yield-looping RX churns the
+/// runqueue and taxes every futex wake-up latency in the pipeline (the
+/// consumer's park chain measured ~42µs per batch). A timed park
+/// self-wakes at a bounded rate (BUF_PARK_NS), needs no producer-side
+/// wake syscall on the consumer's critical path, and is released
+/// immediately by the reset/shutdown handshakes (which bump `wake`).
+#[inline(always)]
+fn futex_wait_timeout(wake: &AtomicU64, expected: u64, ns: u64) {
+    let ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: ns as libc::c_long,
+    };
+    unsafe {
+        libc::syscall(
+            libc::SYS_futex,
+            wake as *const AtomicU64 as *const u32,
+            libc::FUTEX_WAIT,
+            expected as u32,
+            &ts as *const libc::timespec,
         );
     }
 }
@@ -329,11 +371,11 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
         if mb.shutdown.load(Ordering::Acquire) {
             return;
         }
-        let i = (turn & 3) as usize;
-        // Buffer i is free for `turn` (its (turn/4 + 1)-th use) once the
-        // consumer freed it turn/4 times.
-        if turn >= 4 {
-            let needed = turn / 4;
+        let i = (turn & NBUF_MASK) as usize;
+        // Buffer i is free for `turn` (its (turn/NBUF + 1)-th use) once the
+        // consumer freed it turn/NBUF times.
+        if turn >= NBUF {
+            let needed = turn / NBUF;
             let mut backoff = 0u32;
             while mb.freed[i].load(Ordering::Acquire) < needed {
                 if mb.shutdown.load(Ordering::Acquire) {
@@ -343,12 +385,24 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                     break; // serve the reset first (consumer is waiting)
                 }
                 mb.rx_stats.bufwait_laps.fetch_add(1, Ordering::Relaxed);
-                // R8: escalate to sched_yield — the consumer's SMT sibling
-                // must stay fed (Zen3's PAUSE hint is weak).
+                // R8 phase-3: bounded polite spin, then a TIMED futex park —
+                // never a sched_yield storm. On the 2-physical-core runners
+                // a yield-looping RX churns the runqueue and taxes every
+                // futex wake in the pipeline (measured ~42µs per consumer
+                // park). The 50µs self-wake is bounded, needs no
+                // producer-side syscall, and the deep mailbox absorbs the
+                // latency; the reset/shutdown handshakes still bump `wake`
+                // for an immediate release.
                 if backoff < 6 {
                     spin(&mut backoff);
                 } else {
-                    std::thread::yield_now();
+                    let observed = mb.wake.load(Ordering::Acquire);
+                    if mb.freed[i].load(Ordering::Acquire) < needed
+                        && mb.cmd.load(Ordering::Acquire) != CMD_RESET
+                        && !mb.shutdown.load(Ordering::Acquire)
+                    {
+                        futex_wait_timeout(&mb.wake, observed, BUF_PARK_NS);
+                    }
                 }
             }
             if mb.cmd.load(Ordering::Acquire) == CMD_RESET {
@@ -449,15 +503,24 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
             // The end-of-stream marker is its OWN (empty) publication —
             // the consumer's next_batch returns false on it. Without it
             // the consumer would spin on a turn that never comes.
-            let j = (turn & 3) as usize;
-            if turn >= 4 {
-                let needed = turn / 4;
+            let j = (turn & NBUF_MASK) as usize;
+            if turn >= NBUF {
+                let needed = turn / NBUF;
                 let mut backoff = 0u32;
                 while mb.freed[j].load(Ordering::Acquire) < needed {
                     if mb.shutdown.load(Ordering::Acquire) {
                         return;
                     }
-                    spin(&mut backoff);
+                    if backoff < 6 {
+                        spin(&mut backoff);
+                    } else {
+                        let observed = mb.wake.load(Ordering::Acquire);
+                        if mb.freed[j].load(Ordering::Acquire) < needed
+                            && !mb.shutdown.load(Ordering::Acquire)
+                        {
+                            futex_wait_timeout(&mb.wake, observed, BUF_PARK_NS);
+                        }
+                    }
                 }
             }
             // SAFETY: RX owns buffer j for this turn until the Release
@@ -571,14 +634,9 @@ impl PipelinedReplayTransport {
         let _ = triples;
         #[allow(clippy::disallowed_types)]
         let mb: Arc<Mailbox> = Arc::new(Mailbox {
-            bufs: [
-                UnsafeCell::new(EntryBuf::new()),
-                UnsafeCell::new(EntryBuf::new()),
-                UnsafeCell::new(EntryBuf::new()),
-                UnsafeCell::new(EntryBuf::new()),
-            ],
-            filled: [Pad::never(), Pad::never(), Pad::never(), Pad::never()],
-            freed: [Pad::zeroed(), Pad::zeroed(), Pad::zeroed(), Pad::zeroed()],
+            bufs: std::array::from_fn(|_| UnsafeCell::new(EntryBuf::new())),
+            filled: std::array::from_fn(|_| Pad::never()),
+            freed: std::array::from_fn(|_| Pad::zeroed()),
             cmd: AtomicU8::new(CMD_RUN),
             shutdown: AtomicBool::new(false),
             wake: AtomicU64::new(0),
@@ -621,7 +679,7 @@ impl PipelinedReplayTransport {
     /// counters and frees any pre-reset buffers the consumer skipped.
     pub fn reset(&mut self, session: [u8; 10]) {
         if let Some(t) = self.cur.take() {
-            self.mb.freed[(t & 3) as usize].fetch_add(1, Ordering::Release);
+            self.mb.freed[(t & NBUF_MASK) as usize].fetch_add(1, Ordering::Release);
         }
         self.resets += 1;
         let n = self.resets;
@@ -668,7 +726,7 @@ impl PipelinedReplayTransport {
         // published (the RX acks only after its in-flight publication
         // lands, and it never skips turns).
         for _t in self.turn..ack_turn {
-            self.mb.freed[(_t & 3) as usize].fetch_add(1, Ordering::Release);
+            self.mb.freed[(_t & NBUF_MASK) as usize].fetch_add(1, Ordering::Release);
         }
         self.turn = ack_turn;
     }
@@ -678,9 +736,9 @@ impl PipelinedReplayTransport {
     /// until the next call.
     pub fn next_batch(&mut self) -> bool {
         if let Some(t) = self.cur.take() {
-            self.mb.freed[(t & 3) as usize].fetch_add(1, Ordering::Release);
+            self.mb.freed[(t & NBUF_MASK) as usize].fetch_add(1, Ordering::Release);
         }
-        let i = (self.turn & 3) as usize;
+        let i = (self.turn & NBUF_MASK) as usize;
         // Polite acquire: a bounded spin for the common fast case, then a
         // futex park. An UNCAPPED spin here starved the RX on the SMT
         // sibling (Zen3's weak PAUSE hint) — the RX's 6us batch stretched
@@ -747,7 +805,7 @@ impl PipelinedReplayTransport {
         // outlive the pipeline (joined in Drop) and are not read after the
         // buffer is freed.
         unsafe {
-            let buf = &*self.mb.bufs[(t & 3) as usize].get();
+            let buf = &*self.mb.bufs[(t & NBUF_MASK) as usize].get();
             let n = buf.len as usize;
             &buf.entries[..n]
         }
@@ -759,7 +817,7 @@ impl PipelinedReplayTransport {
     pub fn now_ns(&self) -> u64 {
         let t = self.cur.expect("r8 pipeline: no current batch");
         // SAFETY: same ownership + publication ordering as `entries`.
-        unsafe { (*self.mb.bufs[(t & 3) as usize].get()).clock }
+        unsafe { (*self.mb.bufs[(t & NBUF_MASK) as usize].get()).clock }
     }
 
     /// R8 phase-2 diagnostics: one always-on telemetry line per run covering
