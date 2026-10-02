@@ -273,10 +273,9 @@ fn lane_slot_ptr(lane: &HydraLane, pos: u64) -> *mut Desc {
 
 /// Prefetch the first lines of a span body (T0) — gives the hardware
 /// streamer a head start on the worker's upcoming CRC pass.
-/// R8: bodies average ~15 lines; the 2-line head start left ~13 lines of
-/// L3 latency exposed per span (measured: 28% worker efficiency on the
-/// runner). Cover 4 lines per lookahead span, 6 spans deep — the CRC
-/// pass over span N (~120-400c) covers the lead time.
+/// R8 note: 4-line x 6-deep lookahead was tried and measured a 3.5x
+/// REGRESSION (prefetch-request flooding starves the demand loads); the
+/// 2-line x 4-deep window is the sweet spot on the runner pool.
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
 fn prefetch_body(ptr: *const u8) {
@@ -284,14 +283,6 @@ fn prefetch_body(ptr: *const u8) {
         std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
         std::arch::x86_64::_mm_prefetch(
             (ptr as usize + 64) as *const i8,
-            std::arch::x86_64::_MM_HINT_T0,
-        );
-        std::arch::x86_64::_mm_prefetch(
-            (ptr as usize + 128) as *const i8,
-            std::arch::x86_64::_MM_HINT_T0,
-        );
-        std::arch::x86_64::_mm_prefetch(
-            (ptr as usize + 192) as *const i8,
             std::arch::x86_64::_MM_HINT_T0,
         );
     }
@@ -331,8 +322,8 @@ fn lane_worker(lane: Arc<HydraLane>, shutdown: Arc<AtomicBool>, kernel: CrcKerne
     let null = null_mode();
     let mut tail: u64 = 0; // desc cursor (worker-owned)
     let mut rhead: u64 = 0; // result cursor (worker-owned)
-    /// How many spans ahead to prefetch body starts (4 lines each, R8).
-    const LOOKAHEAD: u64 = 6;
+    /// How many spans ahead to prefetch body starts (2 lines each).
+    const LOOKAHEAD: u64 = 4;
     // H4: idle-spin backoff (see the worker loop doc). A busy-waiting worker
     // reloads `desc_head` in a tight PAUSE loop, ping-ponging the head line
     // against the main thread and burning shared execution resources on

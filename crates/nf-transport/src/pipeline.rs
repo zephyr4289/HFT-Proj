@@ -85,7 +85,7 @@ const CMD_SHUTDOWN: u8 = 2;
 /// `Drop`) and are never dereferenced after the consumer frees the buffer
 /// (the harness consumes each batch fully before the next `next_batch`).
 struct EntryBuf {
-    entries: Box<[FrameEntry<'static>; 256]>,
+    entries: Box<[FrameEntry<'static>; 1024]>,
     len: u32,
     clock: u64,
 }
@@ -237,58 +237,107 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                 continue;
             }
         }
-        let tp0 = if diag { Some(std::time::Instant::now()) } else { None };
-        let n = inner.poll(&mut scratch);
-        if let Some(t0i) = tp0 {
-            let tpd = t0i.elapsed().as_nanos() as u64;
-            diag_polls += 1;
-            diag_total_ns += tpd;
-            if tpd > diag_max_ns {
-                diag_max_ns = tpd;
+        // R8: accumulate up to ENTRY_CAP frames per published batch — the
+        // handoff round-trips and the consumer's batch-boundary work
+        // amortize 4x further than the 256-slot poll granularity. The RX
+        // stays ahead of the consumer by construction (its per-frame cost
+        // is a fraction of the scan's), so the accumulation never bubbles.
+        const ENTRY_CAP: usize = 1024;
+        let mut acc = 0usize;
+        let mut eos = false;
+        while acc + 256 <= ENTRY_CAP {
+            let tp0 = if diag { Some(std::time::Instant::now()) } else { None };
+            let n = inner.poll(&mut scratch);
+            if let Some(t0i) = tp0 {
+                let tpd = t0i.elapsed().as_nanos() as u64;
+                diag_polls += 1;
+                diag_total_ns += tpd;
+                if tpd > diag_max_ns {
+                    diag_max_ns = tpd;
+                }
+            }
+            if n == 0 {
+                eos = true;
+                break;
+            }
+            // Build entries from THIS thread's locally-hot lines (scratch
+            // slots + the blob's first lines). SAFETY: (a) RX owns buffer i
+            // for this turn until the Release store to filled[i] below;
+            // (b) the entries' slices are re-built at 'static from raw
+            // parts — the target bytes (the RX transport's blob and the
+            // shared triple store) outlive the pipeline (the RX thread is
+            // joined in Drop) and are never read after the consumer frees
+            // the buffer (see EntryBuf's contract). The re-slice ends the
+            // scratch borrow within this block.
+            {
+                let buf = unsafe { &mut *mb.bufs[i].get() };
+                let tp = triples.as_ptr();
+                for k in 0..n {
+                    let f = &scratch.frames()[k];
+                    let b = f.bytes();
+                    let bytes: &'static [u8] =
+                        unsafe { std::slice::from_raw_parts(b.as_ptr(), b.len()) };
+                    let (blk_base, blk_count, valid) = (f.blk_base, f.blk_count, f.valid);
+                    let blocks: &'static [(u64, u32, u32)] = if blk_count == 0 {
+                        &[]
+                    } else {
+                        // SAFETY: slot fields are construction-valid (the
+                        // same contract as ReplayTransport::batch_entries).
+                        unsafe {
+                            std::slice::from_raw_parts(
+                                tp.add(blk_base as usize),
+                                blk_count as usize,
+                            )
+                        }
+                    };
+                    buf.entries[acc + k] = FrameEntry {
+                        bytes,
+                        feed: f.feed,
+                        blocks,
+                        memo: (blk_count != 0).then_some(nf_protocol::packet::FrameMemo {
+                            valid_count: valid,
+                        }),
+                        first_seq: f.first_seq,
+                        sess_lo: f.sess_lo,
+                        sess_hi: f.sess_hi,
+                    };
+                }
+                buf.clock = inner.now_ns();
+                acc += n;
             }
         }
-        // Build the entry array from THIS thread's locally-hot lines
-        // (scratch slots + the blob's first lines). SAFETY: (a) RX owns
-        // buffer i for this turn until the Release store to filled[i]
-        // below; (b) the entries' slices are re-built at 'static from raw
-        // parts — the target bytes (the RX transport's blob and the shared
-        // triple store) outlive the pipeline (the RX thread is joined in
-        // Drop) and are never read after the consumer frees the buffer
-        // (see EntryBuf's contract). The re-slice ends the scratch borrow
-        // within this block, so `scratch` stays freely re-borrowable.
         {
+            // SAFETY: RX owns buffer i for this turn until the Release
+            // store below.
             let buf = unsafe { &mut *mb.bufs[i].get() };
-            let tp = triples.as_ptr();
-            for k in 0..n {
-                let f = &scratch.frames()[k];
-                let b = f.bytes();
-                let bytes: &'static [u8] =
-                    unsafe { std::slice::from_raw_parts(b.as_ptr(), b.len()) };
-                let (blk_base, blk_count, valid) = (f.blk_base, f.blk_count, f.valid);
-                let blocks: &'static [(u64, u32, u32)] = if blk_count == 0 {
-                    &[]
-                } else {
-                    // SAFETY: slot fields are construction-valid (the same
-                    // contract as ReplayTransport::batch_entries).
-                    unsafe { std::slice::from_raw_parts(tp.add(blk_base as usize), blk_count as usize) }
-                };
-                buf.entries[k] = FrameEntry {
-                    bytes,
-                    feed: f.feed,
-                    blocks,
-                    memo: (blk_count != 0).then_some(nf_protocol::packet::FrameMemo {
-                        valid_count: valid,
-                    }),
-                    first_seq: f.first_seq,
-                    sess_lo: f.sess_lo,
-                    sess_hi: f.sess_hi,
-                };
-            }
-            buf.len = n as u32;
-            buf.clock = inner.now_ns();
+            buf.len = acc as u32;
         }
         mb.filled[i].store(turn, Ordering::Release);
         turn += 1;
+        if eos {
+            // The end-of-stream marker is its OWN (empty) publication —
+            // the consumer's next_batch returns false on it. Without it
+            // the consumer would spin on a turn that never comes.
+            let j = (turn & 3) as usize;
+            if turn >= 4 {
+                let needed = turn / 4;
+                let mut backoff = 0u32;
+                while mb.freed[j].load(Ordering::Acquire) < needed {
+                    if mb.shutdown.load(Ordering::Acquire) {
+                        return;
+                    }
+                    spin(&mut backoff);
+                }
+            }
+            // SAFETY: RX owns buffer j for this turn until the Release
+            // store below; len = 0 needs no entry writes.
+            unsafe {
+                (*mb.bufs[j].get()).len = 0;
+            }
+            mb.filled[j].store(turn, Ordering::Release);
+            turn += 1;
+        }
+        let n = if eos { 0 } else { acc };
         if n == 0 {
             if diag {
                 eprintln!(
