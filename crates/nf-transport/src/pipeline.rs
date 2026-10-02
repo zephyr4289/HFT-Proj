@@ -77,7 +77,10 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 const NBUF: u64 = 16;
 const NBUF_MASK: u64 = NBUF - 1;
 /// RX timed-park quantum for the buffer-free wait (see futex_wait_timeout).
-const BUF_PARK_NS: u64 = 50_000;
+/// 15us: the consumer frees a buffer every ~30-40us at the achieved rates —
+/// a 50us quantum made the RX's production bursty against that drain and
+/// the consumer parked mid-pass (Intel 8573C run: 6,750 parks / 391ms).
+const BUF_PARK_NS: u64 = 15_000;
 
 // R8: construction-time shared handles (mailbox + triple store) — the hot
 // path dereferences plain references; the Arcs exist only to cross the
@@ -367,7 +370,12 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
     // ReplayTransport::patch_range's safety contract); the synchronous
     // patch at the advance point shrinks to the unconsumed tail.
     let blob_base = inner.blob_base();
-    let mut turn_end_off: [usize; NBUF as usize] = [0; NBUF as usize];
+    // R8 phase-6: the end-offset ring is decoupled from NBUF (32 slots —
+    // over 4 passes of publications at ENTRY_CAP=2048) so the prepatch's
+    // frontier mapping stays valid at the deeper runahead.
+    const TOFF_RING: u64 = 32;
+    const TOFF_MASK: u64 = TOFF_RING - 1;
+    let mut turn_end_off: [usize; TOFF_RING as usize] = [0; TOFF_RING as usize];
     let mut pp_idx: usize = 0;
     // RX-local scratch batch (poll writes slots here; the transform below
     // re-reads them from this core's L1).
@@ -386,7 +394,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                           next_sess: &[u8; 10],
                           pp_idx: &mut usize,
                           cur_turn: u64,
-                          turn_end_off: &[usize; NBUF as usize]| {
+                          turn_end_off: &[usize; 32]| {
         let mut frontier: Option<u64> = None;
         for i in 0..NBUF as usize {
             let c = mb.freed[i].load(Ordering::Acquire);
@@ -404,10 +412,10 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
             // over-patch would re-bake frames the consumer has not freed),
             // skip the incremental step entirely; the synchronous tail at
             // the advance point stays correct.
-            if cur_turn - t > NBUF {
+            if cur_turn - t > TOFF_RING {
                 return;
             }
-            let upto = turn_end_off[(t & NBUF_MASK) as usize];
+            let upto = turn_end_off[(t & TOFF_MASK) as usize];
             if upto == usize::MAX {
                 // The frontier is an EOS marker: the whole pass is consumed.
                 *pp_idx = inner.patch_range(next_sess, *pp_idx, usize::MAX - 10);
@@ -486,7 +494,10 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
         // amortize 4x further than the 256-slot poll granularity. The RX
         // stays ahead of the consumer by construction (its per-frame cost
         // is a fraction of the scan's), so the accumulation never bubbles.
-        const ENTRY_CAP: usize = 1024;
+        // R8 phase-6: 2048-frame publications — half the handoffs, twice
+        // the per-batch amortization; with NBUF=16 the runahead still
+        // spans ~2 passes at the sample's ~12.6k frames.
+        const ENTRY_CAP: usize = 2048;
         let mut acc = 0usize;
         let mut eos = false;
         // R8 phase-3b: the publication's last-frame blob end offset (the
@@ -568,7 +579,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
             let buf = unsafe { &mut *mb.bufs[i].get() };
             buf.len = acc as u32;
         }
-        turn_end_off[i] = end_off;
+        turn_end_off[(turn & TOFF_MASK) as usize] = end_off;
         mb.rx_stats
             .prod_ns
             .fetch_add(t_prod.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -623,7 +634,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
             mb.rx_turn.store(turn + 1, Ordering::Release);
             // R8 phase-3b: the marker's frontier mapping — the whole pass
             // is consumed once the marker frees.
-            turn_end_off[j] = usize::MAX;
+            turn_end_off[(turn & TOFF_MASK) as usize] = usize::MAX;
             mb.pub_wake.fetch_add(1, Ordering::Release);
             futex_wake(&mb.pub_wake);
             turn += 1;
