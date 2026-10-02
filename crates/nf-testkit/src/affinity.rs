@@ -283,3 +283,78 @@ mod l3_tests {
         }
     }
 }
+
+/// R8: FABRIC placement for SMT hosts — (main, rx, worker cpus). Main and
+/// the RX thread are placed as SMT SIBLINGS on one physical core (the RX
+/// is ~15% busy at target rates — the heavy main thread keeps ~85-90% of
+/// the core under SMT, and the per-batch mailbox handoff becomes
+/// L1/L2-local); the workers get the REMAINING physical cores whole (a
+/// worker on main's hyperthread measured a degenerative feedback spiral:
+/// the starved worker's idle-spin stole issue slots from the critical main
+/// thread, collapsing the sustained arm to 14M msg/s).
+///
+/// Non-SMT hosts: main and rx take distinct cores (the span-arm
+/// placement), workers the rest.
+pub fn fabric_placement(workers: usize) -> (Option<usize>, Option<usize>, Vec<usize>) {
+    let order = cpu_order();
+    if order.is_empty() {
+        return (None, None, Vec::new());
+    }
+    // Physical cores (representative + its sibling(s)) in topology order.
+    let mut cores: Vec<Vec<usize>> = Vec::new();
+    for &c in &order {
+        let sibs = read_sibling_group(c).unwrap_or_else(|| vec![c]);
+        let key = *sibs.iter().min().unwrap_or(&c);
+        if !cores.iter().any(|k| *k.first().unwrap_or(&usize::MAX) == key) {
+            let mut grp = sibs;
+            grp.sort_unstable();
+            cores.push(grp);
+        }
+    }
+    if cores.len() >= 2 {
+        // Core 0: main + RX (SMT siblings if present).
+        let main = cores[0].first().copied();
+        let rx = cores[0].get(1).copied().or_else(|| cores[1].first().copied());
+        // Workers: the remaining cores' cpus, whole cores first.
+        let mut pool: Vec<usize> = Vec::new();
+        for core in cores.iter().skip(1) {
+            pool.extend(core.iter().copied());
+        }
+        if pool.is_empty() {
+            pool = order.clone();
+        }
+        let wcpus: Vec<usize> = (0..workers)
+            .map(|i| pool[i % pool.len()])
+            .collect();
+        (main, rx, wcpus)
+    } else {
+        // Single physical core: everything wraps.
+        let main = order.first().copied();
+        let rx = order.get(1).copied();
+        let wcpus: Vec<usize> = (0..workers)
+            .map(|i| order[i % order.len()])
+            .collect();
+        (main, rx, wcpus)
+    }
+}
+
+#[cfg(test)]
+mod fabric_placement_tests {
+    use super::*;
+
+    #[test]
+    fn t_fabric_placement_no_worker_on_main_sibling_when_possible() {
+        let (main, rx, workers) = fabric_placement(2);
+        if let (Some(m), Some(r)) = (main, rx) {
+            assert_ne!(m, r);
+        }
+        // On multi-core hosts, workers must not land on main's cpu.
+        if let Some(m) = main {
+            for w in &workers {
+                if crate::affinity::cpu_order().len() > 2 {
+                    assert_ne!(*w, m, "worker pinned on main's cpu");
+                }
+            }
+        }
+    }
+}

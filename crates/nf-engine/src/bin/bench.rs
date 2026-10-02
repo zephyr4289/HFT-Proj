@@ -298,38 +298,22 @@ fn run_hydra_burst(
     // the RX's cpu — the RX is ~15% busy; NEVER main's). On SMT hosts the
     // worker count drops so the thread count fits the hyperthreads.
     let topo: Vec<usize> = topo.to_vec();
-    // R8: L3 + SMT aware placement — main + RX share an L3 (different
-    // physical cores; the mailbox is latency-sensitive), workers fill the
-    // same-L3 remainder first, then the rest. Sizing: 2 workers on
-    // <= 2-physical hosts (five threads on four hyperthreads would
-    // timeslice two workers — measured 4x collapse), 3 otherwise.
-    let (main_cpu, rx_cpu) = nf_testkit::affinity::pipeline_placement();
-    if let Some(c) = main_cpu {
-        let _ = nf_testkit::affinity::pin_current_to(c);
-    }
+    // R8: FABRIC placement — main + RX as SMT siblings on one physical
+    // core (the RX is ~15% busy; the mailbox becomes L1-local), workers on
+    // the remaining physical cores whole. A worker on main's hyperthread
+    // measured a degenerative spiral (starved worker spins stealing issue
+    // slots from the critical main thread: 14M msg/s). Sizing: 2 workers
+    // on <= 2-physical hosts, 3 otherwise.
     let n_phys = nf_testkit::affinity::physical_core_count();
     let workers = if n_phys >= 4 {
         3
     } else {
         2.min(topo.len().saturating_sub(1)).max(1)
     };
-    // Worker slots: all cpus except main's and rx's, same-L3-first.
-    let mut slots: Vec<usize> = {
-        let groups = nf_testkit::affinity::l3_groups();
-        let mut sl: Vec<usize> = Vec::new();
-        for g in &groups {
-            if g.contains(&main_cpu.unwrap_or(usize::MAX)) {
-                sl.extend(g.iter().copied());
-            }
-        }
-        sl.extend(topo.iter().copied());
-        sl
-    };
-    slots.retain(|c| Some(*c) != main_cpu && Some(*c) != rx_cpu);
-    slots.dedup();
-    let worker_cpus: Vec<usize> = (0..workers)
-        .map(|i| slots.get(i % slots.len().max(1)).copied().unwrap_or(1))
-        .collect();
+    let (main_cpu, rx_cpu, worker_cpus) = nf_testkit::affinity::fabric_placement(workers);
+    if let Some(c) = main_cpu {
+        let _ = nf_testkit::affinity::pin_current_to(c);
+    }
     let fabric = nf_testkit::hydra::HydraFabric::spawn_pinned(workers, &worker_cpus);
     let mut rates = Vec::with_capacity(runs);
     // R8: RX-pipelined transport (poll staging on its own core; the main
@@ -474,33 +458,17 @@ fn run_hydra_sustained_5s(
     let sched = build_schedule(gt, &cfg);
     // R8: topology-aware sizing + placement (see the burst arm).
     let topo: Vec<usize> = topo.to_vec();
-    // R8: L3 + SMT aware placement (see the burst arm).
-    let (main_cpu, rx_cpu) = nf_testkit::affinity::pipeline_placement();
-    if let Some(c) = main_cpu {
-        let _ = nf_testkit::affinity::pin_current_to(c);
-    }
+    // R8: FABRIC placement (see the burst arm).
     let n_phys = nf_testkit::affinity::physical_core_count();
     let workers = if n_phys >= 4 {
         3
     } else {
         2.min(topo.len().saturating_sub(1)).max(1)
     };
-    let mut slots: Vec<usize> = {
-        let groups = nf_testkit::affinity::l3_groups();
-        let mut sl: Vec<usize> = Vec::new();
-        for g in &groups {
-            if g.contains(&main_cpu.unwrap_or(usize::MAX)) {
-                sl.extend(g.iter().copied());
-            }
-        }
-        sl.extend(topo.iter().copied());
-        sl
-    };
-    slots.retain(|c| Some(*c) != main_cpu && Some(*c) != rx_cpu);
-    slots.dedup();
-    let worker_cpus: Vec<usize> = (0..workers)
-        .map(|i| slots.get(i % slots.len().max(1)).copied().unwrap_or(1))
-        .collect();
+    let (main_cpu, rx_cpu, worker_cpus) = nf_testkit::affinity::fabric_placement(workers);
+    if let Some(c) = main_cpu {
+        let _ = nf_testkit::affinity::pin_current_to(c);
+    }
     let fabric = nf_testkit::hydra::HydraFabric::spawn_pinned(workers, &worker_cpus);
     let mut total_msgs = 0u64;
     let mut session_counter = 1000u64;
