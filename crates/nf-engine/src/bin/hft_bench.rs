@@ -267,13 +267,13 @@ fn main() {
     };
     let sched = build_schedule(&gt, &cfg);
     let sess = *b"HFTBENCH01";
-    // R8: affinity — capture the topology order FIRST (threads inherit
-    // the creator's restricted mask), then pin THIS thread to its first
-    // CPU and hand the second CPU to the RX thread of the pipeline.
-    let topo = nf_testkit::affinity::cpu_order();
-    let rx_cpu = topo.get(1).copied();
-    if let Some(cpu) = topo.first() {
-        let _ = nf_testkit::affinity::pin_current_to(*cpu);
+    // R8: L3-aware affinity — main + RX share an L3 domain (different
+    // physical cores) so the per-batch mailbox handoff stays off the
+    // cross-CCD path (measured 2.5x consumer-side difference between
+    // runner types whose placements differed only in L3 locality).
+    let (main_cpu, rx_cpu) = nf_testkit::affinity::pipeline_placement();
+    if let Some(cpu) = main_cpu {
+        let _ = nf_testkit::affinity::pin_current_to(cpu);
     }
     // Single transport for all passes (see wall_pass): identical bytes, warm pages.
     let mut transport = ReplayTransport::new(&gt, sched.clone(), sess);

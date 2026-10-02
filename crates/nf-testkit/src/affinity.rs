@@ -165,3 +165,121 @@ pub fn physical_core_count() -> usize {
         })
         .sum()
 }
+
+/// R8: the L3 (last-level cache) sharing groups of the allowed cpus, in
+/// topology order — `l3_groups()[g]` is the list of allowed cpus whose
+/// index-3 cache is shared. Cross-L3 thread placement puts the pipeline's
+/// per-batch handoffs (14KB+) on a cross-CCD path (~120-200ns latency on
+/// multi-CCD server parts) instead of a shared L3 — measured as a 2.5x
+/// consumer-side regression on one runner type vs its same-generation
+/// sibling whose placement happened to be L3-local.
+pub fn l3_groups() -> Vec<Vec<usize>> {
+    let order = cpu_order();
+    if order.is_empty() {
+        return Vec::new();
+    }
+    let mut groups: Vec<(Vec<usize>, Vec<usize>)> = Vec::new(); // (members, allowed members)
+    for &cpu in &order {
+        let shared = read_l3_shared(cpu).unwrap_or_else(|| vec![cpu]);
+        let key: Vec<usize> = {
+            let mut k = shared.clone();
+            k.sort_unstable();
+            k.dedup();
+            k
+        };
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, members)) => members.push(cpu),
+            None => groups.push((key, vec![cpu])),
+        }
+    }
+    groups.into_iter().map(|(_, m)| m).collect()
+}
+
+/// The index-3 cache sharing list of `cpu` (its L3 siblings), parsed from
+/// sysfs. None if unavailable (singletons are fine — the cpu is its own
+/// group).
+fn read_l3_shared(cpu: usize) -> Option<Vec<usize>> {
+    let path = format!("/sys/devices/system/cpu/cpu{cpu}/cache/index3/shared_cpu_list");
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut group = Vec::new();
+    for part in text.trim().split(',') {
+        if let Some((a, b)) = part.split_once('-') {
+            if let (Ok(a), Ok(b)) = (a.parse::<usize>(), b.parse::<usize>()) {
+                group.extend(a..=b);
+            }
+        } else if let Ok(v) = part.parse::<usize>() {
+            group.push(v);
+        }
+    }
+    (!group.is_empty()).then_some(group)
+}
+
+/// R8: placement for a pipelined arm — (main, rx) cpus that share an L3
+/// but not a physical core when possible (the mailbox handoff is
+/// latency-sensitive; SMT-sharing it with the busy main would timeslice
+/// execution). Returns (main_cpu, rx_cpu).
+pub fn pipeline_placement() -> (Option<usize>, Option<usize>) {
+    let groups = l3_groups();
+    // Prefer the L3 group with the most DISTINCT physical cores.
+    let mut best: Option<&Vec<usize>> = None;
+    let mut best_phys = 0usize;
+    for g in &groups {
+        let mut reps: Vec<usize> = Vec::new();
+        for c in g {
+            let is_rep = match read_sibling_group(*c) {
+                Some(s) => s.iter().min() == Some(c),
+                None => true,
+            };
+            if is_rep {
+                reps.push(*c);
+            }
+        }
+        if reps.len() > best_phys {
+            best_phys = reps.len();
+            best = Some(g);
+        }
+    }
+    let group = match best {
+        Some(g) if g.len() >= 2 => g,
+        _ => {
+            let order = cpu_order();
+            if order.len() >= 2 {
+                return (order.first().copied(), order.get(1).copied());
+            }
+            return (order.first().copied(), None);
+        }
+    };
+    // main = first distinct-physical representative; rx = the next cpu NOT
+    // in main's SMT pair.
+    let main = group[0];
+    let main_sibs = read_sibling_group(main).unwrap_or_else(|| vec![main]);
+    let rx = group
+        .iter()
+        .find(|c| **c != main && !main_sibs.contains(c))
+        .copied()
+        .or(Some(group[1.min(group.len() - 1)]));
+    (Some(main), rx)
+}
+
+#[cfg(test)]
+mod l3_tests {
+    use super::*;
+
+    #[test]
+    fn t_l3_groups_partition() {
+        let groups = l3_groups();
+        let order = cpu_order();
+        let total: usize = groups.iter().map(|g| g.len()).sum();
+        if !order.is_empty() {
+            assert_eq!(total, order.len(), "L3 groups must partition the allowed set");
+        }
+    }
+
+    #[test]
+    fn t_pipeline_placement_distinct() {
+        let (main, rx) = pipeline_placement();
+        if let (Some(m), Some(r)) = (main, rx) {
+            assert_ne!(m, r, "main and rx must be distinct cpus");
+        }
+    }
+}

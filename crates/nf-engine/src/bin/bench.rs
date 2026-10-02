@@ -298,26 +298,38 @@ fn run_hydra_burst(
     // the RX's cpu — the RX is ~15% busy; NEVER main's). On SMT hosts the
     // worker count drops so the thread count fits the hyperthreads.
     let topo: Vec<usize> = topo.to_vec();
-    // R8: SMT-aware sizing — the topology log shows the runner pool is
-    // 2-physical-core SMT (4 vCPU). Five threads on four hyperthreads
-    // forces a logical-cpu TIMESLICE between two workers (measured: 97M
-    // msg/s — a 4x collapse). With <= 2 physical cores: 2 workers, so
-    // main + RX + workers exactly fill the hyperthreads (workers SMT-share
-    // physical cores with the control plane — concurrent, not timesliced).
-    // With >= 4 physical cores: 3 workers (the RX shares a worker's cpu).
+    // R8: L3 + SMT aware placement — main + RX share an L3 (different
+    // physical cores; the mailbox is latency-sensitive), workers fill the
+    // same-L3 remainder first, then the rest. Sizing: 2 workers on
+    // <= 2-physical hosts (five threads on four hyperthreads would
+    // timeslice two workers — measured 4x collapse), 3 otherwise.
+    let (main_cpu, rx_cpu) = nf_testkit::affinity::pipeline_placement();
+    if let Some(c) = main_cpu {
+        let _ = nf_testkit::affinity::pin_current_to(c);
+    }
     let n_phys = nf_testkit::affinity::physical_core_count();
     let workers = if n_phys >= 4 {
         3
     } else {
         2.min(topo.len().saturating_sub(1)).max(1)
     };
-    if let Some(c) = topo.first() {
-        let _ = nf_testkit::affinity::pin_current_to(*c);
-    }
+    // Worker slots: all cpus except main's and rx's, same-L3-first.
+    let mut slots: Vec<usize> = {
+        let groups = nf_testkit::affinity::l3_groups();
+        let mut sl: Vec<usize> = Vec::new();
+        for g in &groups {
+            if g.contains(&main_cpu.unwrap_or(usize::MAX)) {
+                sl.extend(g.iter().copied());
+            }
+        }
+        sl.extend(topo.iter().copied());
+        sl
+    };
+    slots.retain(|c| Some(*c) != main_cpu && Some(*c) != rx_cpu);
+    slots.dedup();
     let worker_cpus: Vec<usize> = (0..workers)
-        .map(|i| topo.get(2 + ((i + 1) % (topo.len().saturating_sub(2).max(1)))).copied().unwrap_or(1))
+        .map(|i| slots.get(i % slots.len().max(1)).copied().unwrap_or(1))
         .collect();
-    let rx_cpu = topo.get(1).copied();
     let fabric = nf_testkit::hydra::HydraFabric::spawn_pinned(workers, &worker_cpus);
     let mut rates = Vec::with_capacity(runs);
     // R8: RX-pipelined transport (poll staging on its own core; the main
@@ -462,20 +474,33 @@ fn run_hydra_sustained_5s(
     let sched = build_schedule(gt, &cfg);
     // R8: topology-aware sizing + placement (see the burst arm).
     let topo: Vec<usize> = topo.to_vec();
-    // R8: SMT-aware sizing (see the burst arm).
+    // R8: L3 + SMT aware placement (see the burst arm).
+    let (main_cpu, rx_cpu) = nf_testkit::affinity::pipeline_placement();
+    if let Some(c) = main_cpu {
+        let _ = nf_testkit::affinity::pin_current_to(c);
+    }
     let n_phys = nf_testkit::affinity::physical_core_count();
     let workers = if n_phys >= 4 {
         3
     } else {
         2.min(topo.len().saturating_sub(1)).max(1)
     };
-    if let Some(c) = topo.first() {
-        let _ = nf_testkit::affinity::pin_current_to(*c);
-    }
+    let mut slots: Vec<usize> = {
+        let groups = nf_testkit::affinity::l3_groups();
+        let mut sl: Vec<usize> = Vec::new();
+        for g in &groups {
+            if g.contains(&main_cpu.unwrap_or(usize::MAX)) {
+                sl.extend(g.iter().copied());
+            }
+        }
+        sl.extend(topo.iter().copied());
+        sl
+    };
+    slots.retain(|c| Some(*c) != main_cpu && Some(*c) != rx_cpu);
+    slots.dedup();
     let worker_cpus: Vec<usize> = (0..workers)
-        .map(|i| topo.get(2 + ((i + 1) % (topo.len().saturating_sub(2).max(1)))).copied().unwrap_or(1))
+        .map(|i| slots.get(i % slots.len().max(1)).copied().unwrap_or(1))
         .collect();
-    let rx_cpu = topo.get(1).copied();
     let fabric = nf_testkit::hydra::HydraFabric::spawn_pinned(workers, &worker_cpus);
     let mut total_msgs = 0u64;
     let mut session_counter = 1000u64;

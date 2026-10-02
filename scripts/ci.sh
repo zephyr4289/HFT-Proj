@@ -23,7 +23,7 @@ grep -m1 "model name" /proc/cpuinfo 2>&1 || true
 # R8: topology provenance — sibling groups + physical count (drives the
 # fabric's thread sizing; see nf-testkit/src/affinity.rs).
 for c in $(seq 0 $(( $(nproc) - 1 ))); do
-  echo "cpu$c siblings: $(cat /sys/devices/system/cpu/cpu$c/topology/thread_siblings_list 2>/dev/null || echo n/a)"
+  echo "cpu$c siblings: $(cat /sys/devices/system/cpu/cpu$c/topology/thread_siblings_list 2>/dev/null || echo n/a) L3: $(cat /sys/devices/system/cpu/cpu$c/cache/index3/shared_cpu_list 2>/dev/null || echo n/a)"
 done
 if command -v taskset >/dev/null 2>&1; then
   echo "taskset: $(taskset -pc $$ 2>&1 || true)"
