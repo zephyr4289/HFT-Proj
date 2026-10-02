@@ -370,12 +370,43 @@ impl ReplayTransport {
     fn patch_sessions(&mut self) {
         let session = self.session;
         let frames = self.frames.as_mut_ptr();
-        // SAFETY: every offset in `patch_offsets` was captured at
-        // construction from a rendered (len >= 20) frame's own directory
-        // entry — off..off+10 is in-bounds of `frames`; the list is
-        // immutable after construction.
+        // R8 phase-6: PREFETCHW pipeline. The patch is ~12.6k ten-byte
+        // stores strided across the 15MB blob — one RFO per cache line,
+        // serially exposed at ~40-100ns each when the lines are L3-shared
+        // (the measured 60-137us per pass). A software PREFETCH-W sweep
+        // running ~128 offsets ahead brings the lines to the exclusive
+        // state in parallel; the stores then retire at throughput. Bit
+        // semantics unchanged (same bytes, same order, same thread).
+        // SAFETY: prefetch never faults and never dereferences; every
+        // offset's line is in-bounds of `frames` (the store below touches
+        // off..off+10, so the whole line is certainly mapped).
         unsafe {
-            for &off in self.patch_offsets.iter() {
+            const PF_DIST: usize = 128;
+            let mut pf = self.patch_offsets.iter();
+            let mut lead: usize = 0;
+            let mut it = self.patch_offsets.iter().enumerate();
+            while let Some((i, &off)) = it.next() {
+                if i < PF_DIST {
+                    // Warm-up: prefetch the first PF_DIST lines directly.
+                    let _ = &mut pf;
+                    std::arch::x86_64::_mm_prefetch(
+                        frames.add(off as usize) as *const i8,
+                        std::arch::x86_64::_MM_HINT_ET0,
+                    );
+                } else {
+                    // Steady state: keep exactly PF_DIST prefetches of lead.
+                    while lead < i + PF_DIST {
+                        if let Some(&noff) = pf.next() {
+                            std::arch::x86_64::_mm_prefetch(
+                                frames.add(noff as usize) as *const i8,
+                                std::arch::x86_64::_MM_HINT_ET0,
+                            );
+                        } else {
+                            break;
+                        }
+                        lead += 1;
+                    }
+                }
                 let p = frames.add(off as usize);
                 std::ptr::copy_nonoverlapping(session.as_ptr(), p, 10);
             }
