@@ -66,9 +66,9 @@ every run:
 
 | Runner (pool draw) | kernel | start | after phase 2 |
 |---|---|---|---|
-| AMD EPYC 7763 (Zen3, 2p+HT) | scalar8lane | 223M | **675.4M** |
-| AMD EPYC 9V45 (Zen5) | fold512 | 229M | **654.5M** (3 workers) |
-| Intel Xeon 8573C (SPR) | fold512 | 408M* | **672.0M** |
+| Intel Xeon 8573C (SPR) | fold512 | 408M* | **726.7M** (single-span eval + no-spray) |
+| AMD EPYC 7763 (Zen3, 2p+HT) | scalar8lane | 223M | **675.4M** (with prepatch) / 607M prepatch-safe |
+| AMD EPYC 9V45 (Zen5) | fold512 | 229M | **654.5M** |
 | AMD EPYC 9V74 | scalar8lane | — | **516.0M** |
 
 *earlier pool draw, pre-campaign.
@@ -147,10 +147,11 @@ The equilibrium on every runner: workers at 65-98% busy delivering
 fold free (<1%), reset ~20-40us/pass (post-prefetchW). The remaining
 gaps, in measured order:
 
-* **Feeding fold512** (Intel/Zen5): the SMT worker pair delivers ~9-18 GB/s
-  against 34+ measured. The no-spray default (cccfebe) targets the L2
-  request flooding; its fold512-runner validation is still pending pool
-  draws. If it lands, these runners have 2.4x CRC headroom.
+* **Feeding fold512** (Intel/Zen5): the no-spray default plus the
+  single-span eval lifted the Intel pair to 20.1 GB/s delivered (726.7M
+  sustained — the pool record) against 34.2 measured. The remaining 1.7x
+  gap and the 147us/pass synchronous bake (15% of an Intel pass — the
+  kill-switched prepatch's exact value) are the two known levers.
 * **Scalar physics** (Zen3/9V74): 27.65 GB/s demand vs 42.8-47.9 machine
   ceiling. At perfection (workers at 100% of ceiling + assist absorbing the
   rest + main's ingest at its pure-pipeline rate) the arithmetic closes
