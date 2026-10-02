@@ -1514,6 +1514,9 @@ fn run_single_arm(
 }
 
 fn main() {
+    // R8 phase-4: capture the topology truth BEFORE any arm pins anything
+    // (the mask-pollution trap — see affinity::capture_topology).
+    let _ = nf_testkit::affinity::capture_topology();
     let args: Vec<String> = env::args().collect();
     let mut sample_path = "data/tests/sample-mini.itch".to_string();
     let mut runs = 5usize;

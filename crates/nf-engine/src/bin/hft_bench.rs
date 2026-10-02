@@ -207,6 +207,9 @@ fn wall_pass_pipelined<S: Sink>(
 }
 
 fn main() {
+    // R8 phase-4: capture the topology truth BEFORE any arm pins anything
+    // (the mask-pollution trap — see affinity::capture_topology).
+    let _ = nf_testkit::affinity::capture_topology();
     let args: Vec<String> = env::args().collect();
     let mut runs: usize = 30;
     let mut warmup: usize = 5;

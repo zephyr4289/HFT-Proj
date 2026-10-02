@@ -275,13 +275,13 @@ fn lane_slot_ptr(lane: &HydraLane, pos: u64) -> *mut Desc {
     }
 }
 
-/// Prefetch the first lines of a span body (T0) — gives the hardware
-/// streamer a head start on the worker's upcoming CRC pass.
-/// R8 note: 4-line x 6-deep lookahead was tried and measured a 3.5x
-/// REGRESSION (prefetch-request flooding starves the demand loads); the
-/// 2-line x 4-deep window is the sweet spot on the runner pool.
+/// Prefetch the first lines of a span body (T0) — legacy helper for the
+/// pre-phase-4 2-line lookahead (kept for the non-x86 build symmetry
+/// contract; the worker loop now uses the line-indexed full-span spray
+/// below).
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
 fn prefetch_body(ptr: *const u8) {
     unsafe {
         std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
@@ -291,6 +291,23 @@ fn prefetch_body(ptr: *const u8) {
         );
     }
 }
+
+/// R8 phase-4: line-indexed prefetch — the worker's full-span spray walks
+/// bodies one cache line at a time (see PfCfg).
+#[inline(always)]
+#[cfg(target_arch = "x86_64")]
+fn prefetch_line(ptr: *const u8, line: usize) {
+    unsafe {
+        std::arch::x86_64::_mm_prefetch(
+            (ptr as usize + line * 64) as *const i8,
+            std::arch::x86_64::_MM_HINT_T0,
+        );
+    }
+}
+
+#[inline(always)]
+#[cfg(not(target_arch = "x86_64"))]
+fn prefetch_line(_ptr: *const u8, _line: usize) {}
 
 #[inline(always)]
 #[cfg(not(target_arch = "x86_64"))]
@@ -309,6 +326,51 @@ const WORKER_BATCH: u64 = 128;
 /// and skips its parity asserts in this mode. Never set in CI.
 fn null_mode() -> bool {
     std::env::var("HFT_HYDRA_NULL").as_deref() == Ok("1")
+}
+
+/// R8 phase-4: the worker prefetch pipeline's shape (parsed once per
+/// worker spawn, outside every window; sweepable from CI without
+/// recompiles).
+///
+/// * `HFT_PF_AHEAD` — spans of lead the prefetch cursor maintains over
+///   the CRC cursor (default 2).
+/// * `HFT_PF_LINES` — max cache lines prefetched per span (default 22;
+///   span bodies average ~20 lines).
+/// * `HFT_PF_BURST` — max prefetches issued per evaluated span (default
+///   12; smooths request pressure instead of bursting at batch entry).
+///
+/// WHY the rewrite: the pre-deep-mailbox shape (2 lines x 4 spans) dated
+/// from an architecture where the consumer idled 66% of the wall and the
+/// workers' L3 latency was hidden behind submission gaps. With the
+/// consumer now ingesting continuously (CI run 36960041885), the workers'
+/// demand loads stall on raw L3 latency and the fabric measured ~5 GB/s
+/// per core-busy-second against the 24 GB/s measured kernel ceiling —
+/// the bodies' ~20 lines per span arrive at MLP-limited rate (~10 lines
+/// in flight per core) instead of prefetch-overlapped rate. The fix:
+/// prefetch ENTIRE spans ahead with a persistent cursor, issuing a small
+/// burst per evaluated span so the request stream stays smooth.
+#[derive(Clone, Copy)]
+struct PfCfg {
+    ahead: u64,
+    lines: usize,
+    burst: usize,
+}
+
+impl PfCfg {
+    fn detect() -> Self {
+        let parse = |k: &str, d: u64| -> u64 {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(d)
+                .clamp(0, 64)
+        };
+        Self {
+            ahead: parse("HFT_PF_AHEAD", 2),
+            lines: parse("HFT_PF_LINES", 22) as usize,
+            burst: parse("HFT_PF_BURST", 12) as usize,
+        }
+    }
 }
 
 /// R8 phase-2 diagnostics: per-worker telemetry (Relaxed atomics, one
@@ -347,13 +409,17 @@ impl WorkerStats {
 /// mechanics. Never allocates, never blocks on locks, exits only on shutdown
 /// with an empty queue.
 ///
-/// PREFETCH PIPELINE (H5): span bodies are ~21 cache lines separated by
-/// inter-frame gaps in the transport blob, so the hardware streamer restarts
-/// at every body and the first 2-3 lines of each body stall on L3 latency.
-/// The worker therefore software-prefetches the body starts of the NEXT
-/// FOUR queued spans while CRC-ing the current one — the ~200c per-span CRC
-/// pass gives the prefetches ample lead time, converting body-start latency
-/// stalls into overlapped L3 bandwidth.
+/// PREFETCH PIPELINE (H5, rewritten in R8 phase-4): span bodies are ~20
+/// cache lines in the shared blob, and the consumer's continuous ingest
+/// (post-deep-mailbox) leaves the workers exposed to raw L3 latency — the
+/// measured ~5 GB/s per core-busy-second against the 24 GB/s kernel
+/// ceiling was MLP-bound, ~10 lines in flight per core. The worker now
+/// sprays ENTIRE spans ahead of the CRC cursor with a persistent
+/// line-granular cursor (see PfCfg for the tunables and their defaults):
+/// a small burst of prefetches per evaluated span keeps the request
+/// stream smooth (the R8 3.5x flooding regression came from bursting 24
+/// requests at batch entry), and the cursor caps at the published head —
+/// producer-owned slots are never read.
 fn lane_worker(
     lane: Arc<HydraLane>,
     shutdown: Arc<AtomicBool>,
@@ -364,10 +430,14 @@ fn lane_worker(
         .cpu
         .store(crate::affinity::current_cpu() as u64, Ordering::Relaxed);
     let null = null_mode();
+    let pf = PfCfg::detect();
     let mut tail: u64 = 0; // desc cursor (worker-owned)
     let mut rhead: u64 = 0; // result cursor (worker-owned)
-    /// How many spans ahead to prefetch body starts (2 lines each).
-    const LOOKAHEAD: u64 = 4;
+    // Prefetch cursor (GLOBAL desc positions; masked on access). Sprays
+    // whole spans ahead of the CRC cursor; caps at `head` — slots beyond
+    // the published head are producer-owned and must not be read.
+    let mut pf_span: u64 = 0;
+    let mut pf_line: usize = 0;
     // H4: idle-spin backoff (see the worker loop doc). A busy-waiting worker
     // reloads `desc_head` in a tight PAUSE loop, ping-ponging the head line
     // against the main thread and burning shared execution resources on
@@ -394,9 +464,11 @@ fn lane_worker(
         let t_eval = std::time::Instant::now();
         // SAFETY: slots in [tail, head) are published (Acquire above).
         let slots = lane.desc_slots_read();
-        // Warm the lookahead window at batch entry.
-        for k in 0..LOOKAHEAD.min(n) {
-            prefetch_body(slots[((tail + k) & DESC_MASK) as usize].ptr);
+        // Re-anchor the prefetch cursor if it fell behind this batch
+        // (stalled at a previous head, or a fresh worker start).
+        if pf_span < tail {
+            pf_span = tail;
+            pf_line = 0;
         }
         // Result-space check: once per batch (invariant guarantees space;
         // defensive spin keeps drop-safety if the invariant were violated).
@@ -425,10 +497,29 @@ fn lane_worker(
         let res_slots = lane.res_slots();
         let mut i = 0u64;
         while i < n {
-            // Keep the lookahead window warm while the current span's CRC
-            // pass covers the prefetch lead time.
-            if i + LOOKAHEAD < n {
-                prefetch_body(slots[((tail + i + LOOKAHEAD) & DESC_MASK) as usize].ptr);
+            // Advance the prefetch pipeline: spray up to `burst` lines per
+            // evaluated span until the cursor covers `pf.ahead` spans beyond
+            // the CRC position (or exhausts the published batch).
+            if pf.lines > 0 && pf.burst > 0 {
+                let target = tail + i + pf.ahead + 1;
+                let mut issued = 0usize;
+                while pf_span < target && pf_span < head && issued < pf.burst {
+                    let d = slots[(pf_span & DESC_MASK) as usize];
+                    let span_lines = (((d.len as usize) + 63) / 64).min(pf.lines);
+                    let end = span_lines.min(pf_line + (pf.burst - issued));
+                    // SAFETY: prefetch never faults and never dereferences;
+                    // the slot is published (below head, above tail).
+                    for l in pf_line..end {
+                        prefetch_line(d.ptr, l);
+                    }
+                    issued += end - pf_line;
+                    if end >= span_lines {
+                        pf_span += 1;
+                        pf_line = 0;
+                    } else {
+                        pf_line = end;
+                    }
+                }
             }
             let emit = |res_slots: &mut [Res], i: u64, span_id: u32, value: u64| {
                 res_slots[((rhead + i) & RES_MASK) as usize] = Res {
@@ -571,8 +662,9 @@ impl HydraFabric {
                 Some(w) => format!("cpu{cpu_disp}(WANTED {w})"),
                 None => format!("cpu{cpu_disp}(unpinned)"),
             };
+            let placement = &self.worker_cpus;
             eprintln!(
-                "DIAG worker[{i}] {label}: {pin} batches={} spans={} eval_ms={:.1} idle_iters={} res_waits={}",
+                "DIAG worker[{i}] {label}: {pin} placement={placement:?} batches={} spans={} eval_ms={:.1} idle_iters={} res_waits={}",
                 ws.batches.load(Ordering::Relaxed),
                 ws.spans.load(Ordering::Relaxed),
                 ws.eval_ns.load(Ordering::Relaxed) as f64 / 1e6,

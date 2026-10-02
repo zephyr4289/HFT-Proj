@@ -46,6 +46,8 @@ const MIN_MS: u64 = 300;
 const SPAN: usize = 1344;
 
 fn main() {
+    // Capture before any pinning (the mask-pollution trap).
+    let _ = affinity::capture_topology();
     let topo = affinity::cpu_order();
     let n_phys = affinity::physical_core_count();
     let smt = topo.len() > n_phys;

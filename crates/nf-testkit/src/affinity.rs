@@ -12,9 +12,31 @@
 //! and degrades gracefully: any `sched_setaffinity` failure simply leaves
 //! that thread unpinned — behavior, not correctness, is affected.
 
-/// The CPUs this process is allowed to run on (cgroup/affinity mask),
-/// ordered distinct-physical-core-first.
-pub fn cpu_order() -> Vec<usize> {
+/// The topology truth, captured once at process start.
+///
+/// WHY: `cpu_order()` reads the CALLING THREAD's affinity mask. Benchmark
+/// arms pin the main thread to their chosen cpu BEFORE later arms compute
+/// their fabric placement — and a pinned thread's mask no longer contains
+/// the other cpus. CI run 36960041885 caught the consequences: the
+/// sustained arm's `fabric_placement` saw only main's pinned cpu0 and
+/// pinned BOTH workers onto it (diag `placement=[0,0]`), stacking three
+/// busy threads on one hyperthread while the runner's second physical
+/// core sat completely idle. The fix: binaries call
+/// [`capture_topology`] as their FIRST act (before any pinning); later
+/// `cpu_order()` calls return the captured set regardless of the caller's
+/// current mask. Uncaptured processes degrade to the live mask (the
+/// pre-capture semantics — still correct when nothing has pinned yet).
+static TOPOLOGY: std::sync::OnceLock<Vec<usize>> = std::sync::OnceLock::new();
+
+/// Capture the process's allowed-cpu set NOW as the topology truth.
+/// Call this before ANY thread pinning (binaries' first statement).
+pub fn capture_topology() -> &'static Vec<usize> {
+    TOPOLOGY.get_or_init(cpu_order_live)
+}
+
+/// The live (current-thread) allowed-cpu set, ordered
+/// distinct-physical-core-first.
+fn cpu_order_live() -> Vec<usize> {
     let mut set = unsafe { std::mem::zeroed::<libc::cpu_set_t>() };
     let rc = unsafe { libc::sched_getaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &mut set) };
     if rc != 0 {
@@ -51,6 +73,17 @@ pub fn cpu_order() -> Vec<usize> {
     let mut order = representatives;
     order.extend(siblings);
     order
+}
+
+/// The CPUs this process is allowed to run on (cgroup/affinity mask),
+/// ordered distinct-physical-core-first. Returns the STARTUP-captured set
+/// when [`capture_topology`] has run (see its doc — the mask-pollution
+/// trap), otherwise the live set.
+pub fn cpu_order() -> Vec<usize> {
+    if let Some(t) = TOPOLOGY.get() {
+        return t.clone();
+    }
+    cpu_order_live()
 }
 
 /// The thread-siblings list of `cpu` (its SMT group), parsed from sysfs.
