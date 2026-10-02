@@ -376,6 +376,18 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
     // frames whose publication the consumer has already freed (see
     // ReplayTransport::patch_range's safety contract); the synchronous
     // patch at the advance point shrinks to the unconsumed tail.
+    //
+    // KILL SWITCH (default OFF): CI run 36968390363 hit a rare (~1/10)
+    // sustained-pass count divergence (+39) with the prepatch live. The
+    // byte-level analysis says freed-publication headers are never re-read
+    // (staged messages are arena COPIES; cold apply reads at scan time;
+    // span bodies never overlap the patched prefix) — but the flake is
+    // real, the prepatch is the only mechanism that writes blob bytes
+    // cross-thread, and a verification fabric does not ship a maybe. The
+    // synchronous advance bake (~60-100us/pass) is the price of certainty
+    // until the race is root-caused. HFT_PREPATCH=1 re-enables.
+    let prepatch_enabled =
+        std::env::var("HFT_PREPATCH").as_deref() == Ok("1");
     let blob_base = inner.blob_base();
     // R8 phase-6: the end-offset ring is decoupled from NBUF (32 slots —
     // over 4 passes of publications at ENTRY_CAP=2048) so the prepatch's
@@ -594,9 +606,11 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
         // incremental work — the RX is runahead-deep, never latency-bound
         // here; unarmed transports skip it and keep the full synchronous
         // patch in their reset serve).
-        if let Some(sess_fn) = mb.auto_fn {
-            let next_sess = sess_fn(pass + 1);
-            prepatch_step(&mut inner, &next_sess, &mut pp_idx, turn, &turn_end_off);
+        if prepatch_enabled {
+            if let Some(sess_fn) = mb.auto_fn {
+                let next_sess = sess_fn(pass + 1);
+                prepatch_step(&mut inner, &next_sess, &mut pp_idx, turn, &turn_end_off);
+            }
         }
         // Polite wake: the consumer may be futex-parked on pub_wake (it
         // parks after a bounded spin to keep this SMT sibling fed).
@@ -666,8 +680,10 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                     // the pass's tail, keep baking what it HAS freed — the
                     // tail left for the synchronous advance shrinks as the
                     // consumer drains.
-                    let next_sess = sess_fn(pass + 1);
-                    prepatch_step(&mut inner, &next_sess, &mut pp_idx, turn, &turn_end_off);
+                    if prepatch_enabled {
+                        let next_sess = sess_fn(pass + 1);
+                        prepatch_step(&mut inner, &next_sess, &mut pp_idx, turn, &turn_end_off);
+                    }
                     mb.rx_stats.bufwait_laps.fetch_add(1, Ordering::Relaxed);
                     if backoff < 6 {
                         spin(&mut backoff);
@@ -682,12 +698,15 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                 }
                 let next_pass = pass + 1;
                 let sess = sess_fn(next_pass);
-                // R8 phase-3b: only the UNPREPATCHED tail bakes synchronously
-                // (during the pass the RX already re-baked every frame whose
-                // publication the consumer freed); then the cursor restarts
-                // for the new pass's consumption.
-                inner.reset_prepatched(sess, pp_idx);
-                pp_idx = 0;
+                // R8 phase-3b (kill-switched): only the un-prepatched tail
+                // bakes synchronously; with the prepatch disabled that is
+                // the full blob (the pre-prepatch behavior).
+                if prepatch_enabled {
+                    inner.reset_prepatched(sess, pp_idx);
+                    pp_idx = 0;
+                } else {
+                    inner.reset(sess);
+                }
                 pass = next_pass;
                 mb.rx_stats.resets.fetch_add(1, Ordering::Relaxed);
                 // SAFETY: RX-exclusive until the Release store of auto_pass.
