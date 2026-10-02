@@ -83,6 +83,17 @@ pub fn pin_current_to(cpu: usize) -> bool {
     rc == 0
 }
 
+/// R8 phase-2 diagnostics: the calling thread's current cpu (sched_getcpu;
+/// usize::MAX on failure — never a hot path).
+pub fn current_cpu() -> usize {
+    let rc = unsafe { libc::sched_getcpu() };
+    if rc < 0 {
+        usize::MAX
+    } else {
+        rc as usize
+    }
+}
+
 /// Pin the calling thread to the `slot`-th CPU of the topology order
 /// (wrapping). Returns the chosen CPU, or None if pinning was unavailable.
 pub fn pin_current_slot(slot: usize) -> Option<usize> {

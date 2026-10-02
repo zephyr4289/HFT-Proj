@@ -268,7 +268,11 @@ impl HydraLane {
 fn lane_slot_ptr(lane: &HydraLane, pos: u64) -> *mut Desc {
     // SAFETY: SPSC protocol — see HydraLane::desc_slots; per-slot masking
     // handles the ring wrap.
-    unsafe { (&mut *lane.desc.get()).as_mut_ptr().add((pos & DESC_MASK) as usize) }
+    unsafe {
+        (&mut *lane.desc.get())
+            .as_mut_ptr()
+            .add((pos & DESC_MASK) as usize)
+    }
 }
 
 /// Prefetch the first lines of a span body (T0) — gives the hardware
@@ -307,6 +311,38 @@ fn null_mode() -> bool {
     std::env::var("HFT_HYDRA_NULL").as_deref() == Ok("1")
 }
 
+/// R8 phase-2 diagnostics: per-worker telemetry (Relaxed atomics, one
+/// padded line per worker — written by the worker, read once per run by
+/// the harness; never in a span-granular inner loop).
+#[repr(align(64))]
+pub struct WorkerStats {
+    /// Worker batches consumed (≤ WORKER_BATCH descriptor groups).
+    pub batches: AtomicU64,
+    /// Spans evaluated (CRC kernel invocations).
+    pub spans: AtomicU64,
+    /// Nanoseconds inside the evaluate+emit loop (CRC work).
+    pub eval_ns: AtomicU64,
+    /// Idle spin iterations waiting for descriptors (polite_spin laps).
+    pub idle_iters: AtomicU64,
+    /// Result-space defensive waits taken.
+    pub res_waits: AtomicU64,
+    /// This worker's pinned cpu (usize::MAX when unpinned).
+    pub cpu: AtomicU64,
+}
+
+impl WorkerStats {
+    fn new() -> Self {
+        Self {
+            batches: AtomicU64::new(0),
+            spans: AtomicU64::new(0),
+            eval_ns: AtomicU64::new(0),
+            idle_iters: AtomicU64::new(0),
+            res_waits: AtomicU64::new(0),
+            cpu: AtomicU64::new(u64::MAX),
+        }
+    }
+}
+
 /// Worker main loop: pure function evaluation + chunk-granular SPSC ring
 /// mechanics. Never allocates, never blocks on locks, exits only on shutdown
 /// with an empty queue.
@@ -318,7 +354,15 @@ fn null_mode() -> bool {
 /// FOUR queued spans while CRC-ing the current one — the ~200c per-span CRC
 /// pass gives the prefetches ample lead time, converting body-start latency
 /// stalls into overlapped L3 bandwidth.
-fn lane_worker(lane: Arc<HydraLane>, shutdown: Arc<AtomicBool>, kernel: CrcKernel) {
+fn lane_worker(
+    lane: Arc<HydraLane>,
+    shutdown: Arc<AtomicBool>,
+    kernel: CrcKernel,
+    stats: Arc<WorkerStats>,
+) {
+    stats
+        .cpu
+        .store(crate::affinity::current_cpu() as u64, Ordering::Relaxed);
     let null = null_mode();
     let mut tail: u64 = 0; // desc cursor (worker-owned)
     let mut rhead: u64 = 0; // result cursor (worker-owned)
@@ -339,11 +383,15 @@ fn lane_worker(lane: Arc<HydraLane>, shutdown: Arc<AtomicBool>, kernel: CrcKerne
             }
             // R8: SMT-polite (a raw pause-loop starves the sibling worker
             // on Zen3 — mutual spin-starvation collapsed the fabric).
+            stats.idle_iters.fetch_add(1, Ordering::Relaxed);
             crate::affinity::polite_spin(&mut backoff);
             continue;
         }
         backoff = 0;
-        let n = (head - tail).min(WORKER_BATCH); // ≤ 64 descs (partial tails allowed)
+        let n = (head - tail).min(WORKER_BATCH); // ≤ 128 descs (partial tails allowed)
+        stats.spans.fetch_add(n, Ordering::Relaxed);
+        stats.batches.fetch_add(1, Ordering::Relaxed);
+        let t_eval = std::time::Instant::now();
         // SAFETY: slots in [tail, head) are published (Acquire above).
         let slots = lane.desc_slots_read();
         // Warm the lookahead window at batch entry.
@@ -361,6 +409,7 @@ fn lane_worker(lane: Arc<HydraLane>, shutdown: Arc<AtomicBool>, kernel: CrcKerne
             if shutdown.load(Ordering::Acquire) {
                 return;
             }
+            stats.res_waits.fetch_add(1, Ordering::Relaxed);
             crate::affinity::polite_spin(&mut rb);
         }
         // Evaluate + buffer the batch's results locally, then publish with
@@ -411,8 +460,7 @@ fn lane_worker(lane: Arc<HydraLane>, shutdown: Arc<AtomicBool>, kernel: CrcKerne
                     // design — see null_mode doc).
                     (d.len as u64) | ((d.span_id as u64) << 32)
                 } else {
-                    let body =
-                        unsafe { std::slice::from_raw_parts(d.ptr, d.len as usize) };
+                    let body = unsafe { std::slice::from_raw_parts(d.ptr, d.len as usize) };
                     // SAFETY: feature contract verified at spawn.
                     unsafe { kernel.eval(body) }
                 };
@@ -421,6 +469,9 @@ fn lane_worker(lane: Arc<HydraLane>, shutdown: Arc<AtomicBool>, kernel: CrcKerne
             }
         }
         std::hint::black_box(&res_slots[(rhead & RES_MASK) as usize]);
+        stats
+            .eval_ns
+            .fetch_add(t_eval.elapsed().as_nanos() as u64, Ordering::Relaxed);
         lane.res_head.store(rhead + n, Ordering::Release);
         rhead += n;
         // Free the consumed descriptor slots — one Release store per batch.
@@ -436,6 +487,10 @@ pub struct HydraFabric {
     lanes: Vec<Arc<HydraLane>>,
     shutdown: Arc<AtomicBool>,
     handles: Vec<JoinHandle<()>>,
+    /// R8 phase-2: per-worker telemetry (parallel to lanes).
+    wstats: Vec<Arc<WorkerStats>>,
+    /// Worker cpu assignments (diagnostics).
+    worker_cpus: Vec<usize>,
     pub workers: usize,
     /// GIGAHFT Lever 1: the span-CRC kernel the workers evaluate (detected
     /// ONCE here — outside every measurement window; values are bit-exact
@@ -463,14 +518,17 @@ impl HydraFabric {
         let shutdown = Arc::new(AtomicBool::new(false));
         let mut handles = Vec::with_capacity(workers);
         let mut lanes: Vec<Arc<HydraLane>> = Vec::with_capacity(workers);
+        let mut wstats: Vec<Arc<WorkerStats>> = Vec::with_capacity(workers);
         for _ in 0..workers {
             // Box→Arc: single heap object, ownership moved (leak-free).
             lanes.push(Arc::from(HydraLane::new()));
+            wstats.push(Arc::new(WorkerStats::new()));
         }
-        for (i, lane) in lanes.iter().enumerate() {
-            let lane = lane.clone();
+        for i in 0..lanes.len() {
+            let lane = lanes[i].clone();
             let sd = shutdown.clone();
             let kern = kernel;
+            let stats = wstats[i].clone();
             let cpu = worker_cpus.get(i % worker_cpus.len().max(1)).copied();
             let h = std::thread::Builder::new()
                 .stack_size(512 * 1024)
@@ -479,7 +537,7 @@ impl HydraFabric {
                     if let Some(c) = cpu {
                         let _ = crate::affinity::pin_current_to(c);
                     }
-                    lane_worker(lane, sd, kern)
+                    lane_worker(lane, sd, kern, stats)
                 })
                 .expect("hydra worker spawn");
             handles.push(h);
@@ -488,9 +546,40 @@ impl HydraFabric {
             lanes,
             shutdown,
             handles,
+            wstats,
+            worker_cpus: worker_cpus.to_vec(),
             workers,
             kernel,
         })
+    }
+
+    /// R8 phase-2 diagnostics: one always-on telemetry line per run covering
+    /// the fabric's life (worker utilization, CRC time, idle spins, pins).
+    /// Read-only, post-run — never inside a measurement window's decision
+    /// path.
+    pub fn diag_summary(&self, label: &str) {
+        for (i, ws) in self.wstats.iter().enumerate() {
+            let cpu = ws.cpu.load(Ordering::Relaxed);
+            let cpu_disp = if cpu == u64::MAX {
+                "?".to_string()
+            } else {
+                cpu.to_string()
+            };
+            let want = self.worker_cpus.get(i).copied();
+            let pin = match want {
+                Some(w) if w as u64 == cpu => format!("cpu{cpu_disp}(pinned)"),
+                Some(w) => format!("cpu{cpu_disp}(WANTED {w})"),
+                None => format!("cpu{cpu_disp}(unpinned)"),
+            };
+            eprintln!(
+                "DIAG worker[{i}] {label}: {pin} batches={} spans={} eval_ms={:.1} idle_iters={} res_waits={}",
+                ws.batches.load(Ordering::Relaxed),
+                ws.spans.load(Ordering::Relaxed),
+                ws.eval_ns.load(Ordering::Relaxed) as f64 / 1e6,
+                ws.idle_iters.load(Ordering::Relaxed),
+                ws.res_waits.load(Ordering::Relaxed),
+            );
+        }
     }
 
     /// Default worker count: every core except the one the main thread runs
@@ -868,8 +957,10 @@ impl<'a> HydraSpanSink<'a> {
         // SAFETY: the slot at (pending_head + pending_len) & DESC_MASK is
         // producer-owned (space checked at chunk start for the full chunk)
         // and unread by the worker until the Release publish below.
-        let slot =
-            lane_slot_ptr(&fabric.lanes[self.pending_lane], self.pending_head + self.pending_len);
+        let slot = lane_slot_ptr(
+            &fabric.lanes[self.pending_lane],
+            self.pending_head + self.pending_len,
+        );
         let packed = (body.as_ptr() as u128)
             | ((body.len() as u128) << 64)
             | ((self.next_span as u32 as u128) << 96);
@@ -1036,14 +1127,19 @@ impl<'a> Sink for HydraSpanSink<'a> {
             );
         }
         self.last_seq = seq;
-        self.msg_hash = crate::sink::fast_hash_bytes(self.msg_hash, &(msg.len() as u16).to_le_bytes());
+        self.msg_hash =
+            crate::sink::fast_hash_bytes(self.msg_hash, &(msg.len() as u16).to_le_bytes());
         self.msg_hash = crate::sink::fast_hash_bytes(self.msg_hash, msg);
         self.count += 1;
     }
 
     fn on_event(&mut self, ev: &Event) {
         match ev {
-            Event::GapOpened { from, ahead: _, gen } => {
+            Event::GapOpened {
+                from,
+                ahead: _,
+                gen,
+            } => {
                 assert!(*gen > self.last_gen);
                 self.last_gen = *gen;
                 assert!(self.gap_open_gen.is_none());
@@ -1060,7 +1156,11 @@ impl<'a> Sink for HydraSpanSink<'a> {
                 self.gap_open_from = None;
                 self.reanchors += 1;
             }
-            Event::SessionBoundary { prev: _, next: _, gen } => {
+            Event::SessionBoundary {
+                prev: _,
+                next: _,
+                gen,
+            } => {
                 assert!(*gen > self.last_gen);
                 self.last_gen = *gen;
                 self.gap_open_gen = None;
@@ -1220,7 +1320,11 @@ mod tests {
     }
 
     /// HYDRA fabric pass: drain between polls, blocking finish at end.
-    fn hydra_pass(transport: &mut ReplayTransport, sess: [u8; 10], fabric: &HydraFabric) -> (u64, u64, u64) {
+    fn hydra_pass(
+        transport: &mut ReplayTransport,
+        sess: [u8; 10],
+        fabric: &HydraFabric,
+    ) -> (u64, u64, u64) {
         transport.reset(sess);
         let mut seq = Sequencer::new();
         let mut sink = HydraSpanSink::new(fabric);
@@ -1307,8 +1411,14 @@ mod tests {
                 LossModel::Bernoulli { p_pm: 100 },
             ],
             delay: [
-                DelayModel::GaussianApprox { mean_ns: 30_000, sigma_ns: 8_000 },
-                DelayModel::GaussianApprox { mean_ns: 30_000, sigma_ns: 8_000 },
+                DelayModel::GaussianApprox {
+                    mean_ns: 30_000,
+                    sigma_ns: 8_000,
+                },
+                DelayModel::GaussianApprox {
+                    mean_ns: 30_000,
+                    sigma_ns: 8_000,
+                },
             ],
             guarantee_coverage: true,
             session_change_at_msg: Some(300_000),
@@ -1321,7 +1431,10 @@ mod tests {
         let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
 
         let want = seq_pass(&mut t1, sess);
-        assert_eq!(want.0, 505_849, "chaos must still cover the full population");
+        assert_eq!(
+            want.0, 505_849,
+            "chaos must still cover the full population"
+        );
         let got = hydra_pass(&mut t2, sess, &fabric);
         assert_eq!(got, want, "chaos fabric mode diverged");
     }

@@ -133,6 +133,67 @@ impl std::ops::Deref for Pad {
     }
 }
 
+/// R8 phase-2 diagnostics: always-on pipeline telemetry. Two padded
+/// groups — RX-side written only by the RX thread, consumer-side only by
+/// the consumer — so the counters never false-share with each other or
+/// with the hot ring cursors. Relaxed ordering: monotonic counters, read
+/// once per run by the harness.
+#[repr(align(64))]
+struct RxStats {
+    /// Publications (data + EOS markers) completed.
+    publications: AtomicU64,
+    /// inner.poll() invocations.
+    polls: AtomicU64,
+    /// Nanoseconds spent producing publications (the accumulate loop,
+    /// including its polls — the RX thread's real work).
+    prod_ns: AtomicU64,
+    /// Buffer-free wait laps (RX blocked because the consumer holds all 4
+    /// buffers — deep-runahead starvation visibility).
+    bufwait_laps: AtomicU64,
+    /// Resets served (handshakes).
+    resets: AtomicU64,
+    /// EOS parks (futex waits at end-of-stream).
+    eos_parks: AtomicU64,
+}
+
+#[repr(align(64))]
+struct ConsStats {
+    /// next_batch futex parks (publication not ready within the polite
+    /// spin window).
+    parks: AtomicU64,
+    /// Nanoseconds spent in those parks.
+    park_ns: AtomicU64,
+    /// Publication waits that exceeded the spin window (spin + park
+    /// boundary events).
+    slow_waits: AtomicU64,
+    /// Total nanoseconds in slow waits (spin tail + parks).
+    slow_ns: AtomicU64,
+}
+
+impl RxStats {
+    fn zeroed() -> Self {
+        Self {
+            publications: AtomicU64::new(0),
+            polls: AtomicU64::new(0),
+            prod_ns: AtomicU64::new(0),
+            bufwait_laps: AtomicU64::new(0),
+            resets: AtomicU64::new(0),
+            eos_parks: AtomicU64::new(0),
+        }
+    }
+}
+
+impl ConsStats {
+    fn zeroed() -> Self {
+        Self {
+            parks: AtomicU64::new(0),
+            park_ns: AtomicU64::new(0),
+            slow_waits: AtomicU64::new(0),
+            slow_ns: AtomicU64::new(0),
+        }
+    }
+}
+
 /// The four-buffer entry mailbox + command channel.
 struct Mailbox {
     /// RX-built entry buffers; ownership transfers by the turn/use counters
@@ -168,6 +229,9 @@ struct Mailbox {
     reset_cnt: AtomicU64,
     reset_ack_turn: AtomicU64,
     reset_ack_cnt: AtomicU64,
+    /// R8 phase-2: telemetry (see RxStats/ConsStats).
+    rx_stats: RxStats,
+    cons_stats: ConsStats,
 }
 
 // SAFETY: the mailbox is the SPSC handoff described in the module doc —
@@ -253,6 +317,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                 let sess = unsafe { *mb.reset_session.get() };
                 inner.reset(sess);
                 served_resets += 1;
+                mb.rx_stats.resets.fetch_add(1, Ordering::Relaxed);
                 mb.reset_ack_turn.store(turn, Ordering::Release);
                 mb.reset_ack_cnt.store(served_resets, Ordering::Release);
                 mb.cmd.store(CMD_RUN, Ordering::Release);
@@ -277,6 +342,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                 if mb.cmd.load(Ordering::Acquire) == CMD_RESET {
                     break; // serve the reset first (consumer is waiting)
                 }
+                mb.rx_stats.bufwait_laps.fetch_add(1, Ordering::Relaxed);
                 // R8: escalate to sched_yield — the consumer's SMT sibling
                 // must stay fed (Zen3's PAUSE hint is weak).
                 if backoff < 6 {
@@ -297,9 +363,15 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
         const ENTRY_CAP: usize = 1024;
         let mut acc = 0usize;
         let mut eos = false;
+        let t_prod = std::time::Instant::now();
         while acc + 256 <= ENTRY_CAP {
-            let tp0 = if diag { Some(std::time::Instant::now()) } else { None };
+            let tp0 = if diag {
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
             let n = inner.poll(&mut scratch);
+            mb.rx_stats.polls.fetch_add(1, Ordering::Relaxed);
             if let Some(t0i) = tp0 {
                 let tpd = t0i.elapsed().as_nanos() as u64;
                 diag_polls += 1;
@@ -346,9 +418,8 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                         bytes,
                         feed: f.feed,
                         blocks,
-                        memo: (blk_count != 0).then_some(nf_protocol::packet::FrameMemo {
-                            valid_count: valid,
-                        }),
+                        memo: (blk_count != 0)
+                            .then_some(nf_protocol::packet::FrameMemo { valid_count: valid }),
                         first_seq: f.first_seq,
                         sess_lo: f.sess_lo,
                         sess_hi: f.sess_hi,
@@ -364,6 +435,10 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
             let buf = unsafe { &mut *mb.bufs[i].get() };
             buf.len = acc as u32;
         }
+        mb.rx_stats
+            .prod_ns
+            .fetch_add(t_prod.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        mb.rx_stats.publications.fetch_add(1, Ordering::Relaxed);
         mb.filled[i].store(turn, Ordering::Release);
         // Polite wake: the consumer may be futex-parked on pub_wake (it
         // parks after a bounded spin to keep this SMT sibling fed).
@@ -415,6 +490,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
             // measured 15-30ms per reset, dominating the sustained arm).
             // The futex wait is the cold path only; batch publication
             // stays spin-based.
+            mb.rx_stats.eos_parks.fetch_add(1, Ordering::Relaxed);
             loop {
                 match mb.cmd.load(Ordering::Acquire) {
                     CMD_SHUTDOWN => return,
@@ -422,6 +498,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                         let sess = unsafe { *mb.reset_session.get() };
                         inner.reset(sess);
                         served_resets += 1;
+                        mb.rx_stats.resets.fetch_add(1, Ordering::Relaxed);
                         mb.reset_ack_turn.store(turn, Ordering::Release);
                         mb.reset_ack_cnt.store(served_resets, Ordering::Release);
                         mb.cmd.store(CMD_RUN, Ordering::Release);
@@ -510,6 +587,8 @@ impl PipelinedReplayTransport {
             reset_cnt: AtomicU64::new(0),
             reset_ack_turn: AtomicU64::new(0),
             reset_ack_cnt: AtomicU64::new(0),
+            rx_stats: RxStats::zeroed(),
+            cons_stats: ConsStats::zeroed(),
         });
         let rx = std::thread::Builder::new()
             .stack_size(512 * 1024)
@@ -607,20 +686,41 @@ impl PipelinedReplayTransport {
         // sibling (Zen3's weak PAUSE hint) — the RX's 6us batch stretched
         // to 2.6ms and the sustained arm collapsed to 8M msg/s.
         let mut spins = 0u32;
+        let mut parked = false;
+        let t_park = std::time::Instant::now();
         loop {
             if self.mb.filled[i].load(Ordering::Acquire) == self.turn {
                 break;
             }
             spins += 1;
             if spins > 512 {
+                if !parked {
+                    parked = true;
+                    self.mb
+                        .cons_stats
+                        .slow_waits
+                        .fetch_add(1, Ordering::Relaxed);
+                }
                 let observed = self.mb.pub_wake.load(Ordering::Acquire);
                 if self.mb.filled[i].load(Ordering::Acquire) != self.turn {
+                    let p0 = std::time::Instant::now();
                     futex_wait(&self.mb.pub_wake, observed);
+                    self.mb
+                        .cons_stats
+                        .park_ns
+                        .fetch_add(p0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                    self.mb.cons_stats.parks.fetch_add(1, Ordering::Relaxed);
                 }
                 spins = 0;
             } else {
                 std::hint::spin_loop();
             }
+        }
+        if parked {
+            self.mb
+                .cons_stats
+                .slow_ns
+                .fetch_add(t_park.elapsed().as_nanos() as u64, Ordering::Relaxed);
         }
         let t = self.turn;
         self.turn += 1;
@@ -660,6 +760,30 @@ impl PipelinedReplayTransport {
         let t = self.cur.expect("r8 pipeline: no current batch");
         // SAFETY: same ownership + publication ordering as `entries`.
         unsafe { (*self.mb.bufs[(t & 3) as usize].get()).clock }
+    }
+
+    /// R8 phase-2 diagnostics: one always-on telemetry line per run covering
+    /// the transport's whole life (RX production cost, buffer starvation,
+    /// consumer parks). Read-only, post-run.
+    pub fn diag_summary(&self, label: &str) {
+        let rx = &self.mb.rx_stats;
+        let cs = &self.mb.cons_stats;
+        eprintln!(
+            "DIAG rx {label}: publications={} polls={} prod_ms={:.1} bufwait_laps={} resets={} eos_parks={}",
+            rx.publications.load(Ordering::Relaxed),
+            rx.polls.load(Ordering::Relaxed),
+            rx.prod_ns.load(Ordering::Relaxed) as f64 / 1e6,
+            rx.bufwait_laps.load(Ordering::Relaxed),
+            rx.resets.load(Ordering::Relaxed),
+            rx.eos_parks.load(Ordering::Relaxed),
+        );
+        eprintln!(
+            "DIAG cons {label}: parks={} park_ms={:.1} slow_waits={} slow_ms={:.1}",
+            cs.parks.load(Ordering::Relaxed),
+            cs.park_ns.load(Ordering::Relaxed) as f64 / 1e6,
+            cs.slow_waits.load(Ordering::Relaxed),
+            cs.slow_ns.load(Ordering::Relaxed) as f64 / 1e6,
+        );
     }
 }
 

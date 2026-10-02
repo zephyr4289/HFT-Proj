@@ -516,6 +516,24 @@ fn run_hydra_sustained_5s(
     let mut d_work_ns: u64 = 0;
     let mut d_batches: u64 = 0;
     let mut d_passes: u64 = 0;
+    // R8 phase-2: exact emitted-body bytes from the golden tape (the CRC
+    // demand denominator — computed once, outside every window).
+    let body_bytes_per_msg: f64 = {
+        let mut total = 0u64;
+        let mut pos = 0usize;
+        let mut msgs = 0u64;
+        while pos + 2 <= gt.len() {
+            let l = u16::from_be_bytes([gt[pos], gt[pos + 1]]) as u64;
+            total += l;
+            pos += 2 + l as usize;
+            msgs += 1;
+        }
+        if msgs > 0 {
+            total as f64 / msgs as f64
+        } else {
+            0.0
+        }
+    };
     while start.elapsed().as_secs_f64() < 5.0 {
         sess[7..10].copy_from_slice(&session_counter.to_be_bytes()[5..8]);
         session_counter += 1;
@@ -579,7 +597,7 @@ fn run_hydra_sustained_5s(
 
     if diag {
         eprintln!(
-            "DIAG sustained: passes={} reset_ms={:.1} scan_ms={:.1} end_ms={:.1} pending_max={} batches={} wait_ms={:.1} work_ms={:.1}",
+            "DIAG sustained: passes={} reset_ms={:.1} scan_ms={:.1} end_ms={:.1} pending_max={} batches={} wait_ms={:.1} work_ms={:.1} bytes_per_msg={:.2} crc_demand_gb_s={:.2}",
             d_passes,
             d_reset_ns as f64 / 1e6,
             d_scan_ns as f64 / 1e6,
@@ -587,9 +605,15 @@ fn run_hydra_sustained_5s(
             d_pending_max,
             d_batches,
             d_wait_ns as f64 / 1e6,
-            d_work_ns as f64 / 1e6
+            d_work_ns as f64 / 1e6,
+            body_bytes_per_msg,
+            sustained_rate as f64 * body_bytes_per_msg / 1e9
         );
     }
+    // R8 phase-2: fabric + pipeline telemetry (always on — the per-run
+    // attribution lines behind the bottleneck war; post-run, read-only).
+    fabric.diag_summary("sustained");
+    transport.diag_summary("sustained");
     println!(
         "BENCH mode=replay-hydra-sustained-5s total_msgs={} duration={:.2}s sustained_rate={} msg/s allocs={} workers={} crc_kernel={}",
         total_msgs,

@@ -106,6 +106,15 @@ grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_hydra.txt
 # enforcement lands when the fabric reaches it; see docs/22 §Physics).
 grep -q "PR1_R8_FULL_VERIFY_VERDICT rate=" /tmp/bench_hydra.txt
 
+echo "=== 11c. R8: Kernel-Ceiling Microbenchmark (fabric physics telemetry) ==="
+# Diagnostics only — never gated. Prints the runner's measured CRC ceilings
+# per kernel (scalar8lane / fold512 / pclmul128_raw / crc32:pclmul mix) and
+# per placement (1 cpu / 2 distinct / 2 SMT), so the fabric's achieved
+# numbers sit next to the machine's physics in every run log.
+cargo run --release -p nf-engine --bin kbench | tee /tmp/kbench.txt
+grep -q "KBENCH mode=scalar8lane threads=1" /tmp/kbench.txt
+grep -q "KBENCH done" /tmp/kbench.txt
+
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)
