@@ -451,6 +451,9 @@ fn lane_worker(
         .cpu
         .store(crate::affinity::current_cpu() as u64, Ordering::Relaxed);
     let null = null_mode();
+    // R9: the eval2 interleave experiment knob (read once at worker
+    // start — outside every measurement window; see the loop's doc).
+    let eval2 = std::env::var("HFT_WORKER_EVAL2").as_deref() == Ok("1");
     let pf = PfCfg::detect(kernel);
     let mut tail: u64 = 0; // desc cursor (worker-owned)
     let mut rhead: u64 = 0; // result cursor (worker-owned)
@@ -557,22 +560,43 @@ fn lane_worker(
             // and ONE sequential stream per worker is exactly the access
             // pattern those ceilings were measured with. Bit-exact by D11
             // either way.
+            // R9: HFT_WORKER_EVAL2=1 re-enables the interleave as a
+            // per-draw experiment — the kbench parity was measured on
+            // PACKED buffers; the post-aliasing real layout is L3-latency
+            // bound, where two concurrent span streams double the loads
+            // in flight. The CI sweep decides per runner class.
             // SAFETY: published descriptor slot (Acquire above); body slice
             // per the HydraLane contract — immutable bytes, valid until the
             // owning pass's finish() drain.
             {
-                let d = slots[((tail + i) & DESC_MASK) as usize];
-                let value = if null {
-                    // Diagnostic: constant work, no body read, wrong value (by
-                    // design — see null_mode doc).
-                    (d.len as u64) | ((d.span_id as u64) << 32)
-                } else {
-                    let body = unsafe { std::slice::from_raw_parts(d.ptr, d.len as usize) };
+                if eval2 && !null && i + 1 < n {
+                    let d0 = slots[((tail + i) & DESC_MASK) as usize];
+                    let d1 = slots[((tail + i + 1) & DESC_MASK) as usize];
+                    // SAFETY: as the single-span path, twice.
+                    let b0 =
+                        unsafe { std::slice::from_raw_parts(d0.ptr, d0.len as usize) };
+                    let b1 =
+                        unsafe { std::slice::from_raw_parts(d1.ptr, d1.len as usize) };
                     // SAFETY: feature contract verified at spawn.
-                    unsafe { kernel.eval(body) }
-                };
-                emit(res_slots, i, d.span_id, value);
-                i += 1;
+                    let (v0, v1) = unsafe { kernel.eval2(b0, b1) };
+                    emit(res_slots, i, d0.span_id, v0);
+                    emit(res_slots, i + 1, d1.span_id, v1);
+                    i += 2;
+                } else {
+                    let d = slots[((tail + i) & DESC_MASK) as usize];
+                    let value = if null {
+                        // Diagnostic: constant work, no body read, wrong value (by
+                        // design — see null_mode doc).
+                        (d.len as u64) | ((d.span_id as u64) << 32)
+                    } else {
+                        let body =
+                            unsafe { std::slice::from_raw_parts(d.ptr, d.len as usize) };
+                        // SAFETY: feature contract verified at spawn.
+                        unsafe { kernel.eval(body) }
+                    };
+                    emit(res_slots, i, d.span_id, value);
+                    i += 1;
+                }
             }
         }
         std::hint::black_box(&res_slots[(rhead & RES_MASK) as usize]);

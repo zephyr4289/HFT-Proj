@@ -376,17 +376,21 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
     // ReplayTransport::patch_range's safety contract); the synchronous
     // patch at the advance point shrinks to the unconsumed tail.
     //
-    // R9c — DEFAULT ON. The evidence ledger that closed the R8 kill
-    // switch: the mechanism is REBUILT (consumed-EVENT frontier with
-    // last-event gates — structurally not the offset-inference design
-    // that flaked), and the armed configuration is bit-exact across
-    // (a) 12 local sustained runs (~36k armed passes), (b) D1..D12 and
-    // the 17-cell matrix under HFT_PREPATCH=1, (c) three CI armed soaks
-    // (~22k passes, including an Intel 8573C draw at 938.7M sustained).
-    // The per-pass bit-exact tuple asserts remain the tripwire on every
-    // run; HFT_PREPATCH=0 is the opt-out (and ci.sh's negative control).
+    // R9d — DEFAULT OFF, refuted by measurement. The R9c flip (default
+    // on) was reversed by the first Intel draw's data: post-R9-aliasing
+    // the synchronous bake is only ~99us/pass on the 8573C and the RX
+    // absorbs it at the advance idle; spreading the same RFOs onto the
+    // RX's RENDER path (the prepatch's incremental steps) delayed every
+    // publication — the armed run's main-side batch-wait tripled
+    // (322 -> 813ms) and end-to-end fell 1.7% (955.4M -> 938.7M). The
+    // same ordering held on Zen3 and 9V74 draws. The mechanism stays
+    // (event-indexed frontier, last-event gates, R9c budget pacing) and
+    // the armed soak keeps running on every CI push as the evidence
+    // step — a future runner class with real RX idle time may still win
+    // with it. HFT_PREPATCH=1 arms; per-pass tuple asserts stay armed
+    // either way.
     let prepatch_enabled =
-        std::env::var("HFT_PREPATCH").as_deref() != Ok("0");
+        std::env::var("HFT_PREPATCH").as_deref() == Ok("1");
     // R9: the per-turn EVENT-INDEX ring — turn_evt_end[t] is the exclusive
     // end event index of turn t's publication (usize::MAX for EOS-marker
     // turns: the whole pass is consumed). The prepatch maps a freed turn
@@ -415,7 +419,8 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                           next_sess: &[u8; 10],
                           pp_idx: &mut usize,
                           cur_turn: u64,
-                          turn_evt_end: &[usize; 32]| {
+                          turn_evt_end: &[usize; 32],
+                          budget: usize| {
         let mut frontier: Option<u64> = None;
         for i in 0..NBUF as usize {
             let c = mb.freed[i].load(Ordering::Acquire);
@@ -439,7 +444,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
             let upto_evt = turn_evt_end[(t & TOFF_MASK) as usize];
             // usize::MAX (EOS-marker turn): the whole pass is consumed —
             // patch everything remaining below the list's end.
-            *pp_idx = inner.patch_range(next_sess, *pp_idx, upto_evt);
+            *pp_idx = inner.patch_range(next_sess, *pp_idx, upto_evt, budget);
         }
     };
     loop {
@@ -607,7 +612,12 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
         if prepatch_enabled {
             if let Some(sess_fn) = mb.auto_fn {
                 let next_sess = sess_fn(pass + 1);
-                prepatch_step(&mut inner, &next_sess, &mut pp_idx, turn, &turn_evt_end);
+                // R9c pacing: a SMALL budget per publication keeps the
+                // RFO burst off the render critical path (the ~24us
+                // publication period cannot absorb ~250 RFOs); the
+                // frontier keeps advancing and later steps pick up the
+                // remaining sites.
+                prepatch_step(&mut inner, &next_sess, &mut pp_idx, turn, &turn_evt_end, 64);
             }
         }
         // Polite wake: the consumer may be futex-parked on pub_wake (it
@@ -680,7 +690,10 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                     // consumer drains.
                     if prepatch_enabled {
                         let next_sess = sess_fn(pass + 1);
-                        prepatch_step(&mut inner, &next_sess, &mut pp_idx, turn, &turn_evt_end);
+                        // The EOS-drain wait: the RX is idle here — a large
+                        // budget drains the frontier fast while the loop's
+                        // free-checks stay responsive.
+                        prepatch_step(&mut inner, &next_sess, &mut pp_idx, turn, &turn_evt_end, 1024);
                     }
                     mb.rx_stats.bufwait_laps.fetch_add(1, Ordering::Relaxed);
                     if backoff < 6 {

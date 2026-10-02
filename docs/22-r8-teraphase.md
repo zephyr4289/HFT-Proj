@@ -339,3 +339,27 @@ and three CI armed soaks (~22k passes, including the Intel draw above at
 control; the per-pass tuple asserts remain the tripwire. ci.sh 11f adds
 the third-worker placement sweep (the RX-hyperthread lane was only ever
 measured on AMD — the sweep now rides every runner draw).
+
+### 7.8 R9d — the prepatch default reversed by measurement
+
+The R9c default-on flip lasted exactly one Intel draw. The 8573C data:
+unarmed 955.4M (reset-wait 99us/pass, main batch-wait 322ms) vs armed
+938.7M (reset 24us/pass, but batch-wait 813ms — end-to-end -1.7%). The
+same ordering held on Zen3 and 9V74 draws. Post-aliasing, the synchronous
+bake is cheap enough that the RX absorbs it at the advance idle; pushing
+the same RFOs onto the render path delays every publication instead.
+Default OFF again; the mechanism, its budget pacing (<=64 sites per
+publication step, <=1024 in the EOS-drain wait), and the armed CI soak
+stay — the evidence step keeps the option alive for a runner class with
+real RX idle time.
+
+### 7.9 The last 4.7% (the open front)
+
+At 955.4M the Intel pair delivered 26.42 GB/s (80% of its 33.08 kbench
+ceiling; the assist carried ~1.3 more on main). The remaining levers,
+all now ride-along CI sweeps: the worker eval2 interleave (11g — kbench
+parity was measured on packed buffers; the L3-bound real layout may
+prefer two streams in flight), the deeper prefetch lead (11h — the
+(2,22,24) default was tuned on the shared-core sandbox), and the
+third-worker shape (11f — Intel fold512 data pending; scalar AMD draws
+measured -2.9% on 9V74).

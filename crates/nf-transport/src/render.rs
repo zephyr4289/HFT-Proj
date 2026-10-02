@@ -571,7 +571,14 @@ impl ReplayTransport {
     /// `upto_evt`, starting the walk at patch-list index `from_idx`, with
     /// an explicit `session` (the NEXT pass's — the transport's own
     /// `session` field still holds the current pass's until the advance).
-    /// Returns the new patch-list index (the prepatch cursor).
+    /// Returns the new patch-list index (the prepatch cursor). The walk
+    /// touches AT MOST `budget` sites — R9c PACING: an unbounded step
+    /// bursts ~250 RFOs in one go (5.5k unique sites over ~22 publications
+    /// per pass on the mini tape), a stall comparable to the whole
+    /// publication period on the fast runners — measured as the armed
+    /// run's main-side wait_ms tripling (322 -> 813ms on the 8573C). A
+    /// bounded step spreads the bake; the frontier keeps advancing and the
+    /// advance-point tail covers whatever remains.
     ///
     /// WHY EVENT-INDEXED: the old offset-indexed walk assumed blob offsets
     /// grow monotonically with the schedule — true pre-R9, broken by blob
@@ -590,13 +597,20 @@ impl ReplayTransport {
     /// the patch writes frame[0..10], and the next pass's entry session
     /// words are computed at render time (after the advance), so the
     /// prepatch can never be observed mid-flight.
-    pub(crate) fn patch_range(&mut self, session: &[u8; 10], from_idx: usize, upto_evt: usize) -> usize {
+    pub(crate) fn patch_range(
+        &mut self,
+        session: &[u8; 10],
+        from_idx: usize,
+        upto_evt: usize,
+        budget: usize,
+    ) -> usize {
         let frames = self.frames.as_mut_ptr();
         let mut idx = from_idx;
+        let end = (from_idx + budget).min(self.patch_evts.len());
         // SAFETY: same per-offset contract as patch_sessions; the walk is
         // bounded by the patch list's own length.
         unsafe {
-            while idx < self.patch_evts.len() {
+            while idx < end {
                 let (evt, off) = self.patch_evts[idx];
                 if evt as usize >= upto_evt {
                     break;

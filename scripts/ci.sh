@@ -127,14 +127,16 @@ grep -q "FBENCH stage=P" /tmp/fbench.txt
 grep -q "FBENCH stage=F" /tmp/fbench.txt
 grep -q "FBENCH done" /tmp/fbench.txt
 
-echo "=== 11e. R9: Prepatch Default + Unarmed Negative Control ==="
-# R9c: the event-indexed prepatch is DEFAULT ON (evidence ledger in
-# pipeline.rs). This step is now the NEGATIVE CONTROL — the synchronous
-# bake path (HFT_PREPATCH=0) must stay bit-exact too, and its verdict
-# lines are asserted exactly like the default arm's.
-HFT_PREPATCH=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_unarmed.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_unarmed.txt
-grep -q "allocs=0" /tmp/bench_unarmed.txt
+echo "=== 11e. R9: Armed Prepatch Soak (evidence step) ==="
+# R9d: the prepatch is DEFAULT OFF — the first Intel draw refuted the
+# default-on flip (the aliasing-halved synchronous bake beats spreading
+# RFOs onto the RX render path; see pipeline.rs R9d note). The armed
+# soak keeps running on every push: bit-exactness under arm stays
+# proven, and a future runner class with real RX idle time may flip
+# the verdict. The default (unarmed) arm is 11b above.
+HFT_PREPATCH=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_prepatch.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_prepatch.txt
+grep -q "allocs=0" /tmp/bench_prepatch.txt
 
 echo "=== 11f. R9: Third-Worker Placement Sweep (RX-hyperthread scavenging) ==="
 # The 3-worker shape (third lane on the RX's hyperthread) was only ever
@@ -146,6 +148,22 @@ echo "=== 11f. R9: Third-Worker Placement Sweep (RX-hyperthread scavenging) ==="
 HFT_SUSTAINED_WORKERS=3 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_w3.txt
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_w3.txt
 grep -q "allocs=0" /tmp/bench_w3.txt
+
+echo "=== 11g. R9: Worker eval2 Interleave Sweep (load-MLP experiment) ==="
+# The kbench eval-vs-eval2 parity was measured on PACKED buffers; the
+# post-aliasing real layout is L3-latency bound, where two concurrent
+# span streams double the loads in flight. Diagnostics only.
+HFT_WORKER_EVAL2=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_eval2.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_eval2.txt
+grep -q "allocs=0" /tmp/bench_eval2.txt
+
+echo "=== 11h. R9: Worker Prefetch Shape Sweep (deeper lead) ==="
+# The spray default (2,22,24) was tuned on the shared-core sandbox; the
+# dedicated worker pairs of the real runners may prefer a deeper lead.
+# Diagnostics only.
+HFT_PF_AHEAD=6 HFT_PF_LINES=32 HFT_PF_BURST=32 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_pf.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_pf.txt
+grep -q "allocs=0" /tmp/bench_pf.txt
 
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
