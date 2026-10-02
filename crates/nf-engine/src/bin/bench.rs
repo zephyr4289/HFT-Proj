@@ -474,17 +474,41 @@ fn run_hydra_sustained_5s(
     let mut session_counter = 1000u64;
 
     let initial_sess = *b"HYDRASUST1";
-    // R8: RX-pipelined transport (see the burst arm).
-    let mut transport = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce_cpu(
-        gt, sched, initial_sess, 128, rx_cpu,
-    );
+    // R8 phase-3: RX auto-advance — the session PROGRAM. The harness's
+    // session sequence is deterministic (pass 0/1 = the construction/ref
+    // session; pass k >= 2 carries counter 998 + k), so the RX can bake
+    // the NEXT pass by itself at every EOS, overlapped with the consumer's
+    // tail drain: the per-pass reset handshake (two futex round-trips +
+    // the blob patch, ~86us/pass on the Zen3 runner) leaves the critical
+    // path. reset() still fail-stops on any baked-vs-requested divergence
+    // — the program is a schedule, not a trust substitute.
+    fn sustained_sess(pass: u64) -> [u8; 10] {
+        let mut s = *b"HYDRASUST1";
+        if pass >= 2 {
+            let counter: u64 = 998 + pass; // pass 2 -> 1000, 3 -> 1001, ...
+            s[7..10].copy_from_slice(&counter.to_be_bytes()[5..8]);
+        }
+        s
+    }
+    // R8: RX-pipelined transport (see the burst arm) + auto-advance.
+    let mut transport =
+        nf_transport::pipeline::PipelinedReplayTransport::with_coalesce_cpu_auto(
+            gt,
+            sched,
+            initial_sess,
+            128,
+            rx_cpu,
+            Some(sustained_sess),
+        );
     let mut seq = Sequencer::new();
     let mut sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
 
     // Untimed reference pass pins the per-pass tuple (identical bytes every
     // pass; only the session id changes, which cannot affect the tuple).
+    // Auto-advance pass accounting: construction = 0, this ref pass = 1,
+    // the measured loop starts at pass 2 (counter 1000).
     let ref_tuple = {
-        transport.reset(initial_sess);
+        transport.reset_pass(1, initial_sess);
         *seq = Sequencer::new_unboxed();
         let mut ref_sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
         while transport.next_batch() {
@@ -507,6 +531,9 @@ fn run_hydra_sustained_5s(
 
     let mut sess = *b"HYDRASUST1";
     let mut harvested = [(0u64, 0u64, 0u64); 8];
+    // Auto-advance pass cursor: the ref pass was 1; each loop pass targets
+    // pass+1 with counter 998 + pass (f: pass 2 -> 1000).
+    let mut pass: u64 = 1;
     let mut diag = true; // one summary line per 5s run — the phase split is first-class R8 telemetry
     let mut d_reset_ns: u64 = 0;
     let mut d_scan_ns: u64 = 0;
@@ -537,9 +564,10 @@ fn run_hydra_sustained_5s(
     while start.elapsed().as_secs_f64() < 5.0 {
         sess[7..10].copy_from_slice(&session_counter.to_be_bytes()[5..8]);
         session_counter += 1;
+        pass += 1;
 
         let t_r = std::time::Instant::now();
-        transport.reset(sess);
+        transport.reset_pass(pass, sess);
         *seq = Sequencer::new_unboxed();
         sink.begin_pass();
         let t_r2 = std::time::Instant::now();

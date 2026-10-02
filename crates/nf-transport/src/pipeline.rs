@@ -246,6 +246,24 @@ struct Mailbox {
     reset_cnt: AtomicU64,
     reset_ack_turn: AtomicU64,
     reset_ack_cnt: AtomicU64,
+    /// R8 phase-3 (auto-advance): session program — `Some(f)` arms the RX
+    /// to re-bake and re-render the next pass by itself at every EOS
+    /// (pass `k`'s session is `f(k)`; the construction session is pass 0).
+    /// Set once at construction, read-only afterwards.
+    auto_fn: Option<fn(u64) -> [u8; 10]>,
+    /// The pass the RX has baked (advanced to). Written by the RX (Release)
+    /// after `auto_session`; read by the consumer's reset() (Acquire).
+    auto_pass: AtomicU64,
+    /// The session the RX baked for `auto_pass` (ordering: see auto_pass).
+    auto_session: UnsafeCell<[u8; 10]>,
+    /// Turn of the most recent EOS marker publication (Release after the
+    /// marker's filled store; the consumer's reset() uses it to free an
+    /// abandoned stream's publications).
+    auto_eos_turn: AtomicU64,
+    /// The RX's live publication cursor (turns published so far; one
+    /// Release store per publication). The consumer's auto-reset uses it
+    /// to free publications it will never consume.
+    rx_turn: AtomicU64,
     /// R8 phase-2: telemetry (see RxStats/ConsStats).
     rx_stats: RxStats,
     cons_stats: ConsStats,
@@ -347,6 +365,9 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
     let mut scratch = FrameBatch::new();
     let mut turn: u64 = 0;
     let mut served_resets: u64 = 0;
+    // R8 phase-3 (auto-advance): the pass currently baked into the blob —
+    // construction = pass 0 with the construction session.
+    let mut pass: u64 = 0;
     loop {
         match mb.cmd.load(Ordering::Acquire) {
             CMD_SHUTDOWN => return,
@@ -494,6 +515,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
             .fetch_add(t_prod.elapsed().as_nanos() as u64, Ordering::Relaxed);
         mb.rx_stats.publications.fetch_add(1, Ordering::Relaxed);
         mb.filled[i].store(turn, Ordering::Release);
+        mb.rx_turn.store(turn + 1, Ordering::Release);
         // Polite wake: the consumer may be futex-parked on pub_wake (it
         // parks after a bounded spin to keep this SMT sibling fed).
         mb.pub_wake.fetch_add(1, Ordering::Release);
@@ -529,12 +551,59 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                 (*mb.bufs[j].get()).len = 0;
             }
             mb.filled[j].store(turn, Ordering::Release);
+            mb.auto_eos_turn.store(turn, Ordering::Release);
+            mb.rx_turn.store(turn + 1, Ordering::Release);
             mb.pub_wake.fetch_add(1, Ordering::Release);
             futex_wake(&mb.pub_wake);
             turn += 1;
         }
         let n = if eos { 0 } else { acc };
         if n == 0 {
+            if let Some(sess_fn) = mb.auto_fn {
+                // R8 phase-3 — AUTO-ADVANCE. The consumer has (or will, via
+                // reset()'s unstick loop) free the EOS marker's buffer;
+                // every publication of this pass is consumed-safe. As soon
+                // as that free lands, re-bake the blob for pass+1 and keep
+                // rendering — the per-pass reset handshake (two futex
+                // round-trips + a blob patch on the critical path, ~86us
+                // per pass on the Zen3 runner) collapses into overlap.
+                let j = ((turn - 1) & NBUF_MASK) as usize;
+                let need = (turn - 1) / NBUF + 1;
+                let mut backoff = 0u32;
+                loop {
+                    if mb.shutdown.load(Ordering::Acquire) {
+                        return;
+                    }
+                    if mb.freed[j].load(Ordering::Acquire) >= need {
+                        break;
+                    }
+                    mb.rx_stats.bufwait_laps.fetch_add(1, Ordering::Relaxed);
+                    if backoff < 6 {
+                        spin(&mut backoff);
+                    } else {
+                        let observed = mb.wake.load(Ordering::Acquire);
+                        if mb.freed[j].load(Ordering::Acquire) < need
+                            && !mb.shutdown.load(Ordering::Acquire)
+                        {
+                            futex_wait_timeout(&mb.wake, observed, BUF_PARK_NS);
+                        }
+                    }
+                }
+                let next_pass = pass + 1;
+                let sess = sess_fn(next_pass);
+                inner.reset(sess); // patch + cursor reset, off the critical path
+                pass = next_pass;
+                mb.rx_stats.resets.fetch_add(1, Ordering::Relaxed);
+                // SAFETY: RX-exclusive until the Release store of auto_pass.
+                unsafe {
+                    *mb.auto_session.get() = sess;
+                }
+                mb.auto_pass.store(pass, Ordering::Release);
+                // Release a consumer parked in reset()'s advance wait.
+                mb.wake.fetch_add(1, Ordering::Release);
+                futex_wake(&mb.wake);
+                continue; // render pass k+1 into the free buffers
+            }
             if diag {
                 eprintln!(
                     "DIAG rx-eos: polls={} total_ms={:.1} max_poll_us={:.1} turn={}",
@@ -628,6 +697,36 @@ impl PipelinedReplayTransport {
         coalesce: usize,
         rx_cpu: Option<usize>,
     ) -> Self {
+        Self::with_coalesce_cpu_auto(gt, schedule, session, coalesce, rx_cpu, None)
+    }
+
+    /// R8 phase-3: `with_coalesce_cpu` + the AUTO-ADVANCE session program.
+    /// `sess_fn(k)` is the session the RX bakes for pass `k` (pass 0 = the
+    /// construction `session`; the first `reset()` corresponds to pass 1).
+    /// At every end-of-stream the RX waits for the consumer to free the
+    /// pass's EOS marker, re-bakes the blob for pass k+1 BY ITSELF, and
+    /// keeps rendering — the per-pass reset handshake (two futex
+    /// round-trips + the ~60-80us blob patch on the critical path)
+    /// collapses into overlap. The consumer's `reset(expected)` then only
+    /// WAITS for the bake (already in flight) and FAIL-STOPS unless the
+    /// baked session equals the requested one — the session contract is
+    /// load-bearing (the sequencer's session dispatch), so a divergence
+    /// must never pass silently.
+    ///
+    /// CONTRACT (armed mode): the consumer drains each pass to EOS before
+    /// resetting (the sustained loop's shape). A mid-pass abandon also
+    /// works — reset()'s unstick loop frees the RX's unconsumed
+    /// publications — but a blocking `reset()` never needs the CMD_RESET
+    /// command path, and nothing else may issue one while the RX is in an
+    /// advance wait.
+    pub fn with_coalesce_cpu_auto(
+        gt: &[u8],
+        schedule: ReplaySchedule,
+        session: [u8; 10],
+        coalesce: usize,
+        rx_cpu: Option<usize>,
+        sess_fn: Option<fn(u64) -> [u8; 10]>,
+    ) -> Self {
         let mut inner = ReplayTransport::new(gt, schedule, session);
         inner.set_poll_coalesce(coalesce);
         let triples = inner.shared_triples();
@@ -645,6 +744,11 @@ impl PipelinedReplayTransport {
             reset_cnt: AtomicU64::new(0),
             reset_ack_turn: AtomicU64::new(0),
             reset_ack_cnt: AtomicU64::new(0),
+            auto_fn: sess_fn,
+            auto_pass: AtomicU64::new(0),
+            auto_session: UnsafeCell::new(session),
+            auto_eos_turn: AtomicU64::new(0),
+            rx_turn: AtomicU64::new(0),
             rx_stats: RxStats::zeroed(),
             cons_stats: ConsStats::zeroed(),
         });
@@ -677,7 +781,17 @@ impl PipelinedReplayTransport {
     /// Reset for a fresh pass (handshake in the module doc). Blocks until
     /// the RX thread has baked the new session; then aligns the turn
     /// counters and frees any pre-reset buffers the consumer skipped.
+    ///
+    /// ARMED (auto-advance) transports must use [`Self::reset_pass`] — the
+    /// plain session-only reset cannot express which program pass the
+    /// caller means (a mid-pass abandon skips a pass number), so it
+    /// fail-stops instead of guessing.
     pub fn reset(&mut self, session: [u8; 10]) {
+        assert!(
+            self.mb.auto_fn.is_none(),
+            "armed (auto-advance) transport: use reset_pass(pass, session) — \
+             the session alone cannot identify the program pass"
+        );
         if let Some(t) = self.cur.take() {
             self.mb.freed[(t & NBUF_MASK) as usize].fetch_add(1, Ordering::Release);
         }
@@ -729,6 +843,76 @@ impl PipelinedReplayTransport {
             self.mb.freed[(_t & NBUF_MASK) as usize].fetch_add(1, Ordering::Release);
         }
         self.turn = ack_turn;
+    }
+
+    /// R8 phase-3: the AUTO-ADVANCE reset. `pass` is the program pass the
+    /// caller is about to consume (pass 0 = construction; the first
+    /// `reset_pass` targets pass 1). The RX has already baked — or is
+    /// mid-bake of — that pass at the previous EOS, so this NEVER issues a
+    /// command or waits a handshake: it (a) frees any publications the
+    /// consumer will never consume (empty in the drained-to-EOS shape;
+    /// covers the never-consumed construction pass and mid-pass abandons,
+    /// both of which also release the RX's advance wait), and (b)
+    /// FAIL-STOPS unless the RX's baked pass and session are exactly the
+    /// requested ones — the session contract is load-bearing (the
+    /// sequencer's session dispatch), so a divergence must never pass
+    /// silently.
+    ///
+    /// CONTRACT: pass numbers advance by exactly one per call (an abandon
+    /// consumes its pass number); the publications returned afterwards
+    /// belong to `pass`.
+    pub fn reset_pass(&mut self, pass: u64, session: [u8; 10]) {
+        assert!(
+            self.mb.auto_fn.is_some(),
+            "reset_pass on an unarmed transport: use reset(session)"
+        );
+        if let Some(t) = self.cur.take() {
+            self.mb.freed[(t & NBUF_MASK) as usize].fetch_add(1, Ordering::Release);
+        }
+        self.resets += 1;
+        let mut backoff = 0u32;
+        loop {
+            let ap = self.mb.auto_pass.load(Ordering::Acquire);
+            if ap >= pass {
+                // SAFETY: ordered by the auto_pass Acquire above — the RX
+                // wrote the session BEFORE its Release store of auto_pass.
+                let baked = unsafe { *self.mb.auto_session.get() };
+                assert_eq!(
+                    ap, pass,
+                    "auto-advance overshoot: RX at pass {ap}, reset targets {pass} \
+                     (a pass number was skipped or consumed twice)"
+                );
+                assert_eq!(
+                    baked, session,
+                    "auto-advance session divergence: RX baked {baked:?}, reset \
+                     requested {session:?} — the session contract is load-bearing"
+                );
+                break;
+            }
+            // Unstick: free every published-but-unconsumed turn. In the
+            // steady shape this range is empty — the consumer's turn
+            // already sits past the EOS marker. In a mid-pass abandon it
+            // grows as the RX publishes the rest of the abandoned pass,
+            // releasing the RX's advance wait the moment its EOS marker
+            // lands. The park below is TIMED: the RX's in-flight
+            // publications bump `pub_wake`, not `wake`, so a plain park
+            // here could sleep through the frees the RX is waiting for
+            // (lost-wakeup deadlock — the multi-pass test caught it).
+            let rt = self.mb.rx_turn.load(Ordering::Acquire);
+            while self.turn < rt {
+                self.mb.freed[(self.turn & NBUF_MASK) as usize]
+                    .fetch_add(1, Ordering::Release);
+                self.turn += 1;
+            }
+            if backoff > 4 {
+                let observed = self.mb.wake.load(Ordering::Acquire);
+                if self.mb.auto_pass.load(Ordering::Acquire) < pass {
+                    futex_wait_timeout(&self.mb.wake, observed, BUF_PARK_NS);
+                }
+                continue;
+            }
+            spin(&mut backoff);
+        }
     }
 
     /// Advance to the next batch. Returns false at end of stream (the
@@ -954,5 +1138,94 @@ mod tests {
             t.reset(sess);
             assert_eq!(run_pass(&mut t), 60, "pass {p}");
         }
+    }
+
+    /// R8 phase-3: the auto-advance session program. The RX bakes pass k's
+    /// session by itself at every EOS; reset() must (a) never need the
+    /// command handshake, (b) fail-stop on a baked-vs-requested divergence,
+    /// and (c) produce the same per-pass frame streams as the blocking
+    /// path. Includes the never-consumed construction pass (reset before
+    /// ANY consumption) and a mid-pass abandon (reset without draining).
+    fn sess_program(pass: u64) -> [u8; 10] {
+        let mut s = *b"PIPETEST01";
+        if pass >= 1 {
+            s[7..10].copy_from_slice(&pass.to_be_bytes()[5..8]);
+        }
+        s
+    }
+
+    #[test]
+    fn t_pipeline_auto_advance_multi_pass() {
+        let gt = mini_gt(300);
+        let sched = mini_sched(300);
+        let mut t = PipelinedReplayTransport::with_coalesce_cpu_auto(
+            &gt,
+            sched,
+            *b"PIPETEST01",
+            8,
+            None,
+            Some(sess_program),
+        );
+        // Pass 1..=3: drain-to-EOS resets (the sustained shape). Pass 0
+        // (construction) is never consumed — the first reset's unstick
+        // loop frees it and the RX advances to pass 1.
+        for p in 1..=3u64 {
+            t.reset_pass(p, sess_program(p));
+            assert_eq!(run_pass(&mut t), 60, "drained pass {p}");
+        }
+        // Mid-pass abandon: consume one batch, then reset. The auto
+        // program advances one pass per reset — abandoning pass 4 however
+        // much of it was consumed means targeting pass 5; the unstick loop
+        // frees pass 4's unconsumed publications and the RX advances past
+        // pass 4's EOS marker to bake pass 5.
+        assert!(t.next_batch());
+        t.reset_pass(5, sess_program(5));
+        assert_eq!(run_pass(&mut t), 60, "abandoned-into pass 5");
+        // And a clean drained pass after the abandon.
+        t.reset_pass(6, sess_program(6));
+        assert_eq!(run_pass(&mut t), 60, "drained pass 6");
+    }
+
+    #[test]
+    fn t_pipeline_auto_advance_session_divergence_failstops() {
+        let gt = mini_gt(120);
+        let sched = mini_sched(120);
+        let mut t = PipelinedReplayTransport::with_coalesce_cpu_auto(
+            &gt,
+            sched,
+            *b"PIPETEST01",
+            8,
+            None,
+            Some(sess_program),
+        );
+        // Request a session the program will NOT bake for pass 1 — the
+        // transport must fail-stop rather than silently replaying the
+        // wrong session bytes.
+        let wrong = *b"PIPEDIVER1";
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            t.reset_pass(1, wrong);
+        }));
+        assert!(
+            r.is_err(),
+            "auto-advance must fail-stop on session divergence"
+        );
+    }
+
+    #[test]
+    fn t_pipeline_armed_rejects_plain_reset() {
+        let gt = mini_gt(60);
+        let sched = mini_sched(60);
+        let mut t = PipelinedReplayTransport::with_coalesce_cpu_auto(
+            &gt,
+            sched,
+            *b"PIPETEST01",
+            8,
+            None,
+            Some(sess_program),
+        );
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            t.reset(*b"PIPETEST01");
+        }));
+        assert!(r.is_err(), "armed transport must reject plain reset");
     }
 }
