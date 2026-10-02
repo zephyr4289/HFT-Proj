@@ -360,6 +360,15 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
     let mut diag_max_ns: u64 = 0;
     let mut diag_total_ns: u64 = 0;
     let triples = inner.shared_triples();
+    // R8 phase-3b: PREPATCH state — per-turn blob end-offsets (the consumed
+    // frontier maps to a patch-list position through them) and the patch
+    // cursor itself. The prepatch bakes the NEXT pass's session bytes into
+    // frames whose publication the consumer has already freed (see
+    // ReplayTransport::patch_range's safety contract); the synchronous
+    // patch at the advance point shrinks to the unconsumed tail.
+    let blob_base = inner.blob_base();
+    let mut turn_end_off: [usize; NBUF as usize] = [0; NBUF as usize];
+    let mut pp_idx: usize = 0;
     // RX-local scratch batch (poll writes slots here; the transform below
     // re-reads them from this core's L1).
     let mut scratch = FrameBatch::new();
@@ -368,6 +377,45 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
     // R8 phase-3 (auto-advance): the pass currently baked into the blob —
     // construction = pass 0 with the construction session.
     let mut pass: u64 = 0;
+    // R8 phase-3b: the consumed-frontier → patch-range advance. `freed`
+    // counts are monotone and frees happen in turn order (SPSC), so the
+    // max over the per-buffer last-freed turns IS the global frontier.
+    // Only called when armed — unarmed transports keep the blocking
+    // reset's full synchronous patch.
+    let prepatch_step = |inner: &mut ReplayTransport,
+                          next_sess: &[u8; 10],
+                          pp_idx: &mut usize,
+                          cur_turn: u64,
+                          turn_end_off: &[usize; NBUF as usize]| {
+        let mut frontier: Option<u64> = None;
+        for i in 0..NBUF as usize {
+            let c = mb.freed[i].load(Ordering::Acquire);
+            if c > 0 {
+                let t = NBUF * (c - 1) + i as u64;
+                if frontier.is_none_or(|f| t > f) {
+                    frontier = Some(t);
+                }
+            }
+        }
+        if let Some(t) = frontier {
+            // OVERWRITE GUARD: the end-offset ring holds only the last NBUF
+            // turns. If the frontier is so old that its slot may already
+            // hold a NEWER turn's offset (which could be LARGER — an
+            // over-patch would re-bake frames the consumer has not freed),
+            // skip the incremental step entirely; the synchronous tail at
+            // the advance point stays correct.
+            if cur_turn - t > NBUF {
+                return;
+            }
+            let upto = turn_end_off[(t & NBUF_MASK) as usize];
+            if upto == usize::MAX {
+                // The frontier is an EOS marker: the whole pass is consumed.
+                *pp_idx = inner.patch_range(next_sess, *pp_idx, usize::MAX - 10);
+            } else if upto > 10 {
+                *pp_idx = inner.patch_range(next_sess, *pp_idx, upto);
+            }
+        }
+    };
     loop {
         match mb.cmd.load(Ordering::Acquire) {
             CMD_SHUTDOWN => return,
@@ -379,6 +427,9 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                 // entries; the RX thread owns the transport and blob.
                 let sess = unsafe { *mb.reset_session.get() };
                 inner.reset(sess);
+                // R8 phase-3b: a full synchronous re-bake invalidates the
+                // prepatch cursor — restart it for the fresh pass.
+                pp_idx = 0;
                 served_resets += 1;
                 mb.rx_stats.resets.fetch_add(1, Ordering::Relaxed);
                 mb.reset_ack_turn.store(turn, Ordering::Release);
@@ -438,6 +489,10 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
         const ENTRY_CAP: usize = 1024;
         let mut acc = 0usize;
         let mut eos = false;
+        // R8 phase-3b: the publication's last-frame blob end offset (the
+        // prepatch frontier mapping). usize::MAX for empty publications
+        // (EOS markers — the whole pass is consumed when they free).
+        let mut end_off: usize = usize::MAX;
         let t_prod = std::time::Instant::now();
         while acc + 256 <= ENTRY_CAP {
             let tp0 = if diag {
@@ -499,6 +554,9 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                         sess_lo: f.sess_lo,
                         sess_hi: f.sess_hi,
                     };
+                    // R8 phase-3b: track the last frame's blob end for the
+                    // prepatch frontier mapping.
+                    end_off = (b.as_ptr() as usize) + b.len() - blob_base;
                 }
                 buf.clock = inner.now_ns();
                 acc += n;
@@ -510,12 +568,22 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
             let buf = unsafe { &mut *mb.bufs[i].get() };
             buf.len = acc as u32;
         }
+        turn_end_off[i] = end_off;
         mb.rx_stats
             .prod_ns
             .fetch_add(t_prod.elapsed().as_nanos() as u64, Ordering::Relaxed);
         mb.rx_stats.publications.fetch_add(1, Ordering::Relaxed);
         mb.filled[i].store(turn, Ordering::Release);
         mb.rx_turn.store(turn + 1, Ordering::Release);
+        // R8 phase-3b: bake the next pass's session bytes into everything
+        // the consumer already freed while we were rendering (cheap
+        // incremental work — the RX is runahead-deep, never latency-bound
+        // here; unarmed transports skip it and keep the full synchronous
+        // patch in their reset serve).
+        if let Some(sess_fn) = mb.auto_fn {
+            let next_sess = sess_fn(pass + 1);
+            prepatch_step(&mut inner, &next_sess, &mut pp_idx, turn, &turn_end_off);
+        }
         // Polite wake: the consumer may be futex-parked on pub_wake (it
         // parks after a bounded spin to keep this SMT sibling fed).
         mb.pub_wake.fetch_add(1, Ordering::Release);
@@ -553,6 +621,9 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
             mb.filled[j].store(turn, Ordering::Release);
             mb.auto_eos_turn.store(turn, Ordering::Release);
             mb.rx_turn.store(turn + 1, Ordering::Release);
+            // R8 phase-3b: the marker's frontier mapping — the whole pass
+            // is consumed once the marker frees.
+            turn_end_off[j] = usize::MAX;
             mb.pub_wake.fetch_add(1, Ordering::Release);
             futex_wake(&mb.pub_wake);
             turn += 1;
@@ -577,6 +648,12 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                     if mb.freed[j].load(Ordering::Acquire) >= need {
                         break;
                     }
+                    // R8 phase-3b: while waiting for the consumer to finish
+                    // the pass's tail, keep baking what it HAS freed — the
+                    // tail left for the synchronous advance shrinks as the
+                    // consumer drains.
+                    let next_sess = sess_fn(pass + 1);
+                    prepatch_step(&mut inner, &next_sess, &mut pp_idx, turn, &turn_end_off);
                     mb.rx_stats.bufwait_laps.fetch_add(1, Ordering::Relaxed);
                     if backoff < 6 {
                         spin(&mut backoff);
@@ -591,7 +668,12 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                 }
                 let next_pass = pass + 1;
                 let sess = sess_fn(next_pass);
-                inner.reset(sess); // patch + cursor reset, off the critical path
+                // R8 phase-3b: only the UNPREPATCHED tail bakes synchronously
+                // (during the pass the RX already re-baked every frame whose
+                // publication the consumer freed); then the cursor restarts
+                // for the new pass's consumption.
+                inner.reset_prepatched(sess, pp_idx);
+                pp_idx = 0;
                 pass = next_pass;
                 mb.rx_stats.resets.fetch_add(1, Ordering::Relaxed);
                 // SAFETY: RX-exclusive until the Release store of auto_pass.
@@ -629,6 +711,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                     CMD_RESET => {
                         let sess = unsafe { *mb.reset_session.get() };
                         inner.reset(sess);
+                        pp_idx = 0;
                         served_resets += 1;
                         mb.rx_stats.resets.fetch_add(1, Ordering::Relaxed);
                         mb.reset_ack_turn.store(turn, Ordering::Release);

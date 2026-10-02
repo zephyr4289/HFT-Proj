@@ -382,6 +382,71 @@ impl ReplayTransport {
         }
     }
 
+    /// R8 phase-3b: the blob's base address (the prepatch bookkeeping in
+    /// the RX thread computes publication end-offsets relative to it).
+    pub(crate) fn blob_base(&self) -> usize {
+        self.frames.as_ptr() as usize
+    }
+
+    /// R8 phase-3b: patch patchable frames whose blob offset is below
+    /// `upto_off`, starting the walk at patch-list index `from_idx`, with
+    /// an explicit `session` (the NEXT pass's — the transport's own
+    /// `session` field still holds the current pass's until the advance).
+    /// Returns the new patch-list index (the prepatch cursor). Offsets are
+    /// in construction order = schedule order, so a monotone consumption
+    /// frontier walks the list once, linearly.
+    ///
+    /// SAFETY CONTRACT: only frames whose ENTIRE publication has been
+    /// consumed (buffer freed) may be prepatched — the consumer never
+    /// re-reads a freed publication, span bodies live at frame[22..] and
+    /// the patch writes frame[0..10], and the next pass's entry session
+    /// words are computed at render time (after the advance), so the
+    /// prepatch can never be observed mid-flight.
+    pub(crate) fn patch_range(&mut self, session: &[u8; 10], from_idx: usize, upto_off: usize) -> usize {
+        let frames = self.frames.as_mut_ptr();
+        let mut idx = from_idx;
+        // SAFETY: same per-offset contract as patch_sessions; the walk is
+        // bounded by the patch list's own length.
+        unsafe {
+            while idx < self.patch_offsets.len() {
+                let off = self.patch_offsets[idx] as usize;
+                if off + 10 > upto_off {
+                    break;
+                }
+                let p = frames.add(off);
+                std::ptr::copy_nonoverlapping(session.as_ptr(), p, 10);
+                idx += 1;
+            }
+        }
+        idx
+    }
+
+    /// R8 phase-3b: `reset` without re-patching the already-prepatched
+    /// prefix — the RX's prepatch cursor advanced through the consumed
+    /// region during the pass, so only the tail ([from_idx..]) needs the
+    /// synchronous bake at the advance point.
+    pub fn reset_prepatched(&mut self, session: [u8; 10], from_idx: usize) {
+        let first_vt = self
+            .schedule
+            .events
+            .first()
+            .map(|e| e.release_vt)
+            .unwrap_or(0);
+        self.event_idx = 0;
+        self.virtual_clock = first_vt;
+        self.session = session;
+        self.clock_clamp = None;
+        let session = self.session;
+        let frames = self.frames.as_mut_ptr();
+        // SAFETY: same per-offset contract as patch_sessions.
+        unsafe {
+            for &off in self.patch_offsets.iter().skip(from_idx) {
+                let p = frames.add(off as usize);
+                std::ptr::copy_nonoverlapping(session.as_ptr(), p, 10);
+            }
+        }
+    }
+
     #[inline]
     pub fn set_clock_clamp(&mut self, clamp: Option<u64>) {
         self.clock_clamp = clamp;
