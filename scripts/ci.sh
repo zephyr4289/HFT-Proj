@@ -96,7 +96,7 @@ echo "=== 11b. R6: PR-1 HYDRA Bit-Exact Multi-Core Span Conformance (UNPINNED) =
 # is the single threshold source — see docs/20-hydra.md for the topology
 # guidance (4-vCPU runner; adjust the constant if the pool's silicon differs).
 cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --hydra-only --runs 1 > /dev/null 2>&1 || true
-cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --hydra-only --runs 7 | tee /tmp/bench_hydra.txt
+cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --hydra-only --runs 7 2>&1 | tee /tmp/bench_hydra.txt
 grep -q "HYDRA_BITPARITY.*-> BIT-EXACT" /tmp/bench_hydra.txt
 grep -q "allocs=0" /tmp/bench_hydra.txt
 grep -q "PR1_HYDRA_VERDICT" /tmp/bench_hydra.txt
