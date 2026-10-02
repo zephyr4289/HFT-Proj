@@ -361,7 +361,17 @@ struct PfCfg {
 }
 
 impl PfCfg {
-    fn detect() -> Self {
+    /// Kernel-aware defaults: the scalar kernel's 8B crc32 chains leave the
+    /// L3 latency exposed (the full-span spray recovered Zen3 from 35% to
+    /// 74% of its measured ceiling), but the fold512 kernel issues its own
+    /// dense 64B sequential loads — a software spray on top of them floods
+    /// the L2 request path and the kernel's DEMAND loads stall behind the
+    /// prefetch traffic (the Intel 8573C run: 34.22 GB/s measured kernel
+    /// ceiling, 9 GB/s delivered by the fabric's SMT pair). Fold512
+    /// therefore defaults to NO software spray — the hardware streamer
+    /// tracks its sequential access pattern perfectly (kbench proves the
+    /// ceiling is reachable with it). Env overrides win for CI sweeps.
+    fn detect(kernel: CrcKernel) -> Self {
         let parse = |k: &str, d: u64| -> u64 {
             std::env::var(k)
                 .ok()
@@ -369,10 +379,14 @@ impl PfCfg {
                 .unwrap_or(d)
                 .clamp(0, 64)
         };
+        let (d_ahead, d_lines, d_burst) = match kernel {
+            CrcKernel::Scalar => (3, 22, 24),
+            CrcKernel::Fold512 => (3, 0, 24),
+        };
         Self {
-            ahead: parse("HFT_PF_AHEAD", 3),
-            lines: parse("HFT_PF_LINES", 22) as usize,
-            burst: parse("HFT_PF_BURST", 24) as usize,
+            ahead: parse("HFT_PF_AHEAD", d_ahead),
+            lines: parse("HFT_PF_LINES", d_lines) as usize,
+            burst: parse("HFT_PF_BURST", d_burst) as usize,
         }
     }
 }
@@ -434,7 +448,7 @@ fn lane_worker(
         .cpu
         .store(crate::affinity::current_cpu() as u64, Ordering::Relaxed);
     let null = null_mode();
-    let pf = PfCfg::detect();
+    let pf = PfCfg::detect(kernel);
     let mut tail: u64 = 0; // desc cursor (worker-owned)
     let mut rhead: u64 = 0; // result cursor (worker-owned)
     // Prefetch cursor (GLOBAL desc positions; masked on access). Sprays
