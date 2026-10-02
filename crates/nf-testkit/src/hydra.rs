@@ -370,7 +370,7 @@ impl PfCfg {
                 .clamp(0, 64)
         };
         Self {
-            ahead: parse("HFT_PF_AHEAD", 2),
+            ahead: parse("HFT_PF_AHEAD", 3),
             lines: parse("HFT_PF_LINES", 22) as usize,
             burst: parse("HFT_PF_BURST", 24) as usize,
         }
@@ -509,7 +509,7 @@ fn lane_worker(
                 let mut issued = 0usize;
                 while pf_span < target && pf_span < head && issued < pf.burst {
                     let d = slots[(pf_span & DESC_MASK) as usize];
-                    let span_lines = (((d.len as usize) + 63) / 64).min(pf.lines);
+                    let span_lines = (((d.len as usize) + 63) >> 6).min(pf.lines);
                     let end = span_lines.min(pf_line + (pf.burst - issued));
                     // SAFETY: prefetch never faults and never dereferences;
                     // the slot is published (below head, above tail).

@@ -1054,8 +1054,13 @@ impl PipelinedReplayTransport {
         let len = unsafe { (*self.mb.bufs[i].get()).len };
         if len == 0 {
             // EOS: the empty publication occupies a turn — free it to keep
-            // the use counts symmetric for the next pass.
+            // the use counts symmetric for the next pass. The free is also
+            // the AUTO-ADVANCE trigger: the RX is (at most) a timed-park
+            // quantum away from noticing it — bump the wake word so the
+            // next pass's bake starts NOW (one syscall per pass).
             self.mb.freed[i].fetch_add(1, Ordering::Release);
+            self.mb.wake.fetch_add(1, Ordering::Release);
+            futex_wake(&self.mb.wake);
             return false;
         }
         self.cur = Some(t);
