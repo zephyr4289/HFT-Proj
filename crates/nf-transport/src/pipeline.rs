@@ -155,8 +155,14 @@ struct Mailbox {
     /// thread's spin-loop to notice the command (measured: 15-30ms per
     /// reset, 140 resets per sustained run). The RX's EOS-park futex-waits
     /// on this word; the consumer futex-wakes it after storing the
-    /// command. The HOT paths (batch publication/freedom) stay pure spins.
+    /// command.
     wake: AtomicU64,
+    /// R8: publication wake word — the consumer's next_batch polite-spins
+    /// then futex-parks; the RX wakes it after each publication. An
+    /// uncapped consumer PAUSE-spin measurably starved the RX on its SMT
+    /// sibling (Zen3's weak PAUSE hint: the 0.3%-busy consumer's spin
+    /// held the RX to ~0.2% of the core — 2.6ms per 6us batch).
+    pub_wake: AtomicU64,
     /// Reset payload + ack channel (count first, then turn — see doc).
     reset_session: UnsafeCell<[u8; 10]>,
     reset_cnt: AtomicU64,
@@ -353,6 +359,10 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
             buf.len = acc as u32;
         }
         mb.filled[i].store(turn, Ordering::Release);
+        // Polite wake: the consumer may be futex-parked on pub_wake (it
+        // parks after a bounded spin to keep this SMT sibling fed).
+        mb.pub_wake.fetch_add(1, Ordering::Release);
+        futex_wake(&mb.pub_wake);
         turn += 1;
         if eos {
             // The end-of-stream marker is its OWN (empty) publication —
@@ -375,6 +385,8 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                 (*mb.bufs[j].get()).len = 0;
             }
             mb.filled[j].store(turn, Ordering::Release);
+            mb.pub_wake.fetch_add(1, Ordering::Release);
+            futex_wake(&mb.pub_wake);
             turn += 1;
         }
         let n = if eos { 0 } else { acc };
@@ -487,6 +499,7 @@ impl PipelinedReplayTransport {
             cmd: AtomicU8::new(CMD_RUN),
             shutdown: AtomicBool::new(false),
             wake: AtomicU64::new(0),
+            pub_wake: AtomicU64::new(0),
             reset_session: UnsafeCell::new([0u8; 10]),
             reset_cnt: AtomicU64::new(0),
             reset_ack_turn: AtomicU64::new(0),
@@ -583,10 +596,25 @@ impl PipelinedReplayTransport {
             self.mb.freed[(t & 3) as usize].fetch_add(1, Ordering::Release);
         }
         let i = (self.turn & 3) as usize;
-        // Tight acquire spin: the consumer is the pipeline's critical
-        // thread — a paused-backoff here measurably lags a fast producer.
-        while self.mb.filled[i].load(Ordering::Acquire) != self.turn {
-            std::hint::spin_loop();
+        // Polite acquire: a bounded spin for the common fast case, then a
+        // futex park. An UNCAPPED spin here starved the RX on the SMT
+        // sibling (Zen3's weak PAUSE hint) — the RX's 6us batch stretched
+        // to 2.6ms and the sustained arm collapsed to 8M msg/s.
+        let mut spins = 0u32;
+        loop {
+            if self.mb.filled[i].load(Ordering::Acquire) == self.turn {
+                break;
+            }
+            spins += 1;
+            if spins > 512 {
+                let observed = self.mb.pub_wake.load(Ordering::Acquire);
+                if self.mb.filled[i].load(Ordering::Acquire) != self.turn {
+                    futex_wait(&self.mb.pub_wake, observed);
+                }
+                spins = 0;
+            } else {
+                std::hint::spin_loop();
+            }
         }
         let t = self.turn;
         self.turn += 1;
