@@ -298,11 +298,19 @@ fn run_hydra_burst(
     // the RX's cpu — the RX is ~15% busy; NEVER main's). On SMT hosts the
     // worker count drops so the thread count fits the hyperthreads.
     let topo: Vec<usize> = topo.to_vec();
-    // R8: 3 workers whenever the host exposes >= 3 vCPUs (the placement
-    // spreads them over the remaining slots; on SMT hosts the workers
-    // share physical cores with main/RX — measured better than starving
-    // the CRC capacity).
-    let workers = if topo.len() >= 3 { 3 } else { topo.len().saturating_sub(1).max(1) };
+    // R8: SMT-aware sizing — the topology log shows the runner pool is
+    // 2-physical-core SMT (4 vCPU). Five threads on four hyperthreads
+    // forces a logical-cpu TIMESLICE between two workers (measured: 97M
+    // msg/s — a 4x collapse). With <= 2 physical cores: 2 workers, so
+    // main + RX + workers exactly fill the hyperthreads (workers SMT-share
+    // physical cores with the control plane — concurrent, not timesliced).
+    // With >= 4 physical cores: 3 workers (the RX shares a worker's cpu).
+    let n_phys = nf_testkit::affinity::physical_core_count();
+    let workers = if n_phys >= 4 {
+        3
+    } else {
+        2.min(topo.len().saturating_sub(1)).max(1)
+    };
     if let Some(c) = topo.first() {
         let _ = nf_testkit::affinity::pin_current_to(*c);
     }
@@ -454,8 +462,13 @@ fn run_hydra_sustained_5s(
     let sched = build_schedule(gt, &cfg);
     // R8: topology-aware sizing + placement (see the burst arm).
     let topo: Vec<usize> = topo.to_vec();
-    // R8: see the burst arm's sizing rationale.
-    let workers = if topo.len() >= 3 { 3 } else { topo.len().saturating_sub(1).max(1) };
+    // R8: SMT-aware sizing (see the burst arm).
+    let n_phys = nf_testkit::affinity::physical_core_count();
+    let workers = if n_phys >= 4 {
+        3
+    } else {
+        2.min(topo.len().saturating_sub(1)).max(1)
+    };
     if let Some(c) = topo.first() {
         let _ = nf_testkit::affinity::pin_current_to(*c);
     }
