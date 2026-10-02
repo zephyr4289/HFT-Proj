@@ -546,24 +546,19 @@ fn lane_worker(
                     value,
                 };
             };
-            if !null && i + 1 < n && kernel == CrcKernel::Fold512 {
-                // SAFETY: published descriptor slots (Acquire above); body
-                // slices per the HydraLane contract — immutable bytes, valid
-                // until the owning pass's finish() drain.
-                let da = slots[((tail + i) & DESC_MASK) as usize];
-                let db = slots[((tail + i + 1) & DESC_MASK) as usize];
-                let ba = unsafe { std::slice::from_raw_parts(da.ptr, da.len as usize) };
-                let bb = unsafe { std::slice::from_raw_parts(db.ptr, db.len as usize) };
-                // SAFETY: feature contract verified at spawn (CrcKernel::detect).
-                let (va, vb) = unsafe { kernel.eval2(ba, bb) };
-                emit(res_slots, i, da.span_id, va);
-                emit(res_slots, i + 1, db.span_id, vb);
-                i += 2;
-            } else {
-                // SAFETY: published descriptor slot (see above).
+            // R8 phase-6: single-span eval for BOTH kernels. The eval2
+            // interleave (two concurrent body streams per worker) was
+            // designed to hide clmul latency on early AVX-512 silicon, but
+            // the measured ceilings (kbench: eval 34.22 vs eval2 33.13 on
+            // the 8573C) show the single-span path at parity or better —
+            // and ONE sequential stream per worker is exactly the access
+            // pattern those ceilings were measured with. Bit-exact by D11
+            // either way.
+            // SAFETY: published descriptor slot (Acquire above); body slice
+            // per the HydraLane contract — immutable bytes, valid until the
+            // owning pass's finish() drain.
+            {
                 let d = slots[((tail + i) & DESC_MASK) as usize];
-                // SAFETY: body slice per the HydraLane contract — immutable
-                // bytes, valid until the owning pass's finish() drain.
                 let value = if null {
                     // Diagnostic: constant work, no body read, wrong value (by
                     // design — see null_mode doc).
