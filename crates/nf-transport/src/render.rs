@@ -103,6 +103,11 @@ pub struct ReplayTransport {
     clock_clamp: Option<u64>,
     batch_event: [u32; 256],
     batch_event_len: usize,
+    /// R9: number of duplicate-feed deliveries aliased onto a primary's
+    /// blob region at construction (0 = no aliasing happened). Exposed so
+    /// the RX thread can refuse the prepatch when blob offsets are no
+    /// longer monotone in event order (see blob_aliasing()).
+    aliased_frames: u32,
 }
 
 impl ReplayTransport {
@@ -127,9 +132,24 @@ impl ReplayTransport {
         // Flat triple store: ~16B per message block, appended per rendered frame.
         #[allow(clippy::disallowed_types)]
         let mut triples: Vec<(u64, u32, u32)> = Vec::new();
+        // R9: aliased-delivery count (defaulted so schedules with no
+        // duplicate deliveries report zero aliasing).
+        let self_aliased_frames: u32;
         {
             let mut cursors = [Cursor::default(), Cursor::default()];
             let mut scratch = [0u8; ARENA_SLOT_SIZE];
+            // R9: blob aliasing map — (first_seq, first_msg, count) →
+            // (blob offset, blk_base, blk_count, valid). A duplicate-feed
+            // delivery of the same message range renders BYTE-IDENTICAL
+            // frame bytes (same session prefix, same seq/count header, same
+            // gt slice), so it can share the primary's blob region. The map
+            // is construction-only (outside every window).
+            type AliasKey = (u64, u64, u16);
+            type AliasVal = (u32, u32, u16, u16);
+            #[allow(clippy::disallowed_types)]
+            let mut alias_map: std::collections::HashMap<AliasKey, AliasVal> =
+                std::collections::HashMap::new();
+            let mut aliased_frames = 0u32;
             for ev in &schedule.events {
                 let feed_idx = (ev.feed as usize) & 1;
                 if let Some(len) = render_event_standalone(
@@ -140,8 +160,6 @@ impl ReplayTransport {
                     &mut scratch,
                     &mut cursors[feed_idx],
                 ) {
-                    let off = blob.len() as u32;
-                    blob.extend_from_slice(&scratch[..len]);
                     // Mirror of render_event_standalone's session rule (source of
                     // truth): patch iff the frame carries the resettable session.
                     let patch = match schedule.session_split {
@@ -151,65 +169,124 @@ impl ReplayTransport {
                         },
                         None => true,
                     };
-                    if patch {
-                        let base = off as usize;
-                        blob[base..base + 10].fill(0);
-                    }
-                    // Q1: index this frame's [len|msg] chain once (startup). The
-                    // frame was just rendered valid, so the walk below only fails
-                    // on internal inconsistency — then tombstone (never emit).
-                    // R2: while walking, memoize the EXACT leading prefix of blocks
-                    // passing ITCH validation — verdict of a pure function over
-                    // these immutable bytes, one-time, outside every window.
-                    let (blk_base, blk_count, valid_prefix) = match ev.kind {
-                        SchedKind::Packet {
-                            first_seq,
-                            count,
-                            ..
-                        } => {
-                            let base = triples.len() as u32;
-                            let mut pos = HEADER_LEN;
-                            let mut seq = first_seq;
-                            let mut n: u16 = 0;
-                            let mut ok = true;
-                            let mut valid: u16 = 0;
-                            for _ in 0..count {
-                                if scratch.len() < pos + 2 {
-                                    ok = false;
-                                    break;
-                                }
-                                let blen =
-                                    u16::from_be_bytes([scratch[pos], scratch[pos + 1]])
-                                        as usize;
-                                let start = pos + 2;
-                                let end = start + blen;
-                                if end > len {
-                                    ok = false;
-                                    break;
-                                }
-                                triples.push((seq, start as u32, end as u32));
-                                if valid == n
-                                    && itch5::validate(&scratch[start..end]).is_ok()
+                    // R9: alias lookup — a Packet whose (first_seq, first_msg,
+                    // count) was rendered before AND whose immutable suffix
+                    // (bytes [10..len], past the session prefix) memcmps equal
+                    // reuses the primary's blob region + triple range. The
+                    // session prefix [0..10] is per-pass state (zeroed here,
+                    // baked per reset) and is intentionally excluded from the
+                    // comparison; the patch flag is a function of first_msg
+                    // (identical by the key), so both deliveries share one
+                    // patch site — the bake cost halves with the blob.
+                    let mut alias: Option<(u32, u32, u16, u16)> = None;
+                    if let SchedKind::Packet {
+                        first_seq,
+                        first_msg,
+                        count,
+                    } = ev.kind
+                    {
+                        if count > 0 {
+                            if let Some(&v) = alias_map.get(&(first_seq, first_msg, count)) {
+                                let a = v.0 as usize;
+                                if a + len <= blob.len()
+                                    && blob[a + HEADER_LEN..a + len] == scratch[HEADER_LEN..len]
                                 {
-                                    valid += 1;
+                                    alias = Some(v);
+                                    aliased_frames += 1;
                                 }
-                                pos = end;
-                                seq = seq.wrapping_add(1);
-                                n += 1;
                             }
-                            if !ok || pos != len {
-                                // Inconsistent with just-rendered bytes: drop the
-                                // partial triples and tombstone the frame.
-                                std::hint::cold_path();
-                                triples.truncate(base as usize);
+                        }
+                    }
+                    let (off, blk_base, blk_count, valid_prefix) = if let Some(
+                        (a_off, a_blk_base, a_blk_count, a_valid),
+                    ) = alias
+                    {
+                        // Aliased: no blob append, no re-zero (the primary's
+                        // region already carries the patch-state prefix), no
+                        // triple re-walk (the frame bytes — and therefore the
+                        // [len|msg] chain and its validation verdicts — are
+                        // identical by the memcmp above).
+                        (a_off, a_blk_base, a_blk_count, a_valid)
+                    } else {
+                        let off = blob.len() as u32;
+                        blob.extend_from_slice(&scratch[..len]);
+                        if patch {
+                            let base = off as usize;
+                            blob[base..base + 10].fill(0);
+                        }
+                        // Q1: index this frame's [len|msg] chain once (startup). The
+                        // frame was just rendered valid, so the walk below only fails
+                        // on internal inconsistency — then tombstone (never emit).
+                        // R2: while walking, memoize the EXACT leading prefix of blocks
+                        // passing ITCH validation — verdict of a pure function over
+                        // these immutable bytes, one-time, outside every window.
+                        let (blk_base, blk_count, valid_prefix) = match ev.kind {
+                            SchedKind::Packet {
+                                first_seq,
+                                count,
+                                ..
+                            } => {
+                                let base = triples.len() as u32;
+                                let mut pos = HEADER_LEN;
+                                let mut seq = first_seq;
+                                let mut n: u16 = 0;
+                                let mut ok = true;
+                                let mut valid: u16 = 0;
+                                for _ in 0..count {
+                                    if scratch.len() < pos + 2 {
+                                        ok = false;
+                                        break;
+                                    }
+                                    let blen =
+                                        u16::from_be_bytes([scratch[pos], scratch[pos + 1]])
+                                            as usize;
+                                    let start = pos + 2;
+                                    let end = start + blen;
+                                    if end > len {
+                                        ok = false;
+                                        break;
+                                    }
+                                    triples.push((seq, start as u32, end as u32));
+                                    if valid == n
+                                        && itch5::validate(&scratch[start..end]).is_ok()
+                                    {
+                                        valid += 1;
+                                    }
+                                    pos = end;
+                                    seq = seq.wrapping_add(1);
+                                    n += 1;
+                                }
+                                if !ok || pos != len {
+                                    // Inconsistent with just-rendered bytes: drop the
+                                    // partial triples and tombstone the frame.
+                                    std::hint::cold_path();
+                                    triples.truncate(base as usize);
+                                    (0, 0, 0)
+                                } else {
+                                    (base, n, valid)
+                                }
+                            }
+                            SchedKind::Heartbeat { .. } | SchedKind::EndOfSession { .. } => {
                                 (0, 0, 0)
-                            } else {
-                                (base, n, valid)
+                            }
+                        };
+                        // Register the primary for future aliases (successful
+                        // non-empty Packets only — tombstoned walks never
+                        // registered, so dups of them render independently).
+                        if let SchedKind::Packet {
+                            first_seq,
+                            first_msg,
+                            count,
+                        } = ev.kind
+                        {
+                            if count > 0 && blk_count == count {
+                                alias_map.insert(
+                                    (first_seq, first_msg, count),
+                                    (off, blk_base, blk_count, valid_prefix),
+                                );
                             }
                         }
-                        SchedKind::Heartbeat { .. } | SchedKind::EndOfSession { .. } => {
-                            (0, 0, 0)
-                        }
+                        (off, blk_base, blk_count, valid_prefix)
                     };
                     // A tombstoned-by-index frame must not be emitted: convert a
                     // (0,0) triple range on a NON-EMPTY Packet into a meta
@@ -268,6 +345,7 @@ impl ReplayTransport {
                     vts.push(ev.release_vt);
                 }
             }
+            self_aliased_frames = aliased_frames;
         }
         // R8: vt-group boundaries (see field doc). Single O(n) sweep: `j`
         // advances monotonically; each event inside a group maps to the
@@ -287,12 +365,19 @@ impl ReplayTransport {
             }
         }
         // R8: derive the patch-offset list from the completed directory.
+        // R9: with blob aliasing multiple metas share one offset — sort +
+        // dedup keeps the list ascending and one-site-per-frame (the bake
+        // cost follows the UNIQUE frame count, and patch_range's
+        // walk-stops-at-first-offset-beyond-the-frontier contract keeps its
+        // sortedness precondition).
         #[allow(clippy::disallowed_types)]
-        let patch_offsets: Vec<u32> = meta
+        let mut patch_offsets: Vec<u32> = meta
             .iter()
             .filter(|m| m.patch)
             .map(|m| m.offset)
             .collect();
+        patch_offsets.sort_unstable();
+        patch_offsets.dedup();
         let mut t = Self {
             schedule,
             event_idx: 0,
@@ -314,6 +399,7 @@ impl ReplayTransport {
             clock_clamp: None,
             body_prefetch: true,
             coalesce: 1,
+            aliased_frames: self_aliased_frames,
         };
         // R8: bake the construction session into the patchable prefixes —
         // the old lazy poll-patching did this on first release; without a
@@ -389,6 +475,20 @@ impl ReplayTransport {
     /// the RX thread computes publication end-offsets relative to it).
     pub(crate) fn blob_base(&self) -> usize {
         self.frames.as_ptr() as usize
+    }
+
+    /// R9: whether construction aliased any duplicate-feed deliveries onto
+    /// a primary's blob region. When true, blob offsets are NOT monotone in
+    /// event order, and the prepatch's turn-end-offset frontier mapping
+    /// (which assumes monotonicity) must not run — the RX thread checks
+    /// this before arming the prepatch.
+    pub fn blob_aliasing(&self) -> bool {
+        self.aliased_frames > 0
+    }
+
+    /// R9 diagnostics: the number of aliased duplicate deliveries.
+    pub fn aliased_frame_count(&self) -> u32 {
+        self.aliased_frames
     }
 
     /// R8 phase-3b: patch patchable frames whose blob offset is below
@@ -915,6 +1015,111 @@ mod tests {
         assert_eq!(t.poll(&mut batch), 1);
         let after = t.batch_memo(0).expect("memo present");
         assert_eq!(before, after);
+    }
+
+    /// R9: blob aliasing — a dual-feed schedule delivering the same message
+    /// range on both feeds renders byte-identical frames, so the duplicate
+    /// delivery must alias onto the primary's blob region (blob shrinks,
+    /// `aliased_frame_count` reports it) while poll() serves byte-identical
+    /// frames for BOTH deliveries, and a reset() re-bakes the one shared
+    /// patch site so both deliveries carry the new session.
+    #[test]
+    fn t_r9_aliasing_dual_feed_identical_bytes_and_smaller_blob() {
+        let gt = gt_with(8);
+        // Feed A delivers msgs 0..4 (seq 1..5); feed B the SAME range.
+        let sched = ReplaySchedule {
+            events: vec![
+                SchedEvent {
+                    release_vt: 0,
+                    feed: 0,
+                    kind: SchedKind::Packet {
+                        first_seq: 1,
+                        first_msg: 0,
+                        count: 4,
+                    },
+                },
+                SchedEvent {
+                    release_vt: 0,
+                    feed: 1,
+                    kind: SchedKind::Packet {
+                        first_seq: 1,
+                        first_msg: 0,
+                        count: 4,
+                    },
+                },
+            ],
+            session_split: None,
+        };
+        let mut t = ReplayTransport::new(&gt, sched, *b"TESTSESS01");
+        assert_eq!(t.aliased_frame_count(), 1, "dup delivery must alias");
+        assert!(t.blob_aliasing());
+        let mut batch = FrameBatch::new();
+        assert_eq!(t.poll(&mut batch), 2);
+        let f0 = batch.frames()[0].bytes().to_vec();
+        let f1 = batch.frames()[1].bytes().to_vec();
+        assert_eq!(f0, f1, "aliased deliveries serve identical bytes");
+        // The blob is a private field; the observable proxy is that the two
+        // FrameViews share a base pointer (same region, no second copy).
+        assert_eq!(
+            batch.frames()[0].bytes().as_ptr(),
+            batch.frames()[1].bytes().as_ptr(),
+            "aliased deliveries share the blob region"
+        );
+        // Both deliveries re-bake with the new session (one shared site).
+        t.reset(*b"OTHERSESS1");
+        let mut batch2 = FrameBatch::new();
+        assert_eq!(t.poll(&mut batch2), 2);
+        assert_eq!(batch2.frames()[0].bytes(), batch2.frames()[1].bytes());
+        assert_eq!(batch2.frames()[0].bytes()[..10], *b"OTHERSESS1");
+        // And the memo/triples of both deliveries remain equal.
+        let b0 = t.batch_blocks(0);
+        let b1 = t.batch_blocks(1);
+        assert_eq!(b0.len(), b1.len());
+        assert_eq!(b0, b1, "aliased deliveries share the triple range");
+    }
+
+    /// R9: aliasing must NOT trigger for deliveries of DIFFERENT message
+    /// ranges (same first_seq, different first_msg) — the bytes differ, so
+    /// both render independently.
+    #[test]
+    fn t_r9_aliasing_not_for_distinct_ranges() {
+        let gt = gt_with(8);
+        let sched = ReplaySchedule {
+            events: vec![
+                SchedEvent {
+                    release_vt: 0,
+                    feed: 0,
+                    kind: SchedKind::Packet {
+                        first_seq: 1,
+                        first_msg: 0,
+                        count: 4,
+                    },
+                },
+                SchedEvent {
+                    release_vt: 0,
+                    feed: 1,
+                    kind: SchedKind::Packet {
+                        first_seq: 5,
+                        first_msg: 4,
+                        count: 4,
+                    },
+                },
+            ],
+            session_split: None,
+        };
+        let mut t = ReplayTransport::new(&gt, sched, *b"TESTSESS01");
+        assert_eq!(
+            t.aliased_frame_count(),
+            0,
+            "distinct message ranges must not alias"
+        );
+        assert!(!t.blob_aliasing());
+        let mut batch = FrameBatch::new();
+        assert_eq!(t.poll(&mut batch), 2);
+        assert_ne!(
+            batch.frames()[0].bytes().as_ptr(),
+            batch.frames()[1].bytes().as_ptr()
+        );
     }
 
     /// R2: HB/EOS carry no memo (None) and no blocks.

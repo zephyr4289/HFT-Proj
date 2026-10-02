@@ -387,6 +387,22 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
     // until the race is root-caused. HFT_PREPATCH=1 re-enables.
     let prepatch_enabled =
         std::env::var("HFT_PREPATCH").as_deref() == Ok("1");
+    // R9: blob aliasing makes blob offsets non-monotone in event order —
+    // the prepatch's turn-end-offset frontier mapping assumes monotonicity
+    // and would over-patch into unconsumed publications (the exact
+    // stale-session divergence class the kill switch exists for). Refuse
+    // the prepatch loudly when aliasing is active; the synchronous bake
+    // (whose cost the aliasing also halves — one patch site per unique
+    // frame) remains the correct path until the frontier is event-indexed.
+    let prepatch_enabled = if prepatch_enabled && inner.blob_aliasing() {
+        eprintln!(
+            "DIAG rx: prepatch refused — blob aliasing active ({} aliased deliveries, non-monotone offsets)",
+            inner.aliased_frame_count()
+        );
+        false
+    } else {
+        prepatch_enabled
+    };
     let blob_base = inner.blob_base();
     // R8 phase-6: the end-offset ring is decoupled from NBUF (32 slots —
     // over 4 passes of publications at ENTRY_CAP=2048) so the prepatch's

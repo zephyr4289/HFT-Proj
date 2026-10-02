@@ -115,6 +115,18 @@ cargo run --release -p nf-engine --bin kbench | tee /tmp/kbench.txt
 grep -q "KBENCH mode=scalar8lane threads=1" /tmp/kbench.txt
 grep -q "KBENCH done" /tmp/kbench.txt
 
+echo "=== 11d. R9: Fabric-Shape Kernel Ablation (layout attribution telemetry) ==="
+# Diagnostics only — never gated. Decomposes the worker's real execution
+# shape (P packed / K real-layout kernel-only / D +desc ring / R +res ring
+# / F full replica) on the actual tape bodies, attributing per-span cycle
+# costs to the layout, the handoff rings, and the kernel. Post-R9 the real
+# blob is alias-deduplicated, so K tracks the packed P closely; any K-vs-P
+# regression is a layout regression and must be investigated.
+cargo run --release -p nf-testkit --bin fbench -- --stage all --workers 2 --ms 1000 | tee /tmp/fbench.txt
+grep -q "FBENCH stage=P" /tmp/fbench.txt
+grep -q "FBENCH stage=F" /tmp/fbench.txt
+grep -q "FBENCH done" /tmp/fbench.txt
+
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)

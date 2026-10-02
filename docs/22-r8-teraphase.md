@@ -204,3 +204,80 @@ Phase 2 (the full-verify war):
 | c190d7c | polite consumer (bounded spin + futex park) |
 | 060acf1 | SMT-polite spins across the fabric (the 36x sustained recovery) |
 | (this) | D12 oracle leg, CI enforcement of the pure-ingest gate, docs |
+
+## 7. R9 — the layout discovery (research mode)
+
+The campaign's decisive measurement came from a new instrument, not a knob
+turn: **fbench**, a fabric-shape kernel ablation that evaluates the REAL
+tape bodies (post-dedup span slices of the actual rendered blob) under the
+worker's exact execution shape, one mechanism at a time:
+
+| Stage | Adds | Pre-R9 (local SPR) | Post-R9 |
+|---|---|---|---|
+| P | packed control (contiguous copy of the same bodies) | 335 cyc/span | 305 |
+| K | the real blob layout | **517 cyc/span (+55%)** | **317 (+4%)** |
+| D | + cross-core descriptor ring | 523 | 288 |
+| R | + result publication ring | 516 | 306 |
+| F | full submit/eval/fold replica | 549 | 298 |
+
+### 7.1 The 35% nobody could see
+
+The pre-R9 blob interleaved **byte-identical duplicate-feed frames** between
+the emitted ones (`guarantee_coverage` dual feed: every message range
+rendered on feed A AND feed B — 21,984 data frames, 10,992 emitted). The
+verification workers therefore read the blob as **read-1.4KB / skip-1.4KB** —
+a stride pattern no hardware streamer tracks. kbench's packed 8MB buffer —
+the instrument every prefetch decision had been made with — modeled the
+stream as sequential, so the "no-spray for fold512" conclusion (cccfebe)
+was calibrated against the wrong layout. The workers' real L3 latency was
+never hidden, on any runner.
+
+### 7.2 The fix: blob aliasing (render.rs)
+
+A duplicate delivery of the same `(first_seq, first_msg, count)` renders
+BYTE-IDENTICAL frame bytes (same session prefix, same seq/count header,
+same gt slice — the count arithmetic 2x10,992 = 21,984 proves the framing
+identity). R9 aliases each duplicate onto its primary's blob region at
+construction, guarded by a memcmp of the immutable suffix:
+
+* the blob halves (30MB -> 15MB on the mini tape): the emitted span bodies
+  become a near-contiguous stream (only the ~20B frame headers between
+  them) — the K-vs-P layout penalty collapsed from 35% to 4%;
+* `patch_offsets` dedups to one site per UNIQUE frame — the per-pass
+  session bake halves with it (local: 241us -> 148us per pass);
+* the triple store halves (duplicates reuse the primary's `(blk_base,
+  blk_count, valid)` — identical bytes, identical chain, identical verdict);
+* every delivery still poll()s, the scan still dedups, every emitted byte
+  is still CRC-verified in-window — the aliasing is invisible to D1..D12,
+  the 17-cell matrix (including M-DUP2 and the dual-feed loss cells), and
+  the sustained arm's per-pass bit-exact tuple asserts.
+
+The prepatch (kill-switched since 12a4648) is REFUSED when aliasing is
+active: blob offsets are no longer monotone in event order, so the
+turn-end-offset frontier mapping would be unsound (the RX logs the
+refusal). An event-indexed frontier is the prerequisite for reviving it.
+
+### 7.3 The spray, re-decided on the right layout
+
+With the layout fixed, the worker spray was re-measured on the real arm:
+locally, aliasing-only 255M sustained vs aliasing+spray(2,22,24) 348M
+(+36%) — the fold512 default flips back to the scalar kernel's full-span
+spray. The residual gap to the packed control (317 vs 305 cyc/span) is the
+~20B header gaps plus L3 latency the spray now mostly hides.
+
+### 7.4 Measured effect (single-physical-core sandbox — conservative)
+
+| Configuration | sustained (local) |
+|---|---|
+| pre-R9 baseline (no aliasing, no spray) | 220.2M |
+| + blob aliasing | 254.9M (+16%) |
+| + spray default flip | 332.6M (+51% total) |
+
+The sandbox runs the fabric on ONE physical core (main+RX+worker SMT-packed,
+hypervisor-hidden siblings) — on the CI runners' two physical cores the
+worker pair was the binding constraint (61% of its SMT-pair ceiling on the
+726.7M record), so the layout fix compounds there: the pair's delivered
+bandwidth moves toward the ~28-30 GB/s kbench pair ceiling against the
+27.65 GB/s 1B demand, and main's bake wait halves. fbench joined ci.sh as
+step 11d so every future run carries the layout attribution next to the
+kernel ceilings.

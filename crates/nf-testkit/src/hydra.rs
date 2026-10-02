@@ -361,16 +361,19 @@ struct PfCfg {
 }
 
 impl PfCfg {
-    /// Kernel-aware defaults: the scalar kernel's 8B crc32 chains leave the
-    /// L3 latency exposed (the full-span spray recovered Zen3 from 35% to
-    /// 74% of its measured ceiling), but the fold512 kernel issues its own
-    /// dense 64B sequential loads — a software spray on top of them floods
-    /// the L2 request path and the kernel's DEMAND loads stall behind the
-    /// prefetch traffic (the Intel 8573C run: 34.22 GB/s measured kernel
-    /// ceiling, 9 GB/s delivered by the fabric's SMT pair). Fold512
-    /// therefore defaults to NO software spray — the hardware streamer
-    /// tracks its sequential access pattern perfectly (kbench proves the
-    /// ceiling is reachable with it). Env overrides win for CI sweeps.
+    /// Kernel-aware defaults. R9 flipped the fold512 default from no-spray
+    /// to the SAME full-span spray as the scalar kernel: the no-spray
+    /// decision rested on "the hardware streamer tracks fold512's sequential
+    /// access pattern perfectly" — a conclusion drawn from kbench, whose
+    /// buffer is PACKED and gap-free. The real blob (pre-R9) interleaved
+    /// byte-identical duplicate-feed frames between the emitted ones, so
+    /// the workers' real pattern was read-1.4KB/skip-1.4KB — untrackable
+    /// by any streamer (fbench stage P vs K: 335 vs 517 cyc/span, a 35%
+    /// layout penalty). R9's blob aliasing removes the dup gaps, but the
+    /// ~20B frame headers between span bodies plus the L3-resident blob
+    /// still leave latency exposure the spray hides: measured locally,
+    /// aliasing-only 255M vs aliasing+spray(2,22,24) 348M sustained (+36%).
+    /// Env overrides still win for CI sweeps.
     fn detect(kernel: CrcKernel) -> Self {
         let parse = |k: &str, d: u64| -> u64 {
             std::env::var(k)
@@ -381,7 +384,7 @@ impl PfCfg {
         };
         let (d_ahead, d_lines, d_burst) = match kernel {
             CrcKernel::Scalar => (2, 22, 24),
-            CrcKernel::Fold512 => (2, 0, 24),
+            CrcKernel::Fold512 => (2, 22, 24),
         };
         Self {
             ahead: parse("HFT_PF_AHEAD", d_ahead),
