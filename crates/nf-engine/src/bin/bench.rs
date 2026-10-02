@@ -507,13 +507,20 @@ fn run_hydra_sustained_5s(
 
     let mut sess = *b"HYDRASUST1";
     let mut harvested = [(0u64, 0u64, 0u64); 8];
+    let mut diag = std::env::var("HFT_EXP_DIAG").is_ok();
+    let mut d_reset_ns: u64 = 0;
+    let mut d_scan_ns: u64 = 0;
+    let mut d_end_ns: u64 = 0;
+    let mut d_passes: u64 = 0;
     while start.elapsed().as_secs_f64() < 5.0 {
         sess[7..10].copy_from_slice(&session_counter.to_be_bytes()[5..8]);
         session_counter += 1;
 
+        let t_r = std::time::Instant::now();
         transport.reset(sess);
         *seq = Sequencer::new_unboxed();
         sink.begin_pass();
+        let t_r2 = std::time::Instant::now();
 
         // Fold drain every batch: keeps the result rings shallow and the
         // ordered fold close behind submission (the overlap's slack is the
@@ -522,8 +529,16 @@ fn run_hydra_sustained_5s(
             seq.ingest_entries(transport.entries(), transport.now_ns(), &mut sink);
             sink.drain_ready();
         }
+        let t_s = std::time::Instant::now();
         sink.end_pass(); // non-blocking: the tail folds during the next pass
         let n = sink.harvest_completed(&mut harvested);
+        let t_e = std::time::Instant::now();
+        if diag {
+            d_reset_ns += t_r2.duration_since(t_r).as_nanos() as u64;
+            d_scan_ns += t_s.duration_since(t_r2).as_nanos() as u64;
+            d_end_ns += t_e.duration_since(t_s).as_nanos() as u64;
+            d_passes += 1;
+        }
         for rec in &harvested[..n] {
             assert_sustained_pass(*rec, ref_tuple, null_diag);
             total_msgs += rec.0;
@@ -549,6 +564,16 @@ fn run_hydra_sustained_5s(
         0
     };
 
+    if diag {
+        eprintln!(
+            "DIAG sustained: passes={} reset_ms={:.1} scan_ms={:.1} end_ms={:.1}",
+            d_passes,
+            d_reset_ns as f64 / 1e6,
+            d_scan_ns as f64 / 1e6,
+            d_end_ns as f64 / 1e6
+        );
+        diag = false;
+    }
     println!(
         "BENCH mode=replay-hydra-sustained-5s total_msgs={} duration={:.2}s sustained_rate={} msg/s allocs={} workers={} crc_kernel={}",
         total_msgs,

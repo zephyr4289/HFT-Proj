@@ -150,6 +150,13 @@ struct Mailbox {
     freed: [Pad; 4],
     cmd: AtomicU8,
     shutdown: AtomicBool,
+    /// R8: futex wake word for the cold-path handshake — the consumer's
+    /// reset() must not wait a scheduler quantum for a cpu-shared RX
+    /// thread's spin-loop to notice the command (measured: 15-30ms per
+    /// reset, 140 resets per sustained run). The RX's EOS-park futex-waits
+    /// on this word; the consumer futex-wakes it after storing the
+    /// command. The HOT paths (batch publication/freedom) stay pure spins.
+    wake: AtomicU64,
     /// Reset payload + ack channel (count first, then turn — see doc).
     reset_session: UnsafeCell<[u8; 10]>,
     reset_cnt: AtomicU64,
@@ -163,6 +170,34 @@ struct Mailbox {
 // cells follow the documented handshake.
 unsafe impl Send for Mailbox {}
 unsafe impl Sync for Mailbox {}
+
+/// Futex wait on `wake` (expects the observed value; spurious wakes are
+/// fine — callers re-check their condition).
+#[inline(always)]
+fn futex_wait(wake: &AtomicU64, expected: u64) {
+    unsafe {
+        libc::syscall(
+            libc::SYS_futex,
+            wake as *const AtomicU64 as *const u32,
+            libc::FUTEX_WAIT,
+            expected as u32,
+            std::ptr::null::<libc::timespec>(),
+        );
+    }
+}
+
+/// Futex wake (one waiter).
+#[inline(always)]
+fn futex_wake(wake: &AtomicU64) {
+    unsafe {
+        libc::syscall(
+            libc::SYS_futex,
+            wake as *const AtomicU64 as *const u32,
+            libc::FUTEX_WAKE,
+            1i32,
+        );
+    }
+}
 
 #[inline(always)]
 fn spin(backoff: &mut u32) {
@@ -204,6 +239,9 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
         match mb.cmd.load(Ordering::Acquire) {
             CMD_SHUTDOWN => return,
             CMD_RESET => {
+                if diag {
+                    eprintln!("DIAG rx: serve reset turn={turn}");
+                }
                 // SAFETY: the consumer is parked in reset() holding no
                 // entries; the RX thread owns the transport and blob.
                 let sess = unsafe { *mb.reset_session.get() };
@@ -212,6 +250,8 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                 mb.reset_ack_turn.store(turn, Ordering::Release);
                 mb.reset_ack_cnt.store(served_resets, Ordering::Release);
                 mb.cmd.store(CMD_RUN, Ordering::Release);
+                mb.wake.fetch_add(1, Ordering::Release); // bump before wake
+                futex_wake(&mb.wake); // release the consumer's ack wait
             }
             _ => {}
         }
@@ -351,9 +391,12 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                 diag_total_ns = 0;
                 diag_max_ns = 0;
             }
-            // End of stream: keep serving resets until one arrives (the
-            // consumer's next action after EOS is reset or drop).
-            let mut backoff = 0u32;
+            // End of stream: block until a reset/shutdown arrives. A pure
+            // spin here made the reset handshake's latency a function of
+            // the RX's cpu share (a scheduler quantum when shared —
+            // measured 15-30ms per reset, dominating the sustained arm).
+            // The futex wait is the cold path only; batch publication
+            // stays spin-based.
             loop {
                 match mb.cmd.load(Ordering::Acquire) {
                     CMD_SHUTDOWN => return,
@@ -364,6 +407,11 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                         mb.reset_ack_turn.store(turn, Ordering::Release);
                         mb.reset_ack_cnt.store(served_resets, Ordering::Release);
                         mb.cmd.store(CMD_RUN, Ordering::Release);
+                        // Bump BEFORE waking (lost-wake discipline: a wake
+                        // without a value change can fire between the
+                        // waiter's load and its futex_wait).
+                        mb.wake.fetch_add(1, Ordering::Release);
+                        futex_wake(&mb.wake); // release the consumer's ack wait
                         break; // resume polling the fresh pass
                     }
                     _ => {}
@@ -371,7 +419,10 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                 if mb.shutdown.load(Ordering::Acquire) {
                     return;
                 }
-                spin(&mut backoff);
+                let observed = mb.wake.load(Ordering::Acquire);
+                if mb.cmd.load(Ordering::Acquire) == CMD_RUN {
+                    futex_wait(&mb.wake, observed);
+                }
             }
         }
     }
@@ -435,6 +486,7 @@ impl PipelinedReplayTransport {
             freed: [Pad::zeroed(), Pad::zeroed(), Pad::zeroed(), Pad::zeroed()],
             cmd: AtomicU8::new(CMD_RUN),
             shutdown: AtomicBool::new(false),
+            wake: AtomicU64::new(0),
             reset_session: UnsafeCell::new([0u8; 10]),
             reset_cnt: AtomicU64::new(0),
             reset_ack_turn: AtomicU64::new(0),
@@ -480,18 +532,39 @@ impl PipelinedReplayTransport {
         unsafe {
             *self.mb.reset_session.get() = session;
         }
+        if std::env::var("HFT_EXP_DIAG").is_ok() {
+            eprintln!("DIAG reset: issue n={n} turn={}", self.turn);
+        }
         self.mb.reset_cnt.store(n, Ordering::Release);
         self.mb.cmd.store(CMD_RESET, Ordering::Release);
+        // Wake the (possibly futex-parked) RX thread immediately — without
+        // this the handshake waits for the RX's next spin iteration, which
+        // on a shared cpu is a scheduler quantum.
+        self.mb.wake.fetch_add(1, Ordering::Release);
+        futex_wake(&self.mb.wake);
         let mut backoff = 0u32;
         loop {
             if self.mb.reset_ack_cnt.load(Ordering::Acquire) >= n {
                 break;
+            }
+            // Cold path: block on the futex word; the RX wakes us when it
+            // stores the ack (it also spins a few rounds first for the
+            // common fast case).
+            if backoff > 4 {
+                let observed = self.mb.wake.load(Ordering::Acquire);
+                if self.mb.reset_ack_cnt.load(Ordering::Acquire) < n {
+                    futex_wait(&self.mb.wake, observed);
+                }
+                continue;
             }
             spin(&mut backoff);
         }
         // The RX's turn AFTER the reset (it already published its in-flight
         // batch before serving the command).
         let ack_turn = self.mb.reset_ack_turn.load(Ordering::Acquire);
+        if std::env::var("HFT_EXP_DIAG").is_ok() {
+            eprintln!("DIAG reset: ack n={n} ack_turn={ack_turn}");
+        }
         // Free every publication the RX made but we never consumed
         // (pre-reset frames): turns [self.turn, ack_turn) were ALL
         // published (the RX acks only after its in-flight publication
@@ -560,6 +633,10 @@ impl Drop for PipelinedReplayTransport {
     fn drop(&mut self) {
         self.mb.cmd.store(CMD_SHUTDOWN, Ordering::Release);
         self.mb.shutdown.store(true, Ordering::Release);
+        // Wake the (possibly futex-parked) RX thread — without this the
+        // join below blocks until an unrelated wake.
+        self.mb.wake.fetch_add(1, Ordering::Release);
+        futex_wake(&self.mb.wake);
         if let Some(h) = self.rx.take() {
             let _ = h.join();
         }
