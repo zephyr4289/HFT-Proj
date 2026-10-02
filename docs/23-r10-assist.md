@@ -193,3 +193,45 @@ Open after this draw:
   record (slots=4, no pipe) + the assist conversion + `eval_pair` +
   the never-measured Intel THP dividend is the gate-breaking stack —
   11j and the kbench `fold512_pair` row attribute it per draw.
+
+## 9. R10b — the THP lottery (the 1.867B gate failure, diagnosed)
+
+The re-roll draw (f5c874e, run 37031852286, Zen3 7763) FAILED the enforced
+Front A gate: `span_rate=1.867B`, `span_median_cycles=1.31`, cv 27% —
+against 3.07B / 0.80 cyc / cv 7% on the identical code one draw earlier
+(c3cea3e, docs-only delta). Every other arm reproduced within 1-2%
+(classic 4.02 vs 4.04 cyc/msg; sustained 11b 898.0 vs 904.0M; slots-4
+717.7 vs 714.4M; RX prod_ms 3174 vs 3188) — the machine's fabric,
+kernel, and CRC paths were fine. Only the span arm — the most
+write-path-hungry arm in the suite (6065 passes/s = 3.4x the sustained
+arm's bake rate) — swung 2.3x.
+
+The cause was in `MmapBlob::from_vec` (R9e, 8b3192d): the construction
+copied the blob FIRST and called `madvise(MADV_HUGEPAGE)` AFTER. On the
+runners' madvise-mode kernels, a fault on an un-advised VMA allocates
+4KB pages, and advice set after the fact does not convert them — the
+conversion belongs to khugepaged's asynchronous collapse, whose arrival
+relative to a 25-second measurement window is a lottery:
+
+* R9e's 4.24B record: the collapse won the race.
+* c3cea3e's 3.07B: partial.
+* f5c874e's 1.867B (cv 27%): the collapse landed inside the window.
+
+The local sandbox never sees this — its THP mode is `always` (faults
+get hugepages without advice), which is exactly how the ordering bug
+survived the sandbox. The pre-R9e gate history (seven consecutive Zen3
+passes, 2.04-2.48B) was tight because the 4KB-page blob was
+DETERMINISTIC; R9e introduced the variance along with the dividend.
+
+**The fix:** the advice now precedes the copy — faults occur on an
+advised VMA and the kernel allocates hugepages AT FAULT TIME,
+deterministically (fragmentation or `never` still fall back silently).
+And the dividend stops being invisible: `BLOB_BACKING mode=...
+anon_huge_kb=... verdict=thp-granted|thp-denied-or-partial` — one
+line per process at construction, from the mapping's own
+`AnonHugePages` in /proc/self/smaps — so every future draw's TLB fate
+is attributable from the log alone. A gate that depends on a kernel
+grant must log the grant.
+
+Local: 16.5MB map, `anon_huge_kb=16384`, granted; span 1.80B on the
+noisy sandbox. The CI draws decide the rest.

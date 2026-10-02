@@ -137,9 +137,11 @@ impl Drop for MmapBlob {
 
 impl MmapBlob {
     /// Copy `src` into a fresh 2MB-aligned MADV_HUGEPAGE mapping sized to
-    /// `src.len()` (plus alignment slack). The copy faults every page in,
-    /// so THP allocation happens HERE — construction-time, outside every
-    /// measurement window.
+    /// `src.len()` (plus alignment slack). The advice is set BEFORE the
+    /// copy so the copy's faults occur on an advised VMA and the kernel
+    /// allocates hugepages AT FAULT TIME (deterministic on madvise-mode
+    /// runners); a post-copy fault pattern would leave the conversion to
+    /// khugepaged's asynchronous collapse — a lottery (see R10b).
     fn from_vec(src: &[u8]) -> Self {
         const HP: usize = 2 << 20; // 2 MiB hugepage granularity
         let slack = if src.len().is_multiple_of(HP) { 0 } else { HP };
@@ -158,6 +160,7 @@ impl MmapBlob {
         if base == libc::MAP_FAILED {
             // Cold fallback: ordinary heap pages (Send-safe exclusive Box
             // owner; the block frees when the transport drops).
+            log_backing_once(None, src.len());
             let b: Box<[u8]> = src.to_vec().into_boxed_slice();
             let len = b.len();
             let data = b.as_ptr() as *mut u8;
@@ -177,13 +180,22 @@ impl MmapBlob {
         // SAFETY: [data, data+len) is within [map_base, map_base+map_len)
         // by the slack arithmetic above.
         unsafe {
-            std::ptr::copy_nonoverlapping(src.as_ptr(), data, src.len());
+            // R10b: THE ORDERING IS LOAD-BEARING. `MADV_HUGEPAGE` must
+            // precede the copy: on a madvise-mode kernel, a fault on an
+            // un-advised VMA allocates 4KB pages, and the advice set after
+            // the fact does not convert them — khugepaged's asynchronous
+            // collapse would decide, mid-measurement, whether the blob runs
+            // on 8 TLB entries or ~1875 (observed: span-arm medians
+            // 4.24B / 3.07B / 1.867B on identical code, cv 27% on the
+            // losing draw — the collapse landed inside the window).
             libc::madvise(
                 map_base as *mut libc::c_void,
                 map_len,
                 libc::MADV_HUGEPAGE,
             );
+            std::ptr::copy_nonoverlapping(src.as_ptr(), data, src.len());
         }
+        log_backing_once(Some((map_base, map_len)), src.len());
         Self {
             heap: None,
             map_base,
@@ -192,6 +204,86 @@ impl MmapBlob {
             len: src.len(),
         }
     }
+}
+
+/// R10b: one-time blob-backing telemetry. The THP dividend is only real if
+/// the kernel actually granted hugepages at fault time — fragmentation or
+/// `never` mode fall back to 4KB pages SILENTLY, and a gate draw that lost
+/// the TLB lottery must be attributable from the log alone. One line per
+/// process, printed at construction (outside every measurement window).
+fn log_backing_once(map: Option<(*mut u8, usize)>, len: usize) {
+    static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    match map {
+        None => {
+            eprintln!(
+                "BLOB_BACKING mode=heap-fallback len_mb={:.1} verdict=no-thp",
+                len as f64 / 1048576.0
+            );
+        }
+        Some((base, map_len)) => {
+            let kb = smaps_anon_huge_kb(base as usize, base as usize + map_len);
+            let verdict = match kb {
+                Some(k) if k >= 2048 => "thp-granted",
+                Some(_) => "thp-denied-or-partial",
+                None => "smaps-unreadable",
+            };
+            eprintln!(
+                "BLOB_BACKING mode=mmap anon_huge_kb={} map_mb={:.1} verdict={}",
+                kb.unwrap_or(0),
+                map_len as f64 / 1048576.0,
+                verdict
+            );
+        }
+    }
+}
+
+/// The mapping's `AnonHugePages` total from `/proc/self/smaps` (kB), or
+/// `None` when smaps cannot be read. Cold, construction-time, once per
+/// process — the scan cost never touches a measurement window.
+fn smaps_anon_huge_kb(lo: usize, hi: usize) -> Option<u64> {
+    use std::io::BufRead;
+    let f = std::fs::File::open("/proc/self/smaps").ok()?;
+    let mut in_vma = false;
+    let mut kb: u64 = 0;
+    for line in std::io::BufReader::new(f).lines() {
+        let line = line.ok()?;
+        if let Some((a, b)) = parse_smaps_header(&line) {
+            if in_vma {
+                // Our VMA ended; its AnonHugePages total is complete.
+                return Some(kb);
+            }
+            in_vma = a <= lo && hi <= b;
+            kb = 0;
+        } else if in_vma {
+            if let Some(v) = line.strip_prefix("AnonHugePages:") {
+                kb = v.trim().trim_end_matches("kB").trim().parse().unwrap_or(0);
+            }
+        }
+    }
+    in_vma.then_some(kb)
+}
+
+/// smaps VMA headers look like `7f3a20000000-7f3a20100000 rw-p 00:00 0`;
+/// field lines all carry a `keyword:` prefix that cannot parse as a
+/// `<hex>-<hex>` range. Allocation-free (the zero-alloc law extends to
+/// cold paths by discipline).
+fn parse_smaps_header(line: &str) -> Option<(usize, usize)> {
+    let (a, rest) = line.split_once('-')?;
+    if a.is_empty() || !a.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let lo = usize::from_str_radix(a, 16).ok()?;
+    let hi_end = rest
+        .find(|c: char| !c.is_ascii_hexdigit())
+        .unwrap_or(rest.len());
+    if hi_end == 0 {
+        return None;
+    }
+    let hi = usize::from_str_radix(&rest[..hi_end], 16).ok()?;
+    Some((lo, hi))
 }
 
 pub struct ReplayTransport {
