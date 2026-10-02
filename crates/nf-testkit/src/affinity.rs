@@ -367,6 +367,17 @@ pub fn fabric_placement(workers: usize) -> (Option<usize>, Option<usize>, Vec<us
         if pool.is_empty() {
             pool = order.clone();
         }
+        // R8 phase-6: on SMT topologies, a THIRD worker joins the RX's
+        // hyperthread (appended LAST — the dedicated hyperthreads lead the
+        // round-robin). The straggler risk a shared-hyperthread lane carries
+        // is contained by the main-core work-assist: its overflow chunks
+        // convert to submitting-core CRC automatically, so the lane's
+        // hyperthread scavenging is pure net capacity.
+        if let Some(r) = rx {
+            if workers > pool.len() && !pool.contains(&r) && Some(r) != main {
+                pool.push(r);
+            }
+        }
         let wcpus: Vec<usize> = (0..workers)
             .map(|i| pool[i % pool.len()])
             .collect();

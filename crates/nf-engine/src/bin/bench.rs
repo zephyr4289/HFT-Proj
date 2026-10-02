@@ -305,8 +305,15 @@ fn run_hydra_burst(
     // slots from the critical main thread: 14M msg/s). Sizing: 2 workers
     // on <= 2-physical hosts, 3 otherwise.
     let n_phys = nf_testkit::affinity::physical_core_count();
+    // R8 phase-6: on 2-physical-core SMT runners, a third worker joins the
+    // RX's hyperthread (fabric_placement appends it to the pool) — the
+    // work-assist contains its straggler risk, and the machine's second
+    // physical core otherwise idles its SMT capacity behind the workers'
+    // saturation.
     let workers = if n_phys >= 4 {
         3
+    } else if topo.len() >= 3 {
+        3.min(topo.len())
     } else {
         2.min(topo.len().saturating_sub(1)).max(1)
     };
