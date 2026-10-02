@@ -106,6 +106,13 @@ grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_hydra.txt
 # enforcement lands when the fabric reaches it; see docs/22 §Physics).
 grep -q "PR1_R8_FULL_VERIFY_VERDICT rate=" /tmp/bench_hydra.txt
 
+# R10b: the blob's THP backing line is a first-class CI artifact — a draw
+# that lost the hugepage grant must be VISIBLE, not silent (the 1.867B gate
+# failure was unattributable before this line existed). Assert presence;
+# grep the verdict per draw so the fish-history lands in the log summary.
+grep -q "BLOB_BACKING" /tmp/bench_hydra.txt
+grep "BLOB_BACKING" /tmp/bench_hydra.txt | head -1
+
 echo "=== 11c. R8: Kernel-Ceiling Microbenchmark (fabric physics telemetry) ==="
 # Diagnostics only — never gated. Prints the runner's measured CRC ceilings
 # per kernel (scalar8lane / fold512 / pclmul128_raw / crc32:pclmul mix) and
