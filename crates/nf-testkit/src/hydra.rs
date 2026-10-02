@@ -723,6 +723,45 @@ impl Drop for HydraFabric {
 /// * **inline** (`new_inline()`) — synchronous evaluation + immediate fold,
 ///   bit-identical semantics with zero threads (the differential-testing
 ///   baseline and single-core fallback).
+///
+/// R8 phase-5 adds the main-core WORK-ASSIST to fabric mode: when the
+/// lane rings are full (workers saturated), the submitting core evaluates
+/// the chunk's spans itself instead of spinning (see InlineChunk).
+
+/// One inline-assist chunk buffer (see the sink doc above).
+#[derive(Clone, Copy)]
+struct InlineChunk {
+    /// First span id of the chunk (u64::MAX = free slot).
+    first_span: u64,
+    /// Span count in this (possibly pass-tail partial) chunk.
+    len: u32,
+    /// Sealed by flush_pending — an INCOMPLETE chunk's first_span is
+    /// already set while its spans are still arriving, so the ordered fold
+    /// must never match it (the mid-chunk drain_ready race that produced
+    /// the original fold-order violation: the fold applied a partial len,
+    /// freed the slot, and the chunk's remaining spans were folded by
+    /// nobody).
+    sealed: bool,
+    /// Values + span ids, in emission order.
+    vals: [u64; CHUNK as usize],
+    ids: [u32; CHUNK as usize],
+}
+
+impl InlineChunk {
+    const fn free() -> Self {
+        Self {
+            first_span: u64::MAX,
+            len: 0,
+            sealed: false,
+            vals: [0; CHUNK as usize],
+            ids: [0; CHUNK as usize],
+        }
+    }
+}
+
+/// Inline-assist ring depth (completed-but-unfolded chunk buffers).
+const INLINE_SLOTS: usize = 4;
+
 pub struct HydraSpanSink<'a> {
     fabric: Option<&'a HydraFabric>,
     // ── observable state: field-for-field identical to SpanConformanceSink ──
@@ -765,6 +804,17 @@ pub struct HydraSpanSink<'a> {
     fold_lane: usize,
     /// Spans remaining in the fold-side chunk.
     fold_rem: u64,
+    // ── R8 phase-5: main-core work-assist ──
+    /// The kernel the inline evaluations run (the fabric's — bit-exact
+    /// across kernels by D11, so main and workers can mix freely).
+    kernel: CrcKernel,
+    /// Completed-but-unfolded inline chunks (ring).
+    inline_ring: [InlineChunk; INLINE_SLOTS],
+    /// Ring slot of the chunk CURRENTLY being filled (None = lane mode).
+    cur_inline: Option<usize>,
+    /// Force every chunk inline (diagnostics + parity tests: a fully
+    /// deterministic inline-mode run must produce the identical tuple).
+    force_inline: bool,
     // ── GIGAHFT Lever 4: cross-pass double buffering ──
     /// Span ids are GLOBAL across the sink's life; each pass records its
     /// boundary so the ordered fold snapshots the pass's hash exactly at
@@ -811,6 +861,10 @@ impl<'a> HydraSpanSink<'a> {
             submit_rem: CHUNK,
             fold_lane: 0,
             fold_rem: CHUNK,
+            kernel: fabric.map(|f| f.kernel).unwrap_or(CrcKernel::Scalar),
+            inline_ring: [InlineChunk::free(); INLINE_SLOTS],
+            cur_inline: None,
+            force_inline: std::env::var("HFT_INLINE_FORCE").as_deref() == Ok("1"),
             passes: [PassRec {
                 end_span: 0,
                 count: 0,
@@ -829,6 +883,13 @@ impl<'a> HydraSpanSink<'a> {
         Self::blank(Some(fabric))
     }
 
+    /// R8 phase-5: force every chunk through the inline (main-core) path —
+    /// the deterministic assist-mode parity configuration (the env var
+    //  form serves CI diagnostics; this form serves in-process tests).
+    pub fn force_inline_mode(&mut self) {
+        self.force_inline = true;
+    }
+
     /// Sequential-equivalent mode: no fabric, no threads — evaluates and
     /// folds synchronously. Used for differential bit-parity testing and as
     /// the single-core fallback (`HFT_HYDRA_WORKERS=0`).
@@ -845,6 +906,10 @@ impl<'a> HydraSpanSink<'a> {
             "hydra reset with undrained spans"
         );
         assert_eq!(self.pending_len, 0, "hydra reset with pending chunk");
+        // R8 phase-5: the inline ring must be fully folded (fold_pos ==
+        // next_span proves it); clear the window state defensively.
+        self.cur_inline = None;
+        self.inline_ring = [InlineChunk::free(); INLINE_SLOTS];
         self.hash = Self::SPAN_SEED;
         self.count = 0;
         self.last_gen = 0;
@@ -998,6 +1063,15 @@ impl<'a> HydraSpanSink<'a> {
         if n == 0 {
             return;
         }
+        // R8 phase-5: an inline chunk is already fully evaluated — its
+        // values sit in the inline ring awaiting the ordered fold. Sealing
+        // marks the chunk complete (the fold must never touch a chunk
+        // whose spans are still arriving).
+        if let Some(slot) = self.cur_inline.take() {
+            self.inline_ring[slot].sealed = true;
+            self.pending_len = 0;
+            return;
+        }
         let fabric = match self.fabric {
             Some(f) => f,
             None => unreachable!("flush_pending in inline mode"),
@@ -1027,43 +1101,72 @@ impl<'a> HydraSpanSink<'a> {
             self.pending_lane = self.submit_lane;
             let lane = &fabric.lanes[self.pending_lane];
             let h0 = lane.desc_head.load(Ordering::Relaxed);
-            // Space check for the WHOLE chunk up front (the in-place writes
-            // below must never touch slots the worker still owns).
-            // Backpressure: fold what's ready (keeps result rings flowing),
-            // then re-check — deadlock-free by the lane-balance proof.
-            let mut sb = 0u32;
-            loop {
-                let t = lane.desc_tail.load(Ordering::Acquire);
-                if h0.saturating_sub(t) + CHUNK <= DESC_CAP {
-                    break;
+            // R8 phase-5 — WORK-ASSIST: check space once; if the lane is
+            // saturated AND an inline slot is free, take the chunk inline
+            // (evaluate on THIS core when the workers cannot keep up —
+            // the cycles come out of the backpressure spin they would
+            // otherwise burn). Forced-inline mode (parity tests) takes
+            // this path unconditionally.
+            let t = lane.desc_tail.load(Ordering::Acquire);
+            let lane_full = h0.saturating_sub(t) + CHUNK > DESC_CAP;
+            let take_inline = self.n_lanes > 0
+                && self.inline_slot_free()
+                && (self.force_inline || lane_full);
+            if take_inline {
+                self.cur_inline = Some(self.inline_claim());
+            } else {
+                // Space check for the WHOLE chunk up front (the in-place
+                // writes below must never touch slots the worker still
+                // owns). Backpressure: fold what's ready (keeps result
+                // rings flowing), then re-check — deadlock-free by the
+                // lane-balance proof.
+                let mut sb = 0u32;
+                loop {
+                    let t = lane.desc_tail.load(Ordering::Acquire);
+                    if h0.saturating_sub(t) + CHUNK <= DESC_CAP {
+                        break;
+                    }
+                    self.pending_head = h0;
+                    self.fold_available();
+                    // R8: SMT-polite backpressure spin.
+                    crate::affinity::polite_spin(&mut sb);
                 }
                 self.pending_head = h0;
-                self.fold_available();
-                // R8: SMT-polite backpressure spin.
-                crate::affinity::polite_spin(&mut sb);
             }
-            self.pending_head = h0;
         }
-        debug_assert_eq!(
-            ((self.next_span / CHUNK) % self.n_lanes as u64) as usize,
-            self.pending_lane,
-            "hydra pending buffer crossed a lane boundary"
-        );
-        // In-place 128-bit store: (ptr | len<<64 | span_id<<96).
-        // SAFETY: the slot at (pending_head + pending_len) & DESC_MASK is
-        // producer-owned (space checked at chunk start for the full chunk)
-        // and unread by the worker until the Release publish below.
-        let slot = lane_slot_ptr(
-            &fabric.lanes[self.pending_lane],
-            self.pending_head + self.pending_len,
-        );
-        let packed = (body.as_ptr() as u128)
-            | ((body.len() as u128) << 64)
-            | ((self.next_span as u32 as u128) << 96);
-        unsafe {
-            std::ptr::write_unaligned(slot as *mut u128, packed);
+        if let Some(slot) = self.cur_inline {
+            // Inline path: evaluate NOW, buffer the value for the ordered
+            // fold. SAFETY: same feature contract as the workers (the
+            // fabric's detected kernel).
+            let value = unsafe { self.kernel.eval(body) };
+            let c = &mut self.inline_ring[slot];
+            c.vals[self.pending_len as usize] = value;
+            c.ids[self.pending_len as usize] = self.next_span as u32;
+            c.len = self.pending_len as u32 + 1;
+            self.pending_len += 1;
+        } else {
+            debug_assert_eq!(
+                ((self.next_span / CHUNK) % self.n_lanes as u64) as usize,
+                self.pending_lane,
+                "hydra pending buffer crossed a lane boundary"
+            );
+            // In-place 128-bit store: (ptr | len<<64 | span_id<<96).
+            // SAFETY: the slot at (pending_head + pending_len) & DESC_MASK
+            // is producer-owned (space checked at chunk start for the full
+            // chunk) and unread by the worker until the Release publish
+            // below.
+            let slot = lane_slot_ptr(
+                &fabric.lanes[self.pending_lane],
+                self.pending_head + self.pending_len,
+            );
+            let packed = (body.as_ptr() as u128)
+                | ((body.len() as u128) << 64)
+                | ((self.next_span as u32 as u128) << 96);
+            unsafe {
+                std::ptr::write_unaligned(slot as *mut u128, packed);
+            }
+            self.pending_len += 1;
         }
-        self.pending_len += 1;
         // Advance the division-free submit-chunk tracker (after-use: the
         // lane advances when the chunk it belongs to is complete).
         self.submit_rem -= 1;
@@ -1086,6 +1189,30 @@ impl<'a> HydraSpanSink<'a> {
         }
     }
 
+    /// R8 phase-5: is an inline ring slot free (excluding the one being
+    /// filled)?
+    #[inline]
+    fn inline_slot_free(&self) -> bool {
+        self.inline_ring
+            .iter()
+            .any(|c| c.first_span == u64::MAX)
+    }
+
+    /// Claim a free inline slot for the chunk starting at `next_span`.
+    #[inline]
+    fn inline_claim(&mut self) -> usize {
+        let first = self.next_span;
+        let idx = self
+            .inline_ring
+            .iter()
+            .position(|c| c.first_span == u64::MAX)
+            .expect("inline claim with no free slot");
+        self.inline_ring[idx].first_span = first;
+        self.inline_ring[idx].len = 0;
+        self.inline_ring[idx].sealed = false;
+        idx
+    }
+
     /// Fold every completed-but-unfolded result batch (non-blocking, in
     /// emission order). One cursor advance per batch.
     ///
@@ -1101,6 +1228,45 @@ impl<'a> HydraSpanSink<'a> {
         };
         self.complete_boundaries();
         while self.fold_pos < self.next_span {
+            // R8 phase-5 — WORK-ASSIST fold: an inline chunk sitting exactly
+            // at the fold cursor applies its buffered values directly (the
+            // workers never saw it). Inline chunks start at chunk-window
+            // starts, so an exact first_span match is unambiguous.
+            if let Some(slot) = self
+                .inline_ring
+                .iter()
+                .position(|c| c.sealed && c.first_span == self.fold_pos)
+            {
+                let n = self.inline_ring[slot].len as u64;
+                debug_assert!(n <= self.fold_rem, "inline chunk exceeds its window");
+                for i in 0..n as usize {
+                    let (id, v) = (self.inline_ring[slot].ids[i], self.inline_ring[slot].vals[i]);
+                    // Fail-stop ordering guard (same discipline as the lane
+                    // path): a mis-slotted value is a fabric bug, never a
+                    // silent hash corruption.
+                    assert_eq!(
+                        id as u64,
+                        self.fold_pos + i as u64,
+                        "hydra inline fold-order violation: got span {}, expected {}",
+                        id,
+                        self.fold_pos + i as u64
+                    );
+                    self.fold_value(v);
+                }
+                self.inline_ring[slot].first_span = u64::MAX; // free the slot
+                self.fold_pos += n;
+                self.fold_rem -= n;
+                if self.fold_rem == 0 {
+                    self.fold_rem = CHUNK;
+                    self.fold_lane = if self.fold_lane + 1 == self.n_lanes {
+                        0
+                    } else {
+                        self.fold_lane + 1
+                    };
+                }
+                self.complete_boundaries();
+                continue;
+            }
             // H6: `fold_lane` tracks the chunk containing `fold_pos` — no
             // division in the hot path (advance after chunk completion).
             let lane = &fabric.lanes[self.fold_lane];
@@ -1491,6 +1657,46 @@ mod tests {
         // Determinism across passes (different worker interleavings).
         let got_fabric2 = hydra_pass(&mut t2, sess, &fabric);
         assert_eq!(got_fabric2, want, "fabric determinism diverged");
+        // R8 phase-5: FORCED work-assist — every chunk evaluated on the
+        // submitting core through the inline ring, folded in strict span
+        // order. Must produce the identical tuple (the assist path is a
+        // scheduling decision, never a semantic one).
+        let got_assist = assist_pass(&mut t2, sess, &fabric);
+        assert_eq!(got_assist, want, "forced work-assist diverged");
+        // Mixed mode after a forced run (the ring resets cleanly).
+        let got_fabric3 = hydra_pass(&mut t2, sess, &fabric);
+        assert_eq!(got_fabric3, want, "fabric-after-assist diverged");
+    }
+
+    /// R8 phase-5: a fabric pass with the work-assist FORCED on — every
+    /// chunk takes the inline path (deterministic; no dependence on
+    /// backpressure timing).
+    fn assist_pass(
+        transport: &mut ReplayTransport,
+        sess: [u8; 10],
+        fabric: &HydraFabric,
+    ) -> (u64, u64, u64) {
+        transport.reset(sess);
+        let mut seq = Sequencer::new();
+        let mut sink = HydraSpanSink::new(fabric);
+        sink.force_inline_mode();
+        let mut batch = FrameBatch::new();
+        while transport.poll(&mut batch) > 0 {
+            let now = transport.now_ns();
+            for (pos, frame) in batch.frames().iter().enumerate() {
+                seq.ingest_auto(
+                    frame.bytes(),
+                    frame.feed,
+                    now,
+                    &mut sink,
+                    transport.batch_blocks(pos),
+                    transport.batch_memo(pos),
+                );
+            }
+            sink.drain_ready();
+        }
+        sink.finish();
+        (sink.count, sink.hash, sink.msg_hash)
     }
 
     /// Bit-parity under chaos: loss, jitter, session change — exercises the
