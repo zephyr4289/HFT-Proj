@@ -156,6 +156,13 @@ fn wall_pass<S: Sink>(
     ((count as f64) / (dt as f64) * 1e9) as u64
 }
 
+/// R10: the per-batch DIAG timing flag — read ONCE at startup. The R8 arm
+/// ran two `read_monotonic_raw_ns()` vDSO calls per batch and one
+/// `env::var` (a heap allocation) per pass INSIDE the measured window:
+/// ~44 syscalls per pass ≈ 1% of the 119us Zen3 pass at the 4.24B record.
+/// Instrumentation must never tax the window it measures.
+static EXP_DIAG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// R8: the span arm's pipelined pass — the RX thread (transport staging:
 /// directory walk, pacing, session-baked slicing, slot publication) runs
 /// on its own core while THIS thread arbitrates (the sequencer's steady
@@ -176,17 +183,22 @@ fn wall_pass_pipelined<S: Sink>(
     let t0 = read_monotonic_raw_ns();
     let mut nb = 0usize;
     let mut max_batch_ns: u128 = 0;
+    let diag = EXP_DIAG.load(std::sync::atomic::Ordering::Relaxed);
     while transport.next_batch() {
-        let tb = read_monotonic_raw_ns();
-        seq.ingest_entries(transport.entries(), transport.now_ns(), &mut sink);
-        let db = read_monotonic_raw_ns().saturating_sub(tb) as u128;
-        if db > max_batch_ns {
-            max_batch_ns = db;
+        if diag {
+            let tb = read_monotonic_raw_ns();
+            seq.ingest_entries(transport.entries(), transport.now_ns(), &mut sink);
+            let db = read_monotonic_raw_ns().saturating_sub(tb) as u128;
+            if db > max_batch_ns {
+                max_batch_ns = db;
+            }
+        } else {
+            seq.ingest_entries(transport.entries(), transport.now_ns(), &mut sink);
         }
         nb += 1;
     }
     let dt = read_monotonic_raw_ns().saturating_sub(t0);
-    if std::env::var("HFT_EXP_DIAG").is_ok() {
+    if diag {
         eprintln!(
             "DIAG pass: batches={} total_ms={:.1} max_batch_us={:.1}",
             nb,
@@ -210,6 +222,12 @@ fn main() {
     // R8 phase-4: capture the topology truth BEFORE any arm pins anything
     // (the mask-pollution trap — see affinity::capture_topology).
     let _ = nf_testkit::affinity::capture_topology();
+    // R10: the per-batch DIAG flag, read once (the per-pass env::var was an
+    // in-window allocation — see wall_pass_pipelined).
+    EXP_DIAG.store(
+        std::env::var("HFT_EXP_DIAG").is_ok(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let args: Vec<String> = env::args().collect();
     let mut runs: usize = 30;
     let mut warmup: usize = 5;
