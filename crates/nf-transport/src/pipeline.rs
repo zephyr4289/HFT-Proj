@@ -76,6 +76,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 /// passes of slack.
 const NBUF: u64 = 16;
 const NBUF_MASK: u64 = NBUF - 1;
+/// R8 phase-6: frames per publication (and the EntryBuf slot count —
+/// they are ONE constant: the accumulate loop writes entries[acc..acc+n)
+/// with acc bounded by this cap). 2048: half the handoffs, twice the
+/// per-batch amortization; with NBUF=16 the runahead spans ~2 passes at
+/// the sample's ~12.6k frames.
+const ENTRY_CAP: usize = 2048;
+
 /// RX timed-park quantum for the buffer-free wait (see futex_wait_timeout).
 /// 15us: the consumer frees a buffer every ~30-40us at the achieved rates —
 /// a 50us quantum made the RX's production bursty against that drain and
@@ -105,7 +112,7 @@ const CMD_SHUTDOWN: u8 = 2;
 /// `Drop`) and are never dereferenced after the consumer frees the buffer
 /// (the harness consumes each batch fully before the next `next_batch`).
 struct EntryBuf {
-    entries: Box<[FrameEntry<'static>; 1024]>,
+    entries: Box<[FrameEntry<'static>; ENTRY_CAP]>,
     len: u32,
     clock: u64,
 }
@@ -494,10 +501,6 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
         // amortize 4x further than the 256-slot poll granularity. The RX
         // stays ahead of the consumer by construction (its per-frame cost
         // is a fraction of the scan's), so the accumulation never bubbles.
-        // R8 phase-6: 2048-frame publications — half the handoffs, twice
-        // the per-batch amortization; with NBUF=16 the runahead still
-        // spans ~2 passes at the sample's ~12.6k frames.
-        const ENTRY_CAP: usize = 2048;
         let mut acc = 0usize;
         let mut eos = false;
         // R8 phase-3b: the publication's last-frame blob end offset (the
