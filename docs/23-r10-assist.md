@@ -268,3 +268,22 @@ Frontier after three draws: Zen3 scalar class at 917.0M best, 8.3%
 from the 1B gate. The gate-breaking candidates (Intel fold512 + the
 deep ring + eval_pair + the now-deterministic THP) await an Intel or
 Zen5 draw.
+
+### 9.2 The Intel 8370C partial (run 37036039625 — killed by our own grep)
+
+The fifth re-roll drew **Intel Xeon Platinum 8370C** (ICX-SP, 2793 MHz,
+fold512) — the first fold512-class draw of the R10 stack. The 11b default
+arm completed before a CI-script bug (the new BLOB_BACKING assertion
+grepped a stdout-only tee for an stderr line — fixed one push later)
+aborted the run: **938.7M sustained default** (crc_demand 25.96 GB/s,
+assist 276k chunks, workers 98.8% busy, reset_ms 708 = 14% of the
+window — the bake is this class's heavy tail). `BLOB_BACKING
+verdict=thp-granted` — the Intel THP dividend is real and now logged.
+The sweep arms (11e armed / 11i depth / 11j pipe — the fold512
+levers) did not run; the fold512-class sweep data remains the open
+front. For scale: the 962.5M all-class record was the 8573C (SPR) on
+the R9 stack, slots=4.
+
+Zen3 draw 6 (39c10ee, full green): 11b 898.2M / armed 916.4M (armed
+4-for-4 on Zen3) / slots-4 714.0M / 256 905.3M / pipe 898.6M neutral /
+eval2 854.6M dead / w3 783.8M dead / Front A PASS.
