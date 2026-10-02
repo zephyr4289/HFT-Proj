@@ -512,6 +512,9 @@ fn run_hydra_sustained_5s(
     let mut d_scan_ns: u64 = 0;
     let mut d_end_ns: u64 = 0;
     let mut d_pending_max: u64 = 0;
+    let mut d_wait_ns: u64 = 0;
+    let mut d_work_ns: u64 = 0;
+    let mut d_batches: u64 = 0;
     let mut d_passes: u64 = 0;
     while start.elapsed().as_secs_f64() < 5.0 {
         sess[7..10].copy_from_slice(&session_counter.to_be_bytes()[5..8]);
@@ -526,9 +529,17 @@ fn run_hydra_sustained_5s(
         // Fold drain every batch: keeps the result rings shallow and the
         // ordered fold close behind submission (the overlap's slack is the
         // in-flight ring capacity, not fold lag).
-        while transport.next_batch() {
+        loop {
+            let t_w = std::time::Instant::now();
+            if !transport.next_batch() {
+                break;
+            }
+            d_wait_ns += std::time::Instant::now().duration_since(t_w).as_nanos() as u64;
+            let t_b = std::time::Instant::now();
             seq.ingest_entries(transport.entries(), transport.now_ns(), &mut sink);
             sink.drain_ready();
+            d_work_ns += std::time::Instant::now().duration_since(t_b).as_nanos() as u64;
+            d_batches += 1;
         }
         let t_s = std::time::Instant::now();
         sink.end_pass(); // non-blocking: the tail folds during the next pass
@@ -568,12 +579,15 @@ fn run_hydra_sustained_5s(
 
     if diag {
         eprintln!(
-            "DIAG sustained: passes={} reset_ms={:.1} scan_ms={:.1} end_ms={:.1} pending_max={}",
+            "DIAG sustained: passes={} reset_ms={:.1} scan_ms={:.1} end_ms={:.1} pending_max={} batches={} wait_ms={:.1} work_ms={:.1}",
             d_passes,
             d_reset_ns as f64 / 1e6,
             d_scan_ns as f64 / 1e6,
             d_end_ns as f64 / 1e6,
-            d_pending_max
+            d_pending_max,
+            d_batches,
+            d_wait_ns as f64 / 1e6,
+            d_work_ns as f64 / 1e6
         );
     }
     println!(
