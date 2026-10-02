@@ -101,12 +101,16 @@ grep -q "HYDRA_BITPARITY.*-> BIT-EXACT" /tmp/bench_hydra.txt
 grep -q "allocs=0" /tmp/bench_hydra.txt
 grep -q "PR1_HYDRA_VERDICT" /tmp/bench_hydra.txt
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_hydra.txt
+# R8: the full-verify verdict line must be present and honestly evaluated
+# (the 1B sustained target is OPEN — measured 288M on the Zen5 runner;
+# enforcement lands when the fabric reaches it; see docs/22 §Physics).
+grep -q "PR1_R8_FULL_VERIFY_VERDICT rate=" /tmp/bench_hydra.txt
 
-echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D11) ==="
+echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)
 cargo run --release -p nf-testkit --bin diff_oracle | tee /tmp/diff_oracle.txt
-grep -q "ALL D1..D11 DIFFERENTIAL ORACLE CHECKS PASSED SUCCESSFULLY" /tmp/diff_oracle.txt
+grep -q "ALL D1..D12 DIFFERENTIAL ORACLE CHECKS PASSED SUCCESSFULLY" /tmp/diff_oracle.txt
 
 echo "=== 13. T2 Window Sweep & Full 17-Cell Matrix Confluence Campaign ==="
 cargo run --release -p nf-testkit --bin window_sweep | tee /tmp/window_sweep.txt
@@ -166,6 +170,12 @@ failed = []
 # R4: PR-1 TITAN — span arm wall-rate (count sink, closed-form emission) >= 100M msg/s
 if r['span_rate_msg_per_sec'] < 100_000_000:
     failed.append(f"span_rate_msg_per_sec: {r['span_rate_msg_per_sec']} < 100000000 msg/s (PR1_TITAN)")
+# R8: PR-1 pure ingest — 2B msg/s on the RX-pipelined span arm (gates.rs
+# single threshold source; the verdict field is computed in Rust from the
+# same statistical median). ENFORCED since the R8 branch stabilized six
+# consecutive runner passes (2.04-2.48B on Zen3, 4.08B on Zen5).
+if r.get('r8_pure_ingest_verdict') != 'PASS':
+    failed.append(f"r8_pure_ingest_verdict: {r.get('r8_pure_ingest_verdict')} (R8 pure ingest 2B gate — see gates.rs PR1_R8_PURE_INGEST_MIN_MSG_PER_SEC)")
 for metric, rule in constraints.items():
     val = r[metric]
     if val > rule['max']:
