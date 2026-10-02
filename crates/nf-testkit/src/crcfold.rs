@@ -133,6 +133,29 @@ impl CrcKernel {
             Self::Fold512 => imp::span_fold_eval2(a, b),
         }
     }
+
+    /// R10: evaluate two spans in one call, SEQUENTIAL load order — the
+    /// software-pipelined tail. Span A's vector fold completes, span B's
+    /// vector fold issues next (its clmul chains in flight), and A's
+    /// tail+endings+FNV execute while B's fold streams: the per-span
+    /// ending overhead (~26% of a 1.36KB span's cycles on the real mix —
+    /// the store/reload round-trip, 16 chained crc32 endings, the serial
+    /// FNV imul chain) hides under B's vector phase instead of serializing
+    /// behind A's own. Unlike [`Self::eval2`] the load stream stays ONE
+    /// sequential stream (the post-aliasing blob's bodies are contiguous
+    /// up to ~20B headers) — the hardware streamer keeps tracking it.
+    /// Values are identical to `(eval(a), eval(b))` by construction (the
+    /// same pure functions in the same order; D11-pinned).
+    ///
+    /// # Safety
+    /// Same feature contract as [`Self::eval`].
+    #[inline(always)]
+    pub unsafe fn eval_pair(&self, a: &[u8], b: &[u8]) -> (u64, u64) {
+        match self {
+            Self::Scalar => (span_crc32c_8lane(a), span_crc32c_8lane(b)),
+            Self::Fold512 => imp::span_fold_eval_pair(a, b),
+        }
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -584,6 +607,55 @@ pub(crate) mod imp {
         }
         (finish_span(a, sta), finish_span(b, stb))
     }
+
+    /// R10: the software-pipelined tail — two spans, ONE sequential load
+    /// stream, A's endings deferred under B's vector phase. The structure
+    /// is deliberately NOT eval2's interleave: the loads run A fully, then
+    /// B fully (the post-aliasing blob's span bodies are contiguous up to
+    /// ~20B frame headers, so the pair is one ~2.7KB sequential read the
+    /// hardware streamer tracks as a single stream), and the ENDINGS run
+    /// after B's fold is issued — the out-of-order engine overlaps A's
+    /// tail+endings+FNV (store/reload round-trip, 16 chained crc32, the
+    /// serial FNV imul chain — the per-span overhead that the real-mix
+    /// fbench control prices at ~26% of a 1.36KB span) with B's in-flight
+    /// clmul chains instead of serializing them behind A's own.
+    ///
+    /// Values are identical to `(span_fold_eval(a), span_fold_eval(b))`:
+    /// the same pure functions over the same bytes, evaluated in the same
+    /// order — only the instruction schedule changes.
+    ///
+    /// # Safety
+    /// Same feature contract as [`span_fold_eval`].
+    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
+    pub unsafe fn span_fold_eval_pair(a: &[u8], b: &[u8]) -> (u64, u64) {
+        // Short spans take the scalar path per-body (same guards as eval2 —
+        // the FOLD_MIN_LEN gate is per-span, and the scalar kernel IS the
+        // value for short bodies).
+        if a.len() < FOLD_MIN_LEN {
+            let va = span_crc32c_8lane(a);
+            let vb = span_fold_eval(b);
+            return (va, vb);
+        }
+        if b.len() < FOLD_MIN_LEN {
+            let vb = span_crc32c_8lane(b);
+            let va = span_fold_eval(a);
+            return (va, vb);
+        }
+        // Phase 1: A's vector fold (its clmul chains retire into sta).
+        // SAFETY: 128*(wpa) <= a.len() (FOLD_MIN_LEN gate).
+        let sta = fold_word_pairs(a.as_ptr(), a.len() / 64 / 2);
+        // Phase 2: B's vector fold — issued while A's last clmuls drain.
+        // SAFETY: 128*(wpb) <= b.len().
+        let stb = fold_word_pairs(b.as_ptr(), b.len() / 64 / 2);
+        // Phase 3: A's tail + endings + FNV — overlapped with phase 2's
+        // in-flight chains by the out-of-order engine (independent work,
+        // issued behind it in program order).
+        let va = finish_span(a, sta);
+        // Phase 4: B's tail + endings + FNV (overlaps the NEXT pair's
+        // phase 1 when the worker loop chains these calls).
+        let vb = finish_span(b, stb);
+        (va, vb)
+    }
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -597,6 +669,11 @@ pub(crate) mod imp {
 
     #[inline(always)]
     pub unsafe fn span_fold_eval2(a: &[u8], b: &[u8]) -> (u64, u64) {
+        (span_crc32c_8lane(a), span_crc32c_8lane(b))
+    }
+
+    #[inline(always)]
+    pub unsafe fn span_fold_eval_pair(a: &[u8], b: &[u8]) -> (u64, u64) {
         (span_crc32c_8lane(a), span_crc32c_8lane(b))
     }
 }

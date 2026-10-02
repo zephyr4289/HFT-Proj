@@ -609,10 +609,16 @@ fn test_d11_crc_kernel_differential() {
         let (ga, gb) = unsafe { kernel.eval2(&a, &b) };
         assert_eq!(want_a, ga, "D11: eval2 A diverged ({} x {})", la, lb);
         assert_eq!(want_b, gb, "D11: eval2 B diverged ({} x {})", la, lb);
-        checked += 2;
+        // R10: the sequential-load pair (the pipelined-tail schedule) —
+        // identical values, different instruction order.
+        // SAFETY: feature contract verified above.
+        let (pa, pb) = unsafe { kernel.eval_pair(&a, &b) };
+        assert_eq!(want_a, pa, "D11: eval_pair A diverged ({} x {})", la, lb);
+        assert_eq!(want_b, pb, "D11: eval_pair B diverged ({} x {})", la, lb);
+        checked += 4;
     }
     println!(
-        "D11 CRC_KERNEL_DIFFERENTIAL_PASSED: scalar==reference, fold512==scalar on {} bodies (exhaustive lengths + patterns + random + eval2)",
+        "D11 CRC_KERNEL_DIFFERENTIAL_PASSED: scalar==reference, fold512==scalar on {} bodies (exhaustive lengths + patterns + random + eval2 + eval_pair)",
         checked
     );
 }

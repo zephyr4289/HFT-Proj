@@ -87,6 +87,7 @@ fn main() {
     if fold512_available() {
         bench_1t("fold512", c0, mode_fold512);
         bench_1t("fold512_eval2", c0, mode_fold512_eval2);
+        bench_1t("fold512_pair", c0, mode_fold512_pair);
         bench_1t("fold512_pclmul_mix", c0, mode_fold512_pclmul_mix);
     }
 
@@ -293,6 +294,25 @@ fn mode_fold512_eval2(buf: &[u8], sink: &mut u64) -> usize {
         // SAFETY: main() only dispatches here when fold512_available().
         let (a, b) =
             unsafe { kernel.eval2(&buf[off..off + SPAN], &buf[off + SPAN..off + 2 * SPAN]) };
+        acc ^= a ^ b;
+        off += 2 * SPAN;
+    }
+    *sink = acc;
+    off
+}
+
+/// R10: the sequential-load pair — the pipelined-tail schedule on the same
+/// packed-SPAN corpus as mode_fold512. fold512_pair vs fold512 is the
+/// kernel-level attribution of the deferred-ending mechanism (the fabric
+/// effect additionally carries the real layout + ring mechanics).
+fn mode_fold512_pair(buf: &[u8], sink: &mut u64) -> usize {
+    let kernel = CrcKernel::Fold512;
+    let mut off = 0usize;
+    let mut acc = 0u64;
+    while off + 2 * SPAN <= buf.len() {
+        // SAFETY: main() only dispatches here when fold512_available().
+        let (a, b) =
+            unsafe { kernel.eval_pair(&buf[off..off + SPAN], &buf[off + SPAN..off + 2 * SPAN]) };
         acc ^= a ^ b;
         off += 2 * SPAN;
     }

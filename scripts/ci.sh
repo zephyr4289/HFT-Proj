@@ -181,6 +181,18 @@ HFT_ASSIST_SLOTS=256 cargo run --release -p nf-engine --bin bench -- --hydra-onl
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_assist256.txt
 grep -q "allocs=0" /tmp/bench_assist256.txt
 
+echo "=== 11j. R10: Worker Pipelined-Tail Sweep (sequential-load pair eval) ==="
+# The deferred-ending schedule: consecutive span pairs evaluate through
+# eval_pair (A's vector fold, B's vector fold, A's endings, B's endings —
+# one sequential load stream, the per-span ending overhead hidden under
+# the next span's clmul chains). Unlike eval2 (dead: -28%, interleaved
+# loads thrash the streamer) the load order is unchanged. kbench's
+# fold512_pair vs fold512 rows attribute the kernel-level effect on
+# every fold512 draw. Diagnostics only.
+HFT_WORKER_PIPE=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_pipe.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_pipe.txt
+grep -q "allocs=0" /tmp/bench_pipe.txt
+
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)

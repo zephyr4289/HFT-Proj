@@ -454,6 +454,12 @@ fn lane_worker(
     // R9: the eval2 interleave experiment knob (read once at worker
     // start — outside every measurement window; see the loop's doc).
     let eval2 = std::env::var("HFT_WORKER_EVAL2").as_deref() == Ok("1");
+    // R10: the software-pipelined tail experiment knob — consecutive span
+    // pairs evaluate through `kernel.eval_pair` (A's vector fold, B's
+    // vector fold, A's endings, B's endings — one sequential load stream,
+    // the per-span ending overhead hidden under the next span's clmul
+    // chains). Read once at worker start, outside every window.
+    let pipe = std::env::var("HFT_WORKER_PIPE").as_deref() == Ok("1");
     let pf = PfCfg::detect(kernel);
     let mut tail: u64 = 0; // desc cursor (worker-owned)
     let mut rhead: u64 = 0; // result cursor (worker-owned)
@@ -569,7 +575,26 @@ fn lane_worker(
             // per the HydraLane contract — immutable bytes, valid until the
             // owning pass's finish() drain.
             {
-                if eval2 && !null && i + 1 < n {
+                if pipe && !null && i + 1 < n {
+                    // R10: the pipelined pair — same two descriptors, same
+                    // values, same emission order as two single-span evals;
+                    // only the instruction schedule differs (A's endings
+                    // issue behind B's vector fold).
+                    // SAFETY: as the single-span path, twice.
+                    let d0 = slots[((tail + i) & DESC_MASK) as usize];
+                    let d1 = slots[((tail + i + 1) & DESC_MASK) as usize];
+                    // SAFETY: published descriptor slots (Acquire above);
+                    // body slices per the HydraLane contract.
+                    let b0 =
+                        unsafe { std::slice::from_raw_parts(d0.ptr, d0.len as usize) };
+                    let b1 =
+                        unsafe { std::slice::from_raw_parts(d1.ptr, d1.len as usize) };
+                    // SAFETY: feature contract verified at spawn.
+                    let (v0, v1) = unsafe { kernel.eval_pair(b0, b1) };
+                    emit(res_slots, i, d0.span_id, v0);
+                    emit(res_slots, i + 1, d1.span_id, v1);
+                    i += 2;
+                } else if eval2 && !null && i + 1 < n {
                     let d0 = slots[((tail + i) & DESC_MASK) as usize];
                     let d1 = slots[((tail + i + 1) & DESC_MASK) as usize];
                     // SAFETY: as the single-span path, twice.
