@@ -363,3 +363,23 @@ prefer two streams in flight), the deeper prefetch lead (11h — the
 (2,22,24) default was tuned on the shared-core sandbox), and the
 third-worker shape (11f — Intel fold512 data pending; scalar AMD draws
 measured -2.9% on 9V74).
+
+### 7.10 The 962.5M draw and the TLB lever
+
+The second 8573C draw (876f1ce): **962.4M default / 962.5M armed** — the
+budget pacing fixed the armed regression (parity now), and the sweep
+verdicts landed: the third worker is dead on Intel too (-25%: the
+RX-hyperthread lane starves the render path), eval2 is dead (-28%: the
+interleave thrashes the sequential streamer), the deeper prefetch lead is
+worse (24.63 vs 26.61 GB/s). The (2,22,24) spray stands.
+
+The remaining 3.9% decomposition from the same draw's telemetry: the
+kbench packed-pair ceiling 29.79 GB/s, the real-mix packed control 25.51,
+the real fabric 26.61. The span-length histogram (now in fbench) kills
+the short-span suspect — ALL 10,992 spans are >= 512B (FOLD_MIN_LEN never
+fires). The remaining structural suspect: TLB pressure — each worker
+streams 7.5MB across ~1875 4KB pages of the shared blob, at the STLB
+edge. R9e backs the blob with a 2MB-aligned MADV_HUGEPAGE mapping
+(construction-time copy, faults outside every window, heap fallback when
+mmap fails, THP=`never` degrades harmlessly). On `madvise`-mode runners
+the workers' footprint collapses from ~1875 TLB entries to 8.

@@ -193,7 +193,45 @@ fn collect_bodies(gt: &[u8]) -> (Vec<(usize, usize)>, usize) {
     }
     // Leak: the blob must outlive every returned pointer.
     std::mem::forget(t);
+    // R9: span-length histogram — the FOLD_MIN_LEN gate sends bodies
+    // below 192B to the scalar kernel (~4x slower per byte); the
+    // distribution's short tail is a first-class fabric cost.
+    {
+        let mut lt64 = 0u64;
+        let mut lt192 = 0u64;
+        let mut lt512 = 0u64;
+        let mut ge512 = 0u64;
+        let mut bytes_lt192 = 0u64;
+        for &(_, l) in &bodies {
+            if l < 64 {
+                lt64 += 1;
+            } else if l < 192 {
+                lt192 += 1;
+            } else if l < 512 {
+                lt512 += 1;
+            } else {
+                ge512 += 1;
+            }
+            if l < 192 {
+                bytes_lt192 += l as u64;
+            }
+        }
+        println!(
+            "FBENCH lens total={} lt64={} lt192={} lt512={} ge512={} bytes_lt192={} pct_bytes_lt192={:.2}",
+            bodies.len(),
+            lt64,
+            lt192,
+            lt512,
+            ge512,
+            bytes_lt192,
+            bytes_lt192 as f64 / total_gt(&bodies) * 100.0
+        );
+    }
     (bodies, msgs)
+}
+
+fn total_gt(bodies: &[(usize, usize)]) -> f64 {
+    bodies.iter().map(|&(_, l)| l as f64).sum::<f64>().max(1.0)
 }
 
 /// Stage P/K consumer: walk `bodies`, evaluate, XOR-accumulate.

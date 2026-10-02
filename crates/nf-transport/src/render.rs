@@ -74,11 +74,131 @@ struct FrameMeta {
     first_seq: u64,
 }
 
+/// R9: the rendered blob, backed by an anonymous mmap marked
+/// MADV_HUGEPAGE with a 2MB-ALIGNED base. WHY: the verification workers
+/// stream ~7.5MB each over the shared blob — ~1875 4KB pages per worker,
+/// right at the shared L2 STLB's capacity on the runner silicon, so a
+/// measurable slice of the workers' line fetches pays a page-walk. With
+/// transparent huge pages the same footprint is 8 TLB entries
+/// (kbench-vs-fabric gap attribution: the packed pair ceiling is 29.8
+/// GB/s on the 8573C draw, the real fabric delivers 26.6 — the length
+/// mix is uniform (all spans >= 512B, measured), so the TLB is the
+/// remaining structural suspect). THP mode `never` degrades to 4KB
+/// pages harmlessly; `always`/`madvise` get the big pages at fault time
+/// (the construction-time render writes every byte, so all faults happen
+/// here, outside every measurement window).
+struct MmapBlob {
+    /// Fallback owner when mmap is unavailable (THP is an optimization,
+    /// never a correctness dependency) — the heap block is leaked at Drop
+    /// time instead of munmapped.
+    heap: Option<Box<[u8]>>,
+    /// The mmap's true base (what munmap needs; valid when heap.is_none()).
+    map_base: *mut u8,
+    map_len: usize,
+    /// The 2MB-aligned slice base handed to the renderer.
+    data: *mut u8,
+    len: usize,
+}
+
+// SAFETY: MmapBlob owns its mapping/heap block exclusively; moving the
+// transport across threads moves the owner (no shared aliasing).
+unsafe impl Send for MmapBlob {}
+
+impl std::ops::Deref for MmapBlob {
+    type Target = [u8];
+    #[inline]
+    fn deref(&self) -> &[u8] {
+        // SAFETY: the mapping is live for the owner's life; the renderer
+        // only hands out immutable borrows after construction.
+        unsafe { std::slice::from_raw_parts(self.data, self.len) }
+    }
+}
+
+impl std::ops::DerefMut for MmapBlob {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [u8] {
+        // SAFETY: as Deref; the owner holds the exclusive borrow.
+        unsafe { std::slice::from_raw_parts_mut(self.data, self.len) }
+    }
+}
+
+impl Drop for MmapBlob {
+    fn drop(&mut self) {
+        if self.heap.is_none() {
+            // SAFETY: the mapping was created by `from_vec` and is unmapped
+            // exactly once, here.
+            unsafe {
+                libc::munmap(self.map_base as *mut libc::c_void, self.map_len);
+            }
+        }
+        // The heap fallback's Box drops here (or was never set).
+    }
+}
+
+impl MmapBlob {
+    /// Copy `src` into a fresh 2MB-aligned MADV_HUGEPAGE mapping sized to
+    /// `src.len()` (plus alignment slack). The copy faults every page in,
+    /// so THP allocation happens HERE — construction-time, outside every
+    /// measurement window.
+    fn from_vec(src: &[u8]) -> Self {
+        const HP: usize = 2 << 20; // 2 MiB hugepage granularity
+        let slack = if src.len().is_multiple_of(HP) { 0 } else { HP };
+        let map_len = src.len() + slack;
+        // SAFETY: fresh anonymous mapping; PROT_READ|PROT_WRITE.
+        let base = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                map_len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+        };
+        if base == libc::MAP_FAILED {
+            // Cold fallback: ordinary heap pages (Send-safe exclusive Box
+            // owner; the block frees when the transport drops).
+            let b: Box<[u8]> = src.to_vec().into_boxed_slice();
+            let len = b.len();
+            let data = b.as_ptr() as *mut u8;
+            return Self {
+                heap: Some(b),
+                map_base: data,
+                map_len: len,
+                data,
+                len,
+            };
+        }
+        let map_base = base as *mut u8;
+        // Align the usable base up to a 2MB boundary so fault-time THP
+        // covers everything except (at most) the final partial page run.
+        let data = unsafe { map_base.add(HP - (map_base as usize & (HP - 1))) };
+        debug_assert!(data as usize & (HP - 1) == 0);
+        // SAFETY: [data, data+len) is within [map_base, map_base+map_len)
+        // by the slack arithmetic above.
+        unsafe {
+            std::ptr::copy_nonoverlapping(src.as_ptr(), data, src.len());
+            libc::madvise(
+                map_base as *mut libc::c_void,
+                map_len,
+                libc::MADV_HUGEPAGE,
+            );
+        }
+        Self {
+            heap: None,
+            map_base,
+            map_len,
+            data,
+            len: src.len(),
+        }
+    }
+}
+
 pub struct ReplayTransport {
     schedule: ReplaySchedule,
     event_idx: usize,
     virtual_clock: u64,
-    frames: Box<[u8]>,
+    frames: MmapBlob,
     meta: Box<[FrameMeta]>,
     /// R8: parallel release-time stream (event order, one u64 per event).
     vts: Box<[u64]>,
@@ -453,11 +573,14 @@ impl ReplayTransport {
         }
         // R8/R9: the patch list is built in EVENT order at first render
         // (see patch_evts' field doc) — no derivation sweep needed.
+        // R9: the blob moves into a 2MB-aligned MADV_HUGEPAGE mapping
+        // (construction-time copy — every page faults here, outside every
+        // measurement window; see MmapBlob).
         let mut t = Self {
             schedule,
             event_idx: 0,
             virtual_clock: first_vt,
-            frames: blob.into_boxed_slice(),
+            frames: MmapBlob::from_vec(&blob),
             meta: meta.into_boxed_slice(),
             vts: vts.into_boxed_slice(),
             group_end: group_end.into_boxed_slice(),
