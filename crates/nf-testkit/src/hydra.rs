@@ -337,7 +337,11 @@ fn null_mode() -> bool {
 /// * `HFT_PF_LINES` — max cache lines prefetched per span (default 22;
 ///   span bodies average ~20 lines).
 /// * `HFT_PF_BURST` — max prefetches issued per evaluated span (default
-///   12; smooths request pressure instead of bursting at batch entry).
+///   24). MUST exceed the per-span line demand (~20 lines for the ~1.3KB
+///   bodies): the first Zen3 run with the rewrite shipped burst=12 and the
+///   cursor's lead decayed to zero — the prefetch rate was capped below
+///   the consumption rate and the workers fell back to stall-bound demand
+///   loads (8.5 GB/s per core against the 24 GB/s measured ceiling).
 ///
 /// WHY the rewrite: the pre-deep-mailbox shape (2 lines x 4 spans) dated
 /// from an architecture where the consumer idled 66% of the wall and the
@@ -368,7 +372,7 @@ impl PfCfg {
         Self {
             ahead: parse("HFT_PF_AHEAD", 2),
             lines: parse("HFT_PF_LINES", 22) as usize,
-            burst: parse("HFT_PF_BURST", 12) as usize,
+            burst: parse("HFT_PF_BURST", 24) as usize,
         }
     }
 }
