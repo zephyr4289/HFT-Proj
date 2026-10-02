@@ -287,3 +287,20 @@ the R9 stack, slots=4.
 Zen3 draw 6 (39c10ee, full green): 11b 898.2M / armed 916.4M (armed
 4-for-4 on Zen3) / slots-4 714.0M / 256 905.3M / pipe 898.6M neutral /
 eval2 854.6M dead / w3 783.8M dead / Front A PASS.
+
+## 10. The Gate Breaks: 1.109B Sustained Full Verification (Intel Xeon 8573C, run 37040724600)
+
+The target Intel Xeon Platinum 8573C runner (Sapphire Rapids, 2300 MHz, fold512) drew on run 37040724600:
+
+| Metric | Target / Gate | Achieved Result | Verdict |
+|---|---|---|---|
+| **Sustained Full Verification (5s)** | $\ge 1,000,000,000\text{ msg/s}$ | **1,109,130,234 msg/s** (5.546B msgs in 5.00s) | **PASS** |
+| **Pure Ingest Rate (Front A)** | $\ge 2,000,000,000\text{ msg/s}$ | **3,474,691,064 msg/s** (0.661 cyc/msg median) | **PASS** |
+| **Delivered CRC Bandwidth** | $27.65\text{ GB/s}$ demand | **30.67 GB/s** (110.9% of gate requirement) | **PASS** |
+| **Submitting-Core CRC Assist** | — | **224,897 chunks** converted from spin to CRC | **PASS** |
+| **THP 2MB HugePage Grant** | Fault-time mapping | **14,336 KB (thp-granted)** | **PASS** |
+| **Bit-Exact Conformance** | Reference golden hash | **0x881639cead506f25 (BIT-EXACT)** | **PASS** |
+| **Dynamic Allocations** | ALLOC_DELTA = 0 | **allocs = 0** | **PASS** |
+
+The combined R10/R10b stack (64-slot deep assist ring + fold512 pipelined tail eval + deterministic fault-time THP backing) closed the remaining 3.8% gap and officially broke the 1.0B msg/s full verification gate on 2-vCPU cloud silicon. Both `PR1_GIGAHFT_VERDICT` and `PR1_R8_FULL_VERIFY_VERDICT` passed cleanly.
+
