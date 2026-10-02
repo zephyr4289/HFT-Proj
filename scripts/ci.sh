@@ -165,6 +165,22 @@ HFT_PF_AHEAD=6 HFT_PF_LINES=32 HFT_PF_BURST=32 cargo run --release -p nf-engine 
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_pf.txt
 grep -q "allocs=0" /tmp/bench_pf.txt
 
+echo "=== 11i. R10: Assist-Ring Depth Sweep (the spin->CRC conversion budget) ==="
+# The deep assist ring converts lane-full backpressure spins into
+# in-window CRC on the submitting core. The depth bounds how far the
+# submit point may run ahead of the fold before the conversion saturates:
+# local sandbox 4/16/64/256 -> 266/343/422/442M. The 11b default arm
+# carries slots=64; this sweep brackets the curve per runner class
+# (shallow=4 reproduces the R8 equilibrium, deep=256 probes the lead).
+# Diagnostics only — bit-exactness is asserted by every arm's per-pass
+# tuple checks.
+HFT_ASSIST_SLOTS=4 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_assist4.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_assist4.txt
+grep -q "allocs=0" /tmp/bench_assist4.txt
+HFT_ASSIST_SLOTS=256 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_assist256.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_assist256.txt
+grep -q "allocs=0" /tmp/bench_assist256.txt
+
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)

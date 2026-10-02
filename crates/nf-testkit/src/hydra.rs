@@ -764,7 +764,9 @@ impl Drop for HydraFabric {
 /// lane rings are full (workers saturated), the submitting core evaluates
 /// the chunk's spans itself instead of spinning (see InlineChunk).
 
-/// One inline-assist chunk buffer (see the sink doc above).
+/// One inline-assist chunk buffer (see the sink doc above). R10: the span
+/// ids are implicit (`first_span + i`) — the ids array's store/load traffic
+/// left the assist path with it.
 #[derive(Clone, Copy)]
 struct InlineChunk {
     /// First span id of the chunk (u64::MAX = free slot).
@@ -778,9 +780,8 @@ struct InlineChunk {
     /// freed the slot, and the chunk's remaining spans were folded by
     /// nobody).
     sealed: bool,
-    /// Values + span ids, in emission order.
+    /// Values, in emission order.
     vals: [u64; CHUNK as usize],
-    ids: [u32; CHUNK as usize],
 }
 
 impl InlineChunk {
@@ -790,13 +791,32 @@ impl InlineChunk {
             len: 0,
             sealed: false,
             vals: [0; CHUNK as usize],
-            ids: [0; CHUNK as usize],
         }
     }
 }
 
-/// Inline-assist ring depth (completed-but-unfolded chunk buffers).
-const INLINE_SLOTS: usize = 4;
+/// R10 — the deep assist ring. The R8 assist buffered a mere 4 chunks:
+/// inline chunks sit at the SUBMIT point, far ahead of the fold cursor,
+/// and can only fold once every worker-owned chunk before them has
+/// returned — so a 4-deep ring clogs after ~256 assisted spans and the
+/// submitting core falls back to the backpressure spin, burning exactly
+/// the cycles the assist exists to convert. The measured equilibrium on
+/// the Zen3 draw (CI 37005861779): main's work_ms=86% against a ~20%
+/// pure-ingest duty — the difference was spin time behind saturated
+/// workers, with assist_chunks at 5.4% and the workers' SMT sibling (RX)
+/// starved 3x by the spin traffic. The deep ring (default 64 chunks =
+/// 4096 assisted spans of lead) lets the submitting core keep converting
+/// lane-full backpressure into in-window CRC for as long as the fold
+/// lags, and `HFT_ASSIST_SLOTS` sweeps the depth per runner class.
+const DEFAULT_ASSIST_SLOTS: usize = 64;
+
+fn assist_slots_from_env() -> usize {
+    std::env::var("HFT_ASSIST_SLOTS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_ASSIST_SLOTS)
+        .clamp(4, 4096)
+}
 
 pub struct HydraSpanSink<'a> {
     fabric: Option<&'a HydraFabric>,
@@ -844,8 +864,17 @@ pub struct HydraSpanSink<'a> {
     /// The kernel the inline evaluations run (the fabric's — bit-exact
     /// across kernels by D11, so main and workers can mix freely).
     kernel: CrcKernel,
-    /// Completed-but-unfolded inline chunks (ring).
-    inline_ring: [InlineChunk; INLINE_SLOTS],
+    /// R10: the deep assist ring — `inline_ring[i % assist_slots]` holds
+    /// inline chunk #i (claim order == submission order == fold order, so
+    /// the ring is indexed by two monotone counters and the fold's lookup
+    /// is O(1)).
+    inline_ring: Vec<InlineChunk>,
+    /// Assist ring depth (HFT_ASSIST_SLOTS; construction-time).
+    assist_slots: usize,
+    /// Inline chunks claimed so far (next claim's sequence number).
+    inline_seq: u64,
+    /// Inline chunks folded so far (oldest unfolded chunk's sequence).
+    inline_fold_seq: u64,
     /// Ring slot of the chunk CURRENTLY being filled (None = lane mode).
     cur_inline: Option<usize>,
     /// Force every chunk inline (diagnostics + parity tests: a fully
@@ -900,7 +929,14 @@ impl<'a> HydraSpanSink<'a> {
             fold_lane: 0,
             fold_rem: CHUNK,
             kernel: fabric.map(|f| f.kernel).unwrap_or(CrcKernel::Scalar),
-            inline_ring: [InlineChunk::free(); INLINE_SLOTS],
+            // R10: the deep assist ring (env-sized at construction — sinks
+            // are built outside every measurement window).
+            assist_slots: assist_slots_from_env(),
+            inline_ring: (0..assist_slots_from_env())
+                .map(|_| InlineChunk::free())
+                .collect(),
+            inline_seq: 0,
+            inline_fold_seq: 0,
             cur_inline: None,
             assist_chunks: 0,
             force_inline: std::env::var("HFT_INLINE_FORCE").as_deref() == Ok("1"),
@@ -947,8 +983,14 @@ impl<'a> HydraSpanSink<'a> {
         assert_eq!(self.pending_len, 0, "hydra reset with pending chunk");
         // R8 phase-5: the inline ring must be fully folded (fold_pos ==
         // next_span proves it); clear the window state defensively.
+        // R10: rebuild the deep ring's slots (depth is fixed at
+        // construction; only the contents reset).
+        self.inline_seq = 0;
+        self.inline_fold_seq = 0;
+        for c in self.inline_ring.iter_mut() {
+            *c = InlineChunk::free();
+        }
         self.cur_inline = None;
-        self.inline_ring = [InlineChunk::free(); INLINE_SLOTS];
         self.hash = Self::SPAN_SEED;
         self.count = 0;
         self.last_gen = 0;
@@ -1205,19 +1247,29 @@ impl<'a> HydraSpanSink<'a> {
         self.pending_lane = self.submit_lane;
         let lane = &fabric.lanes[self.pending_lane];
         let h0 = lane.desc_head.load(Ordering::Relaxed);
-        // R8 phase-5 — WORK-ASSIST: check space once; if the lane is
-        // saturated AND an inline slot is free, take the chunk inline
-        // (evaluate on THIS core when the workers cannot keep up —
-        // the cycles come out of the backpressure spin they would
-        // otherwise burn). Forced-inline mode (parity tests) takes
-        // this path unconditionally.
+        // R8 phase-5 / R10 — WORK-ASSIST on the deep ring: check space
+        // once; if the lane is saturated, claim an assist-ring slot and
+        // take the chunk inline (evaluate on THIS core when the workers
+        // cannot keep up — the cycles come out of the backpressure spin
+        // they would otherwise burn). The deep ring keeps the conversion
+        // sustainable for as long as the fold lags the submit point.
+        // Forced-inline mode (parity tests) takes this path
+        // unconditionally — and NEVER falls back to a lane (the ring
+        // drains by folding, so the wait is bounded and deadlock-free).
         let t = lane.desc_tail.load(Ordering::Acquire);
         let lane_full = h0.saturating_sub(t) + CHUNK > DESC_CAP;
-        let take_inline =
-            self.n_lanes > 0 && self.inline_slot_free() && (self.force_inline || lane_full);
+        let take_inline = if self.force_inline {
+            let mut sb = 0u32;
+            while !self.try_claim_inline() {
+                self.fold_available();
+                crate::affinity::polite_spin(&mut sb);
+            }
+            true
+        } else {
+            lane_full && self.try_claim_inline()
+        };
         if take_inline {
             self.assist_chunks += 1;
-            self.cur_inline = Some(self.inline_claim());
         } else {
             // Space check for the WHOLE chunk up front (the in-place
             // writes below must never touch slots the worker still
@@ -1239,6 +1291,27 @@ impl<'a> HydraSpanSink<'a> {
         }
     }
 
+    /// R10: claim the next assist-ring slot for the chunk starting at
+    /// `next_span` (O(1) — the ring is indexed by the claim counter).
+    /// Returns false when the ring is at capacity (in-flight chunks fill
+    /// all but one slot); the caller then falls back to the lane path or,
+    /// in force mode, folds until a slot frees.
+    #[inline]
+    fn try_claim_inline(&mut self) -> bool {
+        if self.inline_seq - self.inline_fold_seq < self.assist_slots as u64 - 1 {
+            let slot = (self.inline_seq % self.assist_slots as u64) as usize;
+            self.inline_seq += 1;
+            let c = &mut self.inline_ring[slot];
+            c.first_span = self.next_span;
+            c.len = 0;
+            c.sealed = false;
+            self.cur_inline = Some(slot);
+            true
+        } else {
+            false
+        }
+    }
+
     /// The assist evaluation (the inline kernel dispatch + inline-ring
     /// store). #[inline(never)] keeps the kernel-dispatch machinery out of
     /// the steady scan's µop-cache window; the assist fires only when the
@@ -1252,33 +1325,22 @@ impl<'a> HydraSpanSink<'a> {
         let value = unsafe { self.kernel.eval(body) };
         let c = &mut self.inline_ring[slot];
         c.vals[self.pending_len as usize] = value;
-        c.ids[self.pending_len as usize] = self.next_span as u32;
         c.len = self.pending_len as u32 + 1;
         self.pending_len += 1;
     }
 
-    /// R8 phase-5: is an inline ring slot free (excluding the one being
-    /// filled)?
+    /// R10: the oldest unfolded inline chunk's ring slot (None when every
+    /// claimed chunk has folded). Inline chunks are claimed in submission
+    /// order and consumed by the ordered fold in the same order, so this
+    /// is the ONLY slot the fold ever needs to look at — the R8 linear
+    /// scan left with the deep ring.
     #[inline]
-    fn inline_slot_free(&self) -> bool {
-        self.inline_ring
-            .iter()
-            .any(|c| c.first_span == u64::MAX)
-    }
-
-    /// Claim a free inline slot for the chunk starting at `next_span`.
-    #[inline]
-    fn inline_claim(&mut self) -> usize {
-        let first = self.next_span;
-        let idx = self
-            .inline_ring
-            .iter()
-            .position(|c| c.first_span == u64::MAX)
-            .expect("inline claim with no free slot");
-        self.inline_ring[idx].first_span = first;
-        self.inline_ring[idx].len = 0;
-        self.inline_ring[idx].sealed = false;
-        idx
+    fn oldest_inline_slot(&self) -> Option<usize> {
+        if self.inline_fold_seq < self.inline_seq {
+            Some((self.inline_fold_seq % self.assist_slots as u64) as usize)
+        } else {
+            None
+        }
     }
 
     /// Fold every completed-but-unfolded result batch (non-blocking, in
@@ -1296,44 +1358,41 @@ impl<'a> HydraSpanSink<'a> {
         };
         self.complete_boundaries();
         while self.fold_pos < self.next_span {
-            // R8 phase-5 — WORK-ASSIST fold: an inline chunk sitting exactly
-            // at the fold cursor applies its buffered values directly (the
-            // workers never saw it). Inline chunks start at chunk-window
-            // starts, so an exact first_span match is unambiguous.
-            if let Some(slot) = self
-                .inline_ring
-                .iter()
-                .position(|c| c.sealed && c.first_span == self.fold_pos)
-            {
-                let n = self.inline_ring[slot].len as u64;
-                debug_assert!(n <= self.fold_rem, "inline chunk exceeds its window");
-                for i in 0..n as usize {
-                    let (id, v) = (self.inline_ring[slot].ids[i], self.inline_ring[slot].vals[i]);
-                    // Fail-stop ordering guard (same discipline as the lane
-                    // path): a mis-slotted value is a fabric bug, never a
-                    // silent hash corruption.
-                    assert_eq!(
-                        id as u64,
-                        self.fold_pos + i as u64,
-                        "hydra inline fold-order violation: got span {}, expected {}",
-                        id,
-                        self.fold_pos + i as u64
-                    );
-                    self.fold_value(v);
+            // R10 — WORK-ASSIST fold, O(1): inline chunks are claimed in
+            // submission order, so the oldest unfolded one is the ONLY
+            // candidate sitting at the fold cursor (the R8 4-slot scan
+            // generalized to the deep ring). An exact first_span match is
+            // unambiguous: inline chunks start at chunk-window starts.
+            if let Some(slot) = self.oldest_inline_slot() {
+                let (first_span, len, sealed) = {
+                    let c = &self.inline_ring[slot];
+                    (c.first_span, c.len, c.sealed)
+                };
+                if sealed && first_span == self.fold_pos {
+                    let n = len as u64;
+                    debug_assert!(n <= self.fold_rem, "inline chunk exceeds its window");
+                    // Fail-stop ordering discipline (same law as the lane
+                    // path): span ids are first_span + i by construction —
+                    // the claim-order invariant IS the order proof, and the
+                    // exact-match above is its guard.
+                    for i in 0..n as usize {
+                        let v = self.inline_ring[slot].vals[i];
+                        self.fold_value(v);
+                    }
+                    self.inline_fold_seq += 1;
+                    self.fold_pos += n;
+                    self.fold_rem -= n;
+                    if self.fold_rem == 0 {
+                        self.fold_rem = CHUNK;
+                        self.fold_lane = if self.fold_lane + 1 == self.n_lanes {
+                            0
+                        } else {
+                            self.fold_lane + 1
+                        };
+                    }
+                    self.complete_boundaries();
+                    continue;
                 }
-                self.inline_ring[slot].first_span = u64::MAX; // free the slot
-                self.fold_pos += n;
-                self.fold_rem -= n;
-                if self.fold_rem == 0 {
-                    self.fold_rem = CHUNK;
-                    self.fold_lane = if self.fold_lane + 1 == self.n_lanes {
-                        0
-                    } else {
-                        self.fold_lane + 1
-                    };
-                }
-                self.complete_boundaries();
-                continue;
             }
             // H6: `fold_lane` tracks the chunk containing `fold_pos` — no
             // division in the hot path (advance after chunk completion).
