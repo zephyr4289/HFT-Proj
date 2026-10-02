@@ -471,11 +471,22 @@ fn run_hydra_sustained_5s(
     // assist cannot repay it. Two dedicated workers remain the default;
     // fabric_placement still extends the pool for explicit experiments.
     let n_phys = nf_testkit::affinity::physical_core_count();
-    let workers = if n_phys >= 4 {
+    let mut workers = if n_phys >= 4 {
         3
     } else {
         2.min(topo.len().saturating_sub(1)).max(1)
     };
+    // R9: experiment override — HFT_SUSTAINED_WORKERS=N pins the fabric's
+    // lane count for placement sweeps (e.g. the third worker on the RX
+    // hyperthread on the 2-physical-core Intel runners, whose SMT-polite
+    // scavenging was only ever measured on AMD silicon). The auto-advance
+    // harness shape is worker-count agnostic; the assist contains any
+    // straggler lane by construction.
+    if let Ok(v) = std::env::var("HFT_SUSTAINED_WORKERS") {
+        if let Ok(n) = v.trim().parse::<usize>() {
+            workers = n.max(1);
+        }
+    }
     let (main_cpu, rx_cpu, worker_cpus) = nf_testkit::affinity::fabric_placement(workers);
     if let Some(c) = main_cpu {
         let _ = nf_testkit::affinity::pin_current_to(c);
