@@ -829,6 +829,8 @@ pub struct HydraSpanSink<'a> {
     /// Force every chunk inline (diagnostics + parity tests: a fully
     /// deterministic inline-mode run must produce the identical tuple).
     force_inline: bool,
+    /// Chunks taken through the assist path (telemetry).
+    assist_chunks: u64,
     // ── GIGAHFT Lever 4: cross-pass double buffering ──
     /// Span ids are GLOBAL across the sink's life; each pass records its
     /// boundary so the ordered fold snapshots the pass's hash exactly at
@@ -878,6 +880,7 @@ impl<'a> HydraSpanSink<'a> {
             kernel: fabric.map(|f| f.kernel).unwrap_or(CrcKernel::Scalar),
             inline_ring: [InlineChunk::free(); INLINE_SLOTS],
             cur_inline: None,
+            assist_chunks: 0,
             force_inline: std::env::var("HFT_INLINE_FORCE").as_deref() == Ok("1"),
             passes: [PassRec {
                 end_span: 0,
@@ -1127,6 +1130,7 @@ impl<'a> HydraSpanSink<'a> {
                 && self.inline_slot_free()
                 && (self.force_inline || lane_full);
             if take_inline {
+                self.assist_chunks += 1;
                 self.cur_inline = Some(self.inline_claim());
             } else {
                 // Space check for the WHOLE chunk up front (the in-place
@@ -1378,6 +1382,12 @@ impl<'a> HydraSpanSink<'a> {
     #[inline]
     pub fn pending(&self) -> u64 {
         self.next_span - self.fold_pos
+    }
+
+    /// R8 phase-5 telemetry: chunks taken through the assist path.
+    #[inline]
+    pub fn assist_chunks(&self) -> u64 {
+        self.assist_chunks
     }
 }
 

@@ -541,6 +541,7 @@ fn run_hydra_sustained_5s(
     let mut d_pending_max: u64 = 0;
     let mut d_wait_ns: u64 = 0;
     let mut d_work_ns: u64 = 0;
+    let mut d_fold_ns: u64 = 0;
     let mut d_batches: u64 = 0;
     let mut d_passes: u64 = 0;
     // R8 phase-2: exact emitted-body bytes from the golden tape (the CRC
@@ -583,8 +584,10 @@ fn run_hydra_sustained_5s(
             d_wait_ns += std::time::Instant::now().duration_since(t_w).as_nanos() as u64;
             let t_b = std::time::Instant::now();
             seq.ingest_entries(transport.entries(), transport.now_ns(), &mut sink);
+            let t_i = std::time::Instant::now();
             sink.drain_ready();
-            d_work_ns += std::time::Instant::now().duration_since(t_b).as_nanos() as u64;
+            d_work_ns += t_i.duration_since(t_b).as_nanos() as u64;
+            d_fold_ns += std::time::Instant::now().duration_since(t_i).as_nanos() as u64;
             d_batches += 1;
         }
         let t_s = std::time::Instant::now();
@@ -625,7 +628,7 @@ fn run_hydra_sustained_5s(
 
     if diag {
         eprintln!(
-            "DIAG sustained: passes={} reset_ms={:.1} scan_ms={:.1} end_ms={:.1} pending_max={} batches={} wait_ms={:.1} work_ms={:.1} bytes_per_msg={:.2} crc_demand_gb_s={:.2}",
+            "DIAG sustained: passes={} reset_ms={:.1} scan_ms={:.1} end_ms={:.1} pending_max={} batches={} wait_ms={:.1} work_ms={:.1} fold_ms={:.1} assist_chunks={} bytes_per_msg={:.2} crc_demand_gb_s={:.2}",
             d_passes,
             d_reset_ns as f64 / 1e6,
             d_scan_ns as f64 / 1e6,
@@ -634,6 +637,8 @@ fn run_hydra_sustained_5s(
             d_batches,
             d_wait_ns as f64 / 1e6,
             d_work_ns as f64 / 1e6,
+            d_fold_ns as f64 / 1e6,
+            sink.assist_chunks(),
             body_bytes_per_msg,
             sustained_rate as f64 * body_bytes_per_msg / 1e9
         );
