@@ -382,32 +382,20 @@ impl ReplayTransport {
         // off..off+10, so the whole line is certainly mapped).
         unsafe {
             const PF_DIST: usize = 128;
-            let mut pf = self.patch_offsets.iter();
-            let mut lead: usize = 0;
-            let mut it = self.patch_offsets.iter().enumerate();
-            while let Some((i, &off)) = it.next() {
-                if i < PF_DIST {
-                    // Warm-up: prefetch the first PF_DIST lines directly.
-                    let _ = &mut pf;
+            let offs = &self.patch_offsets[..];
+            let n = offs.len();
+            for i in 0..n {
+                // Keep the prefetch lead PF_DIST lines ahead of the store
+                // cursor; the first PF_DIST stores run un-prefetched (the
+                // pipeline's warm-up).
+                let j = i + PF_DIST;
+                if j < n {
                     std::arch::x86_64::_mm_prefetch(
-                        frames.add(off as usize) as *const i8,
+                        frames.add(offs[j] as usize) as *const i8,
                         std::arch::x86_64::_MM_HINT_ET0,
                     );
-                } else {
-                    // Steady state: keep exactly PF_DIST prefetches of lead.
-                    while lead < i + PF_DIST {
-                        if let Some(&noff) = pf.next() {
-                            std::arch::x86_64::_mm_prefetch(
-                                frames.add(noff as usize) as *const i8,
-                                std::arch::x86_64::_MM_HINT_ET0,
-                            );
-                        } else {
-                            break;
-                        }
-                        lead += 1;
-                    }
                 }
-                let p = frames.add(off as usize);
+                let p = frames.add(offs[i] as usize);
                 std::ptr::copy_nonoverlapping(session.as_ptr(), p, 10);
             }
         }
