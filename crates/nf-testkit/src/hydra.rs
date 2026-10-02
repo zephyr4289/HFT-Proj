@@ -380,8 +380,8 @@ impl PfCfg {
                 .clamp(0, 64)
         };
         let (d_ahead, d_lines, d_burst) = match kernel {
-            CrcKernel::Scalar => (3, 22, 24),
-            CrcKernel::Fold512 => (3, 0, 24),
+            CrcKernel::Scalar => (2, 22, 24),
+            CrcKernel::Fold512 => (2, 0, 24),
         };
         Self {
             ahead: parse("HFT_PF_AHEAD", d_ahead),

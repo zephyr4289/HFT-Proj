@@ -76,18 +76,17 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 /// passes of slack.
 const NBUF: u64 = 16;
 const NBUF_MASK: u64 = NBUF - 1;
-/// R8 phase-6: frames per publication (and the EntryBuf slot count —
-/// they are ONE constant: the accumulate loop writes entries[acc..acc+n)
-/// with acc bounded by this cap). 2048: half the handoffs, twice the
-/// per-batch amortization; with NBUF=16 the runahead spans ~2 passes at
-/// the sample's ~12.6k frames.
-const ENTRY_CAP: usize = 2048;
+/// Frames per publication (and the EntryBuf slot count — they are ONE
+/// constant: the accumulate loop writes entries[acc..acc+n) with acc
+/// bounded by this cap). 1024 measured best on the runner pool: the
+/// 2048 experiment (a193be5) drew identical ~516M caps on two different
+/// machines — a net 25% regression against the 1024-shape's 664-675M.
+const ENTRY_CAP: usize = 1024;
 
 /// RX timed-park quantum for the buffer-free wait (see futex_wait_timeout).
-/// 15us: the consumer frees a buffer every ~30-40us at the achieved rates —
-/// a 50us quantum made the RX's production bursty against that drain and
-/// the consumer parked mid-pass (Intel 8573C run: 6,750 parks / 391ms).
-const BUF_PARK_NS: u64 = 15_000;
+/// 50us measured best on the pool (the 15us experiment regressed with the
+/// 2048-publication change it shipped with; restored to the measured shape).
+const BUF_PARK_NS: u64 = 50_000;
 
 // R8: construction-time shared handles (mailbox + triple store) — the hot
 // path dereferences plain references; the Arcs exist only to cross the
