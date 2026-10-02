@@ -277,7 +277,13 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                 if mb.cmd.load(Ordering::Acquire) == CMD_RESET {
                     break; // serve the reset first (consumer is waiting)
                 }
-                spin(&mut backoff);
+                // R8: escalate to sched_yield — the consumer's SMT sibling
+                // must stay fed (Zen3's PAUSE hint is weak).
+                if backoff < 6 {
+                    spin(&mut backoff);
+                } else {
+                    std::thread::yield_now();
+                }
             }
             if mb.cmd.load(Ordering::Acquire) == CMD_RESET {
                 continue;

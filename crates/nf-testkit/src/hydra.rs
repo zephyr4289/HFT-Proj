@@ -337,11 +337,9 @@ fn lane_worker(lane: Arc<HydraLane>, shutdown: Arc<AtomicBool>, kernel: CrcKerne
             if shutdown.load(Ordering::Acquire) {
                 return;
             }
-            let spins = 1u32 << backoff.min(5); // 1..32 pauses
-            for _ in 0..spins {
-                std::hint::spin_loop();
-            }
-            backoff += 1;
+            // R8: SMT-polite (a raw pause-loop starves the sibling worker
+            // on Zen3 — mutual spin-starvation collapsed the fabric).
+            crate::affinity::polite_spin(&mut backoff);
             continue;
         }
         backoff = 0;
@@ -354,6 +352,7 @@ fn lane_worker(lane: Arc<HydraLane>, shutdown: Arc<AtomicBool>, kernel: CrcKerne
         }
         // Result-space check: once per batch (invariant guarantees space;
         // defensive spin keeps drop-safety if the invariant were violated).
+        let mut rb = 0u32;
         loop {
             let rt = lane.res_tail.load(Ordering::Acquire);
             if rhead.saturating_sub(rt) + n <= (RES_CAP as u64) - CHUNK {
@@ -362,7 +361,7 @@ fn lane_worker(lane: Arc<HydraLane>, shutdown: Arc<AtomicBool>, kernel: CrcKerne
             if shutdown.load(Ordering::Acquire) {
                 return;
             }
-            std::hint::spin_loop();
+            crate::affinity::polite_spin(&mut rb);
         }
         // Evaluate + buffer the batch's results locally, then publish with
         // ONE Release store. Slot writes stay unpublished until the store,
@@ -847,6 +846,7 @@ impl<'a> HydraSpanSink<'a> {
             // below must never touch slots the worker still owns).
             // Backpressure: fold what's ready (keeps result rings flowing),
             // then re-check — deadlock-free by the lane-balance proof.
+            let mut sb = 0u32;
             loop {
                 let t = lane.desc_tail.load(Ordering::Acquire);
                 if h0.saturating_sub(t) + CHUNK <= DESC_CAP {
@@ -854,7 +854,8 @@ impl<'a> HydraSpanSink<'a> {
                 }
                 self.pending_head = h0;
                 self.fold_available();
-                std::hint::spin_loop();
+                // R8: SMT-polite backpressure spin.
+                crate::affinity::polite_spin(&mut sb);
             }
             self.pending_head = h0;
         }
@@ -981,11 +982,13 @@ impl<'a> HydraSpanSink<'a> {
     pub fn finish(&mut self) {
         if self.fabric.is_some() {
             self.flush_pending();
+            let mut fb = 0u32;
             while self.fold_pos < self.next_span {
                 if self.fold_available_once_or_spin() {
                     continue;
                 }
-                std::hint::spin_loop();
+                // R8: SMT-polite final drain.
+                crate::affinity::polite_spin(&mut fb);
             }
             self.complete_boundaries();
         } else {

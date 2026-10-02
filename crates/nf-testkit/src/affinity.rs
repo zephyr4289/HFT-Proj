@@ -358,3 +358,22 @@ mod fabric_placement_tests {
         }
     }
 }
+
+/// R8: SMT-polite spin — bounded PAUSE backoff, then `sched_yield()`.
+/// Zen3's PAUSE hint is weak: an uncapped pause-loop on one hyperthread
+/// measurably starves its sibling (the fabric's workers collapsed to ~1%
+/// of their CRC ceiling through mutual spin-starvation on a shared
+/// physical core). The yield deschedules the logical cpu for a
+/// reschedule quantum (~1-3us), keeping the sibling fed; wake latency for
+/// the yielder is immediate (spinners re-check after the yield).
+pub fn polite_spin(iters: &mut u32) {
+    if *iters < 6 {
+        let n = 1u32 << *iters;
+        for _ in 0..n {
+            std::hint::spin_loop();
+        }
+    } else {
+        std::thread::yield_now();
+    }
+    *iters += 1;
+}
