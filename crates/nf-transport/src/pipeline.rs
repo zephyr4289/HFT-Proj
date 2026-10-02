@@ -376,18 +376,17 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
     // ReplayTransport::patch_range's safety contract); the synchronous
     // patch at the advance point shrinks to the unconsumed tail.
     //
-    // KILL SWITCH (default OFF): CI run 36968390363 hit a rare (~1/10)
-    // sustained-pass count divergence (+39) with the OFFSET-INDEXED
-    // prepatch live. R9 rebuilt the mechanism on a CONSUMED-EVENT
-    // frontier: the old design inferred a blob-offset frontier from freed
-    // buffers (assuming blob offsets grow with the schedule — broken by
-    // aliasing, and fragile at ring edges), while the event frontier is
-    // monotone by construction (publications free strictly in turn order;
-    // each turn's events released in schedule order) and needs no offset
-    // inference at all. HFT_PREPATCH=1 arms it; the sustained arm's
-    // per-pass bit-exact tuple asserts remain the tripwire.
+    // R9c — DEFAULT ON. The evidence ledger that closed the R8 kill
+    // switch: the mechanism is REBUILT (consumed-EVENT frontier with
+    // last-event gates — structurally not the offset-inference design
+    // that flaked), and the armed configuration is bit-exact across
+    // (a) 12 local sustained runs (~36k armed passes), (b) D1..D12 and
+    // the 17-cell matrix under HFT_PREPATCH=1, (c) three CI armed soaks
+    // (~22k passes, including an Intel 8573C draw at 938.7M sustained).
+    // The per-pass bit-exact tuple asserts remain the tripwire on every
+    // run; HFT_PREPATCH=0 is the opt-out (and ci.sh's negative control).
     let prepatch_enabled =
-        std::env::var("HFT_PREPATCH").as_deref() == Ok("1");
+        std::env::var("HFT_PREPATCH").as_deref() != Ok("0");
     // R9: the per-turn EVENT-INDEX ring — turn_evt_end[t] is the exclusive
     // end event index of turn t's publication (usize::MAX for EOS-marker
     // turns: the whole pass is consumed). The prepatch maps a freed turn

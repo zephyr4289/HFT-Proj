@@ -310,3 +310,32 @@ bake now overlapping the pass; 12/12 armed sustained runs bit-exact
 (~36k armed passes), D1..D12 and the 17-cell matrix green under
 HFT_PREPATCH=1. ci.sh step 11e runs an armed soak on every push — the
 evidence accumulator for flipping the default.
+
+### 7.6 The Intel draw (R9's verdict)
+
+CI run 36998561311 (4fb49b9, Intel Xeon Platinum 8573C, fold512):
+
+| Arm | sustained | crc demand |
+|---|---|---|
+| pre-R9 record (same pool) | 726.7M | 20.1 GB/s |
+| **R9 unarmed** | **955.4M** | **26.42 GB/s** |
+| **R9 armed (prepatch soak)** | **938.7M** | 25.96 GB/s |
+
+The layout fix + spray moved the worker pair to 80% of its measured
+33 GB/s SMT-pair ceiling — the +31% end-to-end the fbench ablation
+projected. The 1B gap is 4.7%, and the diagnostics say exactly where it
+lives: the workers (26.42 of the needed 27.65 GB/s) and main's window
+(the unarmed reset wait was 99us/pass; the armed prepatch cuts it to
+24us — the last ~4% of main's budget).
+
+### 7.7 R9c — the prepatch default flips ON
+
+The kill switch closes with the evidence ledger: the mechanism is REBUILT
+(consumed-event frontier, last-event gates — not the offset-inference
+design that flaked), and the armed configuration is bit-exact across 12
+local sustained runs (~36k passes), D1..D12 + the 17-cell matrix armed,
+and three CI armed soaks (~22k passes, including the Intel draw above at
+938.7M). `HFT_PREPATCH=0` stays as the opt-out and ci.sh's negative
+control; the per-pass tuple asserts remain the tripwire. ci.sh 11f adds
+the third-worker placement sweep (the RX-hyperthread lane was only ever
+measured on AMD — the sweep now rides every runner draw).

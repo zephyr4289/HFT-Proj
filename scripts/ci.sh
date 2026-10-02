@@ -127,16 +127,25 @@ grep -q "FBENCH stage=P" /tmp/fbench.txt
 grep -q "FBENCH stage=F" /tmp/fbench.txt
 grep -q "FBENCH done" /tmp/fbench.txt
 
-echo "=== 11e. R9: Event-Indexed Prepatch Soak (armed evidence accumulation) ==="
-# The prepatch is DEFAULT-OFF (the R8 kill switch stands until evidence
-# closes the case). This soak runs the full sustained arm with the
-# event-indexed prepatch ARMED on every CI run: each run accumulates
-# thousands of armed passes under the per-pass bit-exact tuple asserts —
-# a divergence fails CI immediately. The soak's verdict lines are
-# asserted exactly like the unarmed arm's.
-HFT_PREPATCH=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_prepatch.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_prepatch.txt
-grep -q "allocs=0" /tmp/bench_prepatch.txt
+echo "=== 11e. R9: Prepatch Default + Unarmed Negative Control ==="
+# R9c: the event-indexed prepatch is DEFAULT ON (evidence ledger in
+# pipeline.rs). This step is now the NEGATIVE CONTROL — the synchronous
+# bake path (HFT_PREPATCH=0) must stay bit-exact too, and its verdict
+# lines are asserted exactly like the default arm's.
+HFT_PREPATCH=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_unarmed.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_unarmed.txt
+grep -q "allocs=0" /tmp/bench_unarmed.txt
+
+echo "=== 11f. R9: Third-Worker Placement Sweep (RX-hyperthread scavenging) ==="
+# The 3-worker shape (third lane on the RX's hyperthread) was only ever
+# measured on AMD (-15% Zen3, +2% Zen5). Post-R9 the workers' delivery
+# economics changed (aliasing + spray); this sweep measures the shape on
+# EVERY runner draw the CI sees, with the assist containing any straggler
+# lane by construction. Diagnostics only — never gated beyond the
+# bit-exact asserts the sustained arm already enforces.
+HFT_SUSTAINED_WORKERS=3 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_w3.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_w3.txt
+grep -q "allocs=0" /tmp/bench_w3.txt
 
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
