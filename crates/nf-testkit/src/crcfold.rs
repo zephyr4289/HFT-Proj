@@ -240,7 +240,20 @@ pub(crate) mod imp {
     /// the ~11-cycle load->affine->unpack->shuffle feed-forward overlaps the
     /// ~5-cycle clmul dependency chain.
     ///
+    /// R10 CODEGEN LAW: `#[inline(always)]` is LOAD-BEARING. This helper
+    /// has neither a `#[target_feature]` of its own nor inline(always) in
+    /// the GIGAHFT tree — it only ever inlined by single-caller luck into
+    /// `span_fold_eval`'s feature-enabled body. The moment a second caller
+    /// appeared (R10's `span_fold_eval_pair`), LLVM outlined it — and a
+    /// standalone copy WITHOUT the feature attribute compiles every AVX-512
+    /// intrinsic into an out-of-line call to core's wrapper functions with
+    /// 512-bit values passed through memory (measured: the fold kernel
+    /// collapsed 19.9 -> 1.9 GB/s, a 10x cliff, `vzeroupper` at every
+    /// boundary). The attribute pins the inlining that the kernel's
+    /// existence depends on.
+    ///
     /// SAFETY (beyond the feature contract): `p` must hold >= 128*wp bytes.
+    #[inline(always)]
     unsafe fn fold_word_pairs(p: *const u8, wp: usize) -> FoldStates {
         let k192 = _mm512_set1_epi64(KP192 as i64);
         let k128 = _mm512_set1_epi64(KP128 as i64);
