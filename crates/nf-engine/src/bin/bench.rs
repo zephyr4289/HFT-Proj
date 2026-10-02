@@ -507,10 +507,11 @@ fn run_hydra_sustained_5s(
 
     let mut sess = *b"HYDRASUST1";
     let mut harvested = [(0u64, 0u64, 0u64); 8];
-    let mut diag = std::env::var("HFT_EXP_DIAG").is_ok();
+    let mut diag = true; // one summary line per 5s run — the phase split is first-class R8 telemetry
     let mut d_reset_ns: u64 = 0;
     let mut d_scan_ns: u64 = 0;
     let mut d_end_ns: u64 = 0;
+    let mut d_pending_max: u64 = 0;
     let mut d_passes: u64 = 0;
     while start.elapsed().as_secs_f64() < 5.0 {
         sess[7..10].copy_from_slice(&session_counter.to_be_bytes()[5..8]);
@@ -537,6 +538,7 @@ fn run_hydra_sustained_5s(
             d_reset_ns += t_r2.duration_since(t_r).as_nanos() as u64;
             d_scan_ns += t_s.duration_since(t_r2).as_nanos() as u64;
             d_end_ns += t_e.duration_since(t_s).as_nanos() as u64;
+            d_pending_max = d_pending_max.max(sink.pending());
             d_passes += 1;
         }
         for rec in &harvested[..n] {
@@ -566,13 +568,13 @@ fn run_hydra_sustained_5s(
 
     if diag {
         eprintln!(
-            "DIAG sustained: passes={} reset_ms={:.1} scan_ms={:.1} end_ms={:.1}",
+            "DIAG sustained: passes={} reset_ms={:.1} scan_ms={:.1} end_ms={:.1} pending_max={}",
             d_passes,
             d_reset_ns as f64 / 1e6,
             d_scan_ns as f64 / 1e6,
-            d_end_ns as f64 / 1e6
+            d_end_ns as f64 / 1e6,
+            d_pending_max
         );
-        diag = false;
     }
     println!(
         "BENCH mode=replay-hydra-sustained-5s total_msgs={} duration={:.2}s sustained_rate={} msg/s allocs={} workers={} crc_kernel={}",
