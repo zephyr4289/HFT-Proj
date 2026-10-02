@@ -377,39 +377,25 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
     // patch at the advance point shrinks to the unconsumed tail.
     //
     // KILL SWITCH (default OFF): CI run 36968390363 hit a rare (~1/10)
-    // sustained-pass count divergence (+39) with the prepatch live. The
-    // byte-level analysis says freed-publication headers are never re-read
-    // (staged messages are arena COPIES; cold apply reads at scan time;
-    // span bodies never overlap the patched prefix) — but the flake is
-    // real, the prepatch is the only mechanism that writes blob bytes
-    // cross-thread, and a verification fabric does not ship a maybe. The
-    // synchronous advance bake (~60-100us/pass) is the price of certainty
-    // until the race is root-caused. HFT_PREPATCH=1 re-enables.
+    // sustained-pass count divergence (+39) with the OFFSET-INDEXED
+    // prepatch live. R9 rebuilt the mechanism on a CONSUMED-EVENT
+    // frontier: the old design inferred a blob-offset frontier from freed
+    // buffers (assuming blob offsets grow with the schedule — broken by
+    // aliasing, and fragile at ring edges), while the event frontier is
+    // monotone by construction (publications free strictly in turn order;
+    // each turn's events released in schedule order) and needs no offset
+    // inference at all. HFT_PREPATCH=1 arms it; the sustained arm's
+    // per-pass bit-exact tuple asserts remain the tripwire.
     let prepatch_enabled =
         std::env::var("HFT_PREPATCH").as_deref() == Ok("1");
-    // R9: blob aliasing makes blob offsets non-monotone in event order —
-    // the prepatch's turn-end-offset frontier mapping assumes monotonicity
-    // and would over-patch into unconsumed publications (the exact
-    // stale-session divergence class the kill switch exists for). Refuse
-    // the prepatch loudly when aliasing is active; the synchronous bake
-    // (whose cost the aliasing also halves — one patch site per unique
-    // frame) remains the correct path until the frontier is event-indexed.
-    let prepatch_enabled = if prepatch_enabled && inner.blob_aliasing() {
-        eprintln!(
-            "DIAG rx: prepatch refused — blob aliasing active ({} aliased deliveries, non-monotone offsets)",
-            inner.aliased_frame_count()
-        );
-        false
-    } else {
-        prepatch_enabled
-    };
-    let blob_base = inner.blob_base();
-    // R8 phase-6: the end-offset ring is decoupled from NBUF (32 slots —
-    // over 4 passes of publications at ENTRY_CAP=2048) so the prepatch's
-    // frontier mapping stays valid at the deeper runahead.
+    // R9: the per-turn EVENT-INDEX ring — turn_evt_end[t] is the exclusive
+    // end event index of turn t's publication (usize::MAX for EOS-marker
+    // turns: the whole pass is consumed). The prepatch maps a freed turn
+    // to the events whose frames it carried; 32 slots cover the deepest
+    // runahead at ENTRY_CAP with the same overwrite guard as before.
     const TOFF_RING: u64 = 32;
     const TOFF_MASK: u64 = TOFF_RING - 1;
-    let mut turn_end_off: [usize; TOFF_RING as usize] = [0; TOFF_RING as usize];
+    let mut turn_evt_end: [usize; TOFF_RING as usize] = [0; TOFF_RING as usize];
     let mut pp_idx: usize = 0;
     // RX-local scratch batch (poll writes slots here; the transform below
     // re-reads them from this core's L1).
@@ -422,13 +408,15 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
     // R8 phase-3b: the consumed-frontier → patch-range advance. `freed`
     // counts are monotone and frees happen in turn order (SPSC), so the
     // max over the per-buffer last-freed turns IS the global frontier.
+    // R9: the frontier maps to a consumed-EVENT index (see turn_evt_end)
+    // — no blob-offset inference, aliasing-compatible by construction.
     // Only called when armed — unarmed transports keep the blocking
     // reset's full synchronous patch.
     let prepatch_step = |inner: &mut ReplayTransport,
                           next_sess: &[u8; 10],
                           pp_idx: &mut usize,
                           cur_turn: u64,
-                          turn_end_off: &[usize; 32]| {
+                          turn_evt_end: &[usize; 32]| {
         let mut frontier: Option<u64> = None;
         for i in 0..NBUF as usize {
             let c = mb.freed[i].load(Ordering::Acquire);
@@ -440,22 +428,19 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
             }
         }
         if let Some(t) = frontier {
-            // OVERWRITE GUARD: the end-offset ring holds only the last NBUF
+            // OVERWRITE GUARD: the event ring holds only the last 32
             // turns. If the frontier is so old that its slot may already
-            // hold a NEWER turn's offset (which could be LARGER — an
-            // over-patch would re-bake frames the consumer has not freed),
+            // hold a NEWER turn's event end (a larger index — an
+            // over-patch would bake frames the consumer has not freed),
             // skip the incremental step entirely; the synchronous tail at
             // the advance point stays correct.
-            if cur_turn - t > TOFF_RING {
+            if cur_turn.saturating_sub(t) > TOFF_RING {
                 return;
             }
-            let upto = turn_end_off[(t & TOFF_MASK) as usize];
-            if upto == usize::MAX {
-                // The frontier is an EOS marker: the whole pass is consumed.
-                *pp_idx = inner.patch_range(next_sess, *pp_idx, usize::MAX - 10);
-            } else if upto > 10 {
-                *pp_idx = inner.patch_range(next_sess, *pp_idx, upto);
-            }
+            let upto_evt = turn_evt_end[(t & TOFF_MASK) as usize];
+            // usize::MAX (EOS-marker turn): the whole pass is consumed —
+            // patch everything remaining below the list's end.
+            *pp_idx = inner.patch_range(next_sess, *pp_idx, upto_evt);
         }
     };
     loop {
@@ -530,10 +515,6 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
         // is a fraction of the scan's), so the accumulation never bubbles.
         let mut acc = 0usize;
         let mut eos = false;
-        // R8 phase-3b: the publication's last-frame blob end offset (the
-        // prepatch frontier mapping). usize::MAX for empty publications
-        // (EOS markers — the whole pass is consumed when they free).
-        let mut end_off: usize = usize::MAX;
         let t_prod = std::time::Instant::now();
         while acc + 256 <= ENTRY_CAP {
             let tp0 = if diag {
@@ -595,21 +576,24 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                         sess_lo: f.sess_lo,
                         sess_hi: f.sess_hi,
                     };
-                    // R8 phase-3b: track the last frame's blob end for the
-                    // prepatch frontier mapping.
-                    end_off = (b.as_ptr() as usize) + b.len() - blob_base;
                 }
                 buf.clock = inner.now_ns();
                 acc += n;
             }
         }
+        // R9: the turn's events end at the transport's current cursor
+        // (tombstones included — they advance the cursor without frames,
+        // and their consumption tracks the publication they rode in).
+        // usize::MAX is never needed here: empty publications (EOS
+        // markers) record the sentinel explicitly below.
+        let evt_end = inner.current_event_idx();
         {
             // SAFETY: RX owns buffer i for this turn until the Release
             // store below.
             let buf = unsafe { &mut *mb.bufs[i].get() };
             buf.len = acc as u32;
         }
-        turn_end_off[(turn & TOFF_MASK) as usize] = end_off;
+        turn_evt_end[(turn & TOFF_MASK) as usize] = evt_end;
         mb.rx_stats
             .prod_ns
             .fetch_add(t_prod.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -624,7 +608,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
         if prepatch_enabled {
             if let Some(sess_fn) = mb.auto_fn {
                 let next_sess = sess_fn(pass + 1);
-                prepatch_step(&mut inner, &next_sess, &mut pp_idx, turn, &turn_end_off);
+                prepatch_step(&mut inner, &next_sess, &mut pp_idx, turn, &turn_evt_end);
             }
         }
         // Polite wake: the consumer may be futex-parked on pub_wake (it
@@ -666,7 +650,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
             mb.rx_turn.store(turn + 1, Ordering::Release);
             // R8 phase-3b: the marker's frontier mapping — the whole pass
             // is consumed once the marker frees.
-            turn_end_off[(turn & TOFF_MASK) as usize] = usize::MAX;
+            turn_evt_end[(turn & TOFF_MASK) as usize] = usize::MAX;
             mb.pub_wake.fetch_add(1, Ordering::Release);
             futex_wake(&mb.pub_wake);
             turn += 1;
@@ -697,7 +681,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                     // consumer drains.
                     if prepatch_enabled {
                         let next_sess = sess_fn(pass + 1);
-                        prepatch_step(&mut inner, &next_sess, &mut pp_idx, turn, &turn_end_off);
+                        prepatch_step(&mut inner, &next_sess, &mut pp_idx, turn, &turn_evt_end);
                     }
                     mb.rx_stats.bufwait_laps.fetch_add(1, Ordering::Relaxed);
                     if backoff < 6 {

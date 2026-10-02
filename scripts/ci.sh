@@ -127,6 +127,17 @@ grep -q "FBENCH stage=P" /tmp/fbench.txt
 grep -q "FBENCH stage=F" /tmp/fbench.txt
 grep -q "FBENCH done" /tmp/fbench.txt
 
+echo "=== 11e. R9: Event-Indexed Prepatch Soak (armed evidence accumulation) ==="
+# The prepatch is DEFAULT-OFF (the R8 kill switch stands until evidence
+# closes the case). This soak runs the full sustained arm with the
+# event-indexed prepatch ARMED on every CI run: each run accumulates
+# thousands of armed passes under the per-pass bit-exact tuple asserts —
+# a divergence fails CI immediately. The soak's verdict lines are
+# asserted exactly like the unarmed arm's.
+HFT_PREPATCH=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_prepatch.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_prepatch.txt
+grep -q "allocs=0" /tmp/bench_prepatch.txt
+
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)

@@ -68,7 +68,6 @@ struct FrameMeta {
     offset: u32,
     len: u16,
     feed: FeedId,
-    patch: bool,
     blk_base: u32,
     blk_count: u16,
     valid: u16,
@@ -94,8 +93,16 @@ pub struct ReplayTransport {
     #[allow(clippy::disallowed_types)]
     triples: Arc<[(u64, u32, u32)]>,
     /// R8: precomputed blob offsets of every patchable frame's 10B session
-    /// prefix (reset-time session bake).
-    patch_offsets: Box<[u32]>,
+    /// prefix (reset-time session bake). R9: EVENT-ORDERED — one
+    /// `(event_idx, offset)` pair per UNIQUE patchable frame (aliased
+    /// duplicates share the primary's site and never append), positioned at
+    /// the frame's first-render event. The prepatch walks this list against
+    /// a CONSUMED-EVENT frontier (monotone by construction — events are
+    /// consumed strictly in schedule order, whatever the blob's memory
+    /// layout), which is what makes it aliasing-compatible: the old
+    /// offset-ordered list assumed blob offsets grow with the schedule,
+    /// an assumption R9's aliasing broke.
+    patch_evts: Box<[(u32, u32)]>,
     /// R8: RX coalescing — vt-groups per poll (1 = exact pre-R8 pacing).
     coalesce: usize,
     body_prefetch: bool,
@@ -132,25 +139,45 @@ impl ReplayTransport {
         // Flat triple store: ~16B per message block, appended per rendered frame.
         #[allow(clippy::disallowed_types)]
         let mut triples: Vec<(u64, u32, u32)> = Vec::new();
-        // R9: aliased-delivery count (defaulted so schedules with no
-        // duplicate deliveries report zero aliasing).
+        // R9: aliased-delivery count (assigned unconditionally by the
+        // construction sweep below).
         let self_aliased_frames: u32;
+        // R9: event-ordered patch list — (event_idx, blob offset) per
+        // UNIQUE patchable frame, appended at its first render. The
+        // prepatch's frontier is a consumed-EVENT index; the list's
+        // order is therefore exactly the frontier's order.
+        #[allow(clippy::disallowed_types)]
+        let mut patch_evts: Vec<(u32, u32)> = Vec::new();
         {
             let mut cursors = [Cursor::default(), Cursor::default()];
             let mut scratch = [0u8; ARENA_SLOT_SIZE];
             // R9: blob aliasing map — (first_seq, first_msg, count) →
-            // (blob offset, blk_base, blk_count, valid). A duplicate-feed
-            // delivery of the same message range renders BYTE-IDENTICAL
-            // frame bytes (same session prefix, same seq/count header, same
-            // gt slice), so it can share the primary's blob region. The map
-            // is construction-only (outside every window).
+            // (blob offset, blk_base, blk_count, valid, last referencing
+            // event). A duplicate-feed delivery of the same message range
+            // renders BYTE-IDENTICAL frame bytes (same session prefix, same
+            // seq/count header, same gt slice), so it can share the
+            // primary's blob region. The map is construction-only (outside
+            // every window).
+            //
+            // THE LAST-EVENT GATE (why the map carries `last_evt`): an
+            // aliased region's bytes are read by the RX entry-build of
+            // EVERY delivery that references them — the primary's render
+            // AND each duplicate's render. A prepatch may rewrite the
+            // session prefix only after ALL of those renders have happened,
+            // i.e. only after the LAST referencing event's publication is
+            // consumed. Gating the shared patch site on max(referencing
+            // events) — instead of the primary's own event — is what keeps
+            // the event-indexed prepatch sound under aliasing: patching a
+            // region whose dup delivery is still pending would hand that
+            // delivery's entry the NEXT session (the exact stale-session
+            // divergence class the R8 kill switch exists for).
             type AliasKey = (u64, u64, u16);
-            type AliasVal = (u32, u32, u16, u16);
+            type AliasVal = (u32, u32, u16, u16, u32);
             #[allow(clippy::disallowed_types)]
             let mut alias_map: std::collections::HashMap<AliasKey, AliasVal> =
                 std::collections::HashMap::new();
             let mut aliased_frames = 0u32;
-            for ev in &schedule.events {
+            for (ev_i, ev) in schedule.events.iter().enumerate() {
                 let feed_idx = (ev.feed as usize) & 1;
                 if let Some(len) = render_event_standalone(
                     gt,
@@ -178,7 +205,23 @@ impl ReplayTransport {
                     // comparison; the patch flag is a function of first_msg
                     // (identical by the key), so both deliveries share one
                     // patch site — the bake cost halves with the blob.
+                    //
+                    // Outcome trichotomy drives the patch-site bookkeeping:
+                    // * Aliased — the shared region's LAST-EVENT gate extends
+                    //   to this event (this delivery reads those bytes too).
+                    // * Primary (map miss) — the region registers in the map;
+                    //   its site (gated by its own + future aliases' events)
+                    //   is emitted by the post-sweep walk.
+                    // * Rejected (memcmp fail — unreachable for deterministic
+                    //   renders, guarded anyway) — an independent region that
+                    //   must carry its OWN site, pushed in-loop below.
+                    enum AliasOutcome {
+                        Aliased,
+                        Primary,
+                        Rejected,
+                    }
                     let mut alias: Option<(u32, u32, u16, u16)> = None;
+                    let mut outcome = AliasOutcome::Primary;
                     if let SchedKind::Packet {
                         first_seq,
                         first_msg,
@@ -186,13 +229,20 @@ impl ReplayTransport {
                     } = ev.kind
                     {
                         if count > 0 {
-                            if let Some(&v) = alias_map.get(&(first_seq, first_msg, count)) {
+                            if let Some(v) = alias_map.get_mut(&(first_seq, first_msg, count)) {
                                 let a = v.0 as usize;
                                 if a + len <= blob.len()
                                     && blob[a + HEADER_LEN..a + len] == scratch[HEADER_LEN..len]
                                 {
-                                    alias = Some(v);
+                                    alias = Some((v.0, v.1, v.2, v.3));
                                     aliased_frames += 1;
+                                    outcome = AliasOutcome::Aliased;
+                                    // THE LAST-EVENT GATE: this delivery also
+                                    // reads the shared region at ITS render —
+                                    // extend the site's gate to this event.
+                                    v.4 = v.4.max(ev_i as u32);
+                                } else {
+                                    outcome = AliasOutcome::Rejected;
                                 }
                             }
                         }
@@ -272,7 +322,11 @@ impl ReplayTransport {
                         };
                         // Register the primary for future aliases (successful
                         // non-empty Packets only — tombstoned walks never
-                        // registered, so dups of them render independently).
+                        // registered, so dups of them render independently;
+                        // a memcmp-failed re-render does NOT overwrite the
+                        // first primary — its site stays gated by its own
+                        // referencing events). last_evt starts at THIS
+                        // event; future aliases extend it.
                         if let SchedKind::Packet {
                             first_seq,
                             first_msg,
@@ -280,10 +334,15 @@ impl ReplayTransport {
                         } = ev.kind
                         {
                             if count > 0 && blk_count == count {
-                                alias_map.insert(
-                                    (first_seq, first_msg, count),
-                                    (off, blk_base, blk_count, valid_prefix),
-                                );
+                                alias_map
+                                    .entry((first_seq, first_msg, count))
+                                    .or_insert((
+                                        off,
+                                        blk_base,
+                                        blk_count,
+                                        valid_prefix,
+                                        ev_i as u32,
+                                    ));
                             }
                         }
                         (off, blk_base, blk_count, valid_prefix)
@@ -308,18 +367,30 @@ impl ReplayTransport {
                             offset: 0,
                             len: 0,
                             feed: ev.feed,
-                            patch: false,
                             blk_base: 0,
                             blk_count: 0,
                             valid: 0,
                             first_seq: 0,
                         });
                     } else {
+                        // R9: patchable NON-map frames (HB / EOS / empty
+                        // packets — nothing aliases onto them) and memcmp-
+                        // REJECTED independent renders record their site at
+                        // their own event. Primary full-Packet sites come
+                        // from the alias map post-sweep, gated on the LAST
+                        // referencing event (see the map's doc).
+                        let non_map_frame = !matches!(
+                            ev.kind,
+                            SchedKind::Packet { count, .. } if count > 0
+                        );
+                        if patch && (non_map_frame || matches!(outcome, AliasOutcome::Rejected))
+                        {
+                            patch_evts.push((ev_i as u32, off));
+                        }
                         meta.push(FrameMeta {
                             offset: off,
                             len: len as u16,
                             feed: ev.feed,
-                            patch,
                             blk_base,
                             blk_count,
                             valid: valid_prefix,
@@ -336,7 +407,6 @@ impl ReplayTransport {
                         offset: 0,
                         len: 0,
                         feed: ev.feed,
-                        patch: false,
                         blk_base: 0,
                         blk_count: 0,
                         valid: 0,
@@ -346,6 +416,23 @@ impl ReplayTransport {
                 }
             }
             self_aliased_frames = aliased_frames;
+            // R9: post-sweep — full-Packet patch sites come from the alias
+            // map, each gated on its LAST referencing event (the primary's
+            // render plus every aliased duplicate's render — the latest
+            // read of those bytes this pass). The event-indexed prepatch
+            // never rewrites a region before every reader of the current
+            // pass has rendered it. Sorted by gate so the frontier walk is
+            // a single linear sweep.
+            for (&(_fs, first_msg, _c), &(off, _bb, _bc, _v, last_evt)) in alias_map.iter() {
+                let patchable = match schedule.session_split {
+                    Some((split_m, _)) => first_msg < split_m,
+                    None => true,
+                };
+                if patchable {
+                    patch_evts.push((last_evt, off));
+                }
+            }
+            patch_evts.sort_unstable();
         }
         // R8: vt-group boundaries (see field doc). Single O(n) sweep: `j`
         // advances monotonically; each event inside a group maps to the
@@ -364,20 +451,8 @@ impl ReplayTransport {
                 i = j;
             }
         }
-        // R8: derive the patch-offset list from the completed directory.
-        // R9: with blob aliasing multiple metas share one offset — sort +
-        // dedup keeps the list ascending and one-site-per-frame (the bake
-        // cost follows the UNIQUE frame count, and patch_range's
-        // walk-stops-at-first-offset-beyond-the-frontier contract keeps its
-        // sortedness precondition).
-        #[allow(clippy::disallowed_types)]
-        let mut patch_offsets: Vec<u32> = meta
-            .iter()
-            .filter(|m| m.patch)
-            .map(|m| m.offset)
-            .collect();
-        patch_offsets.sort_unstable();
-        patch_offsets.dedup();
+        // R8/R9: the patch list is built in EVENT order at first render
+        // (see patch_evts' field doc) — no derivation sweep needed.
         let mut t = Self {
             schedule,
             event_idx: 0,
@@ -392,7 +467,7 @@ impl ReplayTransport {
                 let arc: Arc<[(u64, u32, u32)]> = triples.into_boxed_slice().into();
                 arc
             },
-            patch_offsets: patch_offsets.into_boxed_slice(),
+            patch_evts: patch_evts.into_boxed_slice(),
             batch_event: [0u32; 256],
             batch_event_len: 0,
             session,
@@ -449,7 +524,7 @@ impl ReplayTransport {
         self.patch_sessions();
     }
 
-    /// R8: write the current session into every patchable frame's 10B
+    /// R8 phase-3b: write the current session into every patchable frame's 10B
     /// prefix (see `reset`). Also run at construction, so a transport that
     /// is polled without any reset() serves the construction session's
     /// bytes exactly as the old lazy poll-patching did.
@@ -459,29 +534,30 @@ impl ReplayTransport {
         // R8 phase-6: the prefetchW experiment was reverted — Zen3 measured
         // it at or slightly behind the plain loop (AMD's ET0 hint buys
         // nothing there), and the measured-best configuration is what ships.
-        // SAFETY: every offset in `patch_offsets` was captured at
-        // construction from a rendered (len >= 20) frame's own directory
-        // entry — off..off+10 is in-bounds of `frames`; the list is
-        // immutable after construction.
+        // SAFETY: every offset in `patch_evts` was captured at construction
+        // from a rendered (len >= 20) frame's own directory entry —
+        // off..off+10 is in-bounds of `frames`; the list is immutable after
+        // construction. (Order is event order; the full bake is
+        // order-independent.)
         unsafe {
-            for &off in self.patch_offsets.iter() {
+            for &(_, off) in self.patch_evts.iter() {
                 let p = frames.add(off as usize);
                 std::ptr::copy_nonoverlapping(session.as_ptr(), p, 10);
             }
         }
     }
 
-    /// R8 phase-3b: the blob's base address (the prepatch bookkeeping in
-    /// the RX thread computes publication end-offsets relative to it).
-    pub(crate) fn blob_base(&self) -> usize {
-        self.frames.as_ptr() as usize
+    /// R9: the transport's current schedule-event cursor — the RX thread
+    /// records each publication's exclusive end event index so the prepatch
+    /// can map a freed publication to the events whose frames it carried.
+    #[inline]
+    pub fn current_event_idx(&self) -> usize {
+        self.event_idx
     }
 
     /// R9: whether construction aliased any duplicate-feed deliveries onto
-    /// a primary's blob region. When true, blob offsets are NOT monotone in
-    /// event order, and the prepatch's turn-end-offset frontier mapping
-    /// (which assumes monotonicity) must not run — the RX thread checks
-    /// this before arming the prepatch.
+    /// a primary's blob region (diagnostics; the event-indexed prepatch is
+    /// aliasing-compatible by construction).
     pub fn blob_aliasing(&self) -> bool {
         self.aliased_frames > 0
     }
@@ -491,32 +567,41 @@ impl ReplayTransport {
         self.aliased_frames
     }
 
-    /// R8 phase-3b: patch patchable frames whose blob offset is below
-    /// `upto_off`, starting the walk at patch-list index `from_idx`, with
+    /// R9: patch patchable frames whose FIRST-RENDER event index is below
+    /// `upto_evt`, starting the walk at patch-list index `from_idx`, with
     /// an explicit `session` (the NEXT pass's — the transport's own
     /// `session` field still holds the current pass's until the advance).
-    /// Returns the new patch-list index (the prepatch cursor). Offsets are
-    /// in construction order = schedule order, so a monotone consumption
-    /// frontier walks the list once, linearly.
+    /// Returns the new patch-list index (the prepatch cursor).
+    ///
+    /// WHY EVENT-INDEXED: the old offset-indexed walk assumed blob offsets
+    /// grow monotonically with the schedule — true pre-R9, broken by blob
+    /// aliasing, and the source of the frontier's fragility (an over-shoot
+    /// patches frames of an UNCONSUMED publication; the next pass's render
+    /// then reads a stale session and the consumer's cold path diverges —
+    /// the +39-count flake class). The consumed-EVENT frontier is monotone
+    /// BY CONSTRUCTION: the consumer frees publications strictly in turn
+    /// order, and each turn's events were released in schedule order, so
+    /// "every event below the frontier has been fully consumed" needs no
+    /// offset inference at all — and holds under any blob layout.
     ///
     /// SAFETY CONTRACT: only frames whose ENTIRE publication has been
     /// consumed (buffer freed) may be prepatched — the consumer never
-    /// re-reads a freed publication, span bodies live at frame[22..] and
+    /// re-reads a freed publication, span bodies live at frame[20..] and
     /// the patch writes frame[0..10], and the next pass's entry session
     /// words are computed at render time (after the advance), so the
     /// prepatch can never be observed mid-flight.
-    pub(crate) fn patch_range(&mut self, session: &[u8; 10], from_idx: usize, upto_off: usize) -> usize {
+    pub(crate) fn patch_range(&mut self, session: &[u8; 10], from_idx: usize, upto_evt: usize) -> usize {
         let frames = self.frames.as_mut_ptr();
         let mut idx = from_idx;
         // SAFETY: same per-offset contract as patch_sessions; the walk is
         // bounded by the patch list's own length.
         unsafe {
-            while idx < self.patch_offsets.len() {
-                let off = self.patch_offsets[idx] as usize;
-                if off + 10 > upto_off {
+            while idx < self.patch_evts.len() {
+                let (evt, off) = self.patch_evts[idx];
+                if evt as usize >= upto_evt {
                     break;
                 }
-                let p = frames.add(off);
+                let p = frames.add(off as usize);
                 std::ptr::copy_nonoverlapping(session.as_ptr(), p, 10);
                 idx += 1;
             }
@@ -526,7 +611,7 @@ impl ReplayTransport {
 
     /// R8 phase-3b: `reset` without re-patching the already-prepatched
     /// prefix — the RX's prepatch cursor advanced through the consumed
-    /// region during the pass, so only the tail ([from_idx..]) needs the
+    /// events during the pass, so only the tail ([from_idx..]) needs the
     /// synchronous bake at the advance point.
     pub fn reset_prepatched(&mut self, session: [u8; 10], from_idx: usize) {
         let first_vt = self
@@ -543,7 +628,7 @@ impl ReplayTransport {
         let frames = self.frames.as_mut_ptr();
         // SAFETY: same per-offset contract as patch_sessions.
         unsafe {
-            for &off in self.patch_offsets.iter().skip(from_idx) {
+            for &(_, off) in self.patch_evts.iter().skip(from_idx) {
                 let p = frames.add(off as usize);
                 std::ptr::copy_nonoverlapping(session.as_ptr(), p, 10);
             }

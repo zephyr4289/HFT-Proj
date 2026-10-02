@@ -281,3 +281,32 @@ bandwidth moves toward the ~28-30 GB/s kbench pair ceiling against the
 27.65 GB/s 1B demand, and main's bake wait halves. fbench joined ci.sh as
 step 11d so every future run carries the layout attribution next to the
 kernel ceilings.
+
+### 7.5 The prepatch, rebuilt on an event frontier (R9b)
+
+The kill-switched prepatch's replacement shipped env-gated
+(`HFT_PREPATCH=1`, default OFF — the switch stands until evidence closes
+the case). Three structural changes:
+
+1. **The frontier is a consumed-EVENT index, not a blob offset.** The RX
+   records each publication's exclusive end event index
+   (`current_event_idx()`); a freed turn maps to the events whose frames
+   it carried — monotone by construction (frees are in turn order; turns
+   release events in schedule order), so the old design's offset
+   inference (and its over-shoot hazard) is gone entirely.
+2. **The patch list is event-ordered with LAST-EVENT gates.** Under blob
+   aliasing a region's bytes are read by every delivery that references
+   them — the primary's render AND each duplicate's. A shared site's gate
+   is therefore max(referencing events), not the primary's own event:
+   patching a region whose dup delivery is still pending would hand that
+   delivery's entry the NEXT session (the exact stale-session divergence
+   class the kill switch exists for — caught by inspection before it ever
+   ran). memcmp-rejected independent re-renders carry their own sites.
+3. **The RX's per-frame end-offset computation left the hot path** (the
+   entry-build loop no longer computes blob offsets at all).
+
+Measured locally (armed): reset-wait 150us → 20us per pass (7.6x), the
+bake now overlapping the pass; 12/12 armed sustained runs bit-exact
+(~36k armed passes), D1..D12 and the 17-cell matrix green under
+HFT_PREPATCH=1. ci.sh step 11e runs an armed soak on every push — the
+evidence accumulator for flipping the default.
