@@ -102,6 +102,13 @@ Measured on GitHub Actions reference hardware (**Intel Xeon Platinum 8573C Sapph
 
 ---
 
+### Phase 7. R13 Program (Breaking the Port-5 Wall)
+* **Documentation**: [`docs/26-r13-p5-wall.md`](docs/26-r13-p5-wall.md) & [`docs/challenge/CHALLENGE-R13-p5-wall.md`](docs/challenge/CHALLENGE-R13-p5-wall.md)
+* **Port-5 Wall Diagnosis**: The fold512 kernel's 128 B step issues 8 port-5 uops (4 clmul + 2 unpck + 2 bswap) against ~9 measured cycles — the perturbation differential (+1 p5 op = +0.95 cyc/step) proves p5 ≥ 95% busy. The wall was the mirror-domain plumbing, not the clmul.
+* **Natural-Domain (Reflected) Fold**: The units now enter as RAW little-endian loads (no GFNI bit-reverse, no `vpshufb` bswap) with ISA-L's published CRC32C `fold_1x128b` constants (`RKHI = 0x493c7d27 = rev32(y^95 mod P)`, `RKLO = 0xec1068c50`); the per-lane ending collapses to two `crc32` instructions in natural order. **6 p5 uops/step (from 8), +44% pure step density measured on Golden Cove**; D11 differential extended (`reflect==scalar` on 2101 bodies), full local battery green, bit-exact goldens unchanged. Shipped default ON with `HFT_CRC_KERNEL=fold512` as the rollback arm (CI 11r soak). Rate claims pending target-silicon draws.
+
+---
+
 ## 3. Engineering Documentation Directory
 
 Every architectural phase, design thesis, failure ledger, and benchmark record is cataloged in the repository:
@@ -131,6 +138,7 @@ Every architectural phase, design thesis, failure ledger, and benchmark record i
 | [`docs/23-r10-assist.md`](docs/23-r10-assist.md) | **Phase 5b: R10 Assist Ring** (64-Slot Ring & 1.109B Sustained Draw) |
 | [`docs/24-r11-phase4.md`](docs/24-r11-phase4.md) | **Phase 6a: R11 Record** (1.2348B Sustained Record & Topology Resolution) |
 | [`docs/25-r12-ladder.md`](docs/25-r12-ladder.md) | **Phase 6b: R12 Compact Descriptors** (Desc8 Shipped, Ladder Ledger, R13) |
+| [`docs/26-r13-p5-wall.md`](docs/26-r13-p5-wall.md) | **Phase 7: R13 Port-5 Wall** (Natural-Domain Fold, Port Decomposition, Refuted Designs) |
 
 ---
 

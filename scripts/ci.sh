@@ -248,6 +248,20 @@ HFT_DESC8=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_desc8_off.txt
 grep -q "allocs=0" /tmp/bench_desc8_off.txt
 
+echo "=== 11r. R13: Mirror-Domain Fold Kernel Soak (rollback attribution) ==="
+# The R13 natural-domain (reflected) fold: per 128B step the mirror kernel
+# issues 8 port-5 uops (4 clmul + 2 unpck + 2 pshufb) — the measured wall
+# (docs/26 §1: +1 p5 op = +0.95 cyc/step). The reflect kernel drops the
+# GFNI bit-reverse AND both vpshufb bswaps (units enter as raw LE loads,
+# constants = ISA-L's CRC32C fold_1x128b pair) -> 6 p5 uops/step, ~+44%
+# step density measured locally. 11b runs reflect ON by default; this arm
+# soaks the legacy mirror kernel for per-draw attribution (the 11m/11n
+# precedent). kbench's fold512 vs fold512_r rows give the kernel-level
+# split on the same draw.
+HFT_CRC_KERNEL=fold512 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_mirror_kernel.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_mirror_kernel.txt
+grep -q "allocs=0" /tmp/bench_mirror_kernel.txt
+
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)
