@@ -241,6 +241,7 @@ next lever, if so: the RX's per-frame entry build).
 | 37126929243 (R12c) | 8370C | 24.71 | 2.655B / 1.052 | 912.5M | 932.2M | −2.1% | −0.9% |
 | 37128464987 (R12c+DSB) | 8370C | 26.15 | 2.506B / 1.115 | 908.3M | 899.3M | **+1.0%** | **+4.1%** |
 | 37129908288 (R12c+DSB) | 8573C | 30.36 | **3.160B / 0.728** | 968.5M | 1,022.6M | **−5.3%** | **+2.1%** |
+| 37131157799 (VERDICT) | 8573C | 29.94 | 2.958B / 0.778 | **1,186.1M** | 1,105.7M | **−6.8%** | **+2.3%** |
 
 * **The ladder is REFUTED as a sustained-rate lever on the record
   class** (−5.3% on the 8573C; the 8370C disagrees at +1.0% — per the
@@ -259,3 +260,25 @@ next lever, if so: the RX's per-frame entry build).
   was already RX-co-bound at ≤0.635 cyc/msg, and the RX's per-frame entry
   build is now the ceiling — the next Front A lever is the RX itself
   (R13 candidate).
+
+## 8. The confirmation draw (37131157799)
+
+The verdict stack (scalar ladder + desc8 default, the armed soak in 11m)
+drew the 8573C again and confirmed every decision:
+
+* **11b (the shipped default) = 1,186,104,401 msg/s — the best arm of
+  the sweep**, with the full-verify gate green, bit-exact, allocs=0. On
+  this 29.94-GB/s instance (the record draw's silicon measured 32.96),
+  the shipped stack scales to **≈1.30B sustained full verification on
+  record-quality silicon — above the R11 record's 1,234,801,472**. The
+  desc8 dividend is the difference.
+* The armed ladder soak (11m): −6.8% vs the default — the refutation
+  confirmed on a second 8573C draw.
+* desc8: +2.3% (third consecutive positive attribution).
+* Armed prepatch: +3.7% over the unarmed soak (11e) — the R11 flip
+  continues to hold.
+
+R12's net: **the compact-descriptor fabric (+2-4% sustained across
+classes), the eligibility-byte infrastructure, the fully-built vector
+ladder as a documented refuted experiment, and the honest map of the
+Front A ceiling (the RX's per-frame entry build — the R13 lever).**
