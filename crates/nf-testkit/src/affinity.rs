@@ -339,7 +339,65 @@ mod l3_tests {
 ///
 /// Non-SMT hosts: main and rx take distinct cores (the span-arm
 /// placement), workers the rest.
+///
+/// R11 — THE PLACEMENT CEILING: on a 2-physical-core SMT runner (the
+/// 8573C/8370C draws) this strategy puts BOTH workers on the second
+/// core's two hyperthreads: they share one physical core's VPCLMULQDQ
+/// ports, capping their combined fold at the kbench `2cpu_smt` ceiling
+/// (measured 32.83 GB/s on the 1.109B draw) while the `2cpu_distinct`
+/// ceiling sat unused at 61.74 GB/s. [`HFT_FABRIC_PLACE=distinct`]
+/// (see [`fabric_placement_distinct`]) swaps the roles: workers get one
+/// physical core EACH, and the scalar threads (main, rx) become the SMT
+/// siblings — stealing issue slots from only one worker each instead of
+/// stacking both folders on one core.
 pub fn fabric_placement(workers: usize) -> (Option<usize>, Option<usize>, Vec<usize>) {
+    // R11: experiment override — read once per arm at setup (outside every
+    // measurement window; the env::var allocation is setup-only).
+    match std::env::var("HFT_FABRIC_PLACE").as_deref() {
+        Ok("distinct") => fabric_placement_distinct(workers),
+        _ => fabric_placement_siblings(workers),
+    }
+}
+
+/// R11: workers on DISTINCT physical cores first; main and rx take the
+/// leftover SMT siblings (one per worker core). On the 4-logical-cpu SMT
+/// draws (sibling pairs 0-1 / 2-3): workers (0, 2), main 1, rx 3 — each
+/// folder owns a physical core except for its scalar sibling's issue-slot
+/// share, and the two workers' combined ceiling moves from the SMT-pair
+/// cap (~32.8 GB/s) toward the distinct-pair cap (~61.7 GB/s). The
+/// trade is measured, not assumed: main and rx each steal cycles from a
+/// worker (and main's assist folding now contends for the SAME clmul
+/// ports as the sibling worker), so the CI sweep (11k) decides per
+/// runner class whether the swap wins.
+///
+/// Degenerate hosts (no SMT, or fewer cores than workers): workers still
+/// take distinct cores first and wrap onto siblings/leftovers exactly like
+/// the pool round-robin; main and rx go unpinned when nothing is left
+/// (behavior-only difference; the fabric's correctness never depends on
+/// placement).
+fn fabric_placement_distinct(workers: usize) -> (Option<usize>, Option<usize>, Vec<usize>) {
+    let order = cpu_order(); // distinct-physical representatives FIRST
+    if order.is_empty() {
+        return (None, None, Vec::new());
+    }
+    // Workers: the round-robin over the topology order — the first
+    // `workers` slots are one per physical core by construction.
+    let wcpus: Vec<usize> = (0..workers).map(|i| order[i % order.len()]).collect();
+    // Main + rx: the leftovers, preferring SMT siblings (they trail the
+    // representatives in `order`) so each scalar thread shares a core with
+    // exactly one worker.
+    let rest: Vec<usize> = order
+        .iter()
+        .copied()
+        .filter(|c| !wcpus.contains(c))
+        .collect();
+    let main = rest.first().copied();
+    let rx = rest.get(1).copied();
+    (main, rx, wcpus)
+}
+
+/// The R8 default (see [`fabric_placement`]'s doc).
+fn fabric_placement_siblings(workers: usize) -> (Option<usize>, Option<usize>, Vec<usize>) {
     let order = cpu_order();
     if order.is_empty() {
         return (None, None, Vec::new());
@@ -410,6 +468,49 @@ mod fabric_placement_tests {
                     assert_ne!(*w, m, "worker pinned on main's cpu");
                 }
             }
+        }
+    }
+
+    /// R11: the distinct strategy — every worker on a DIFFERENT physical
+    /// core, main/rx on the leftovers, and never a worker on main's cpu
+    /// when the topology has room.
+    #[test]
+    fn t_fabric_placement_distinct_workers_on_distinct_cores() {
+        let order = cpu_order();
+        let (main, rx, workers) = fabric_placement_distinct(2);
+        if order.len() < 2 {
+            return; // degenerate single-cpu hosts: nothing to assert
+        }
+        // Two workers must sit on two DIFFERENT sibling groups.
+        let groups: Vec<Vec<usize>> = workers
+            .iter()
+            .map(|w| read_sibling_group(*w).unwrap_or_else(|| vec![*w]))
+            .collect();
+        let g0: Vec<usize> = groups
+            .first()
+            .map(|g| {
+                let mut k = g.clone();
+                k.sort_unstable();
+                k
+            })
+            .unwrap_or_default();
+        if let Some(g1) = groups.get(1) {
+            let mut k1 = g1.clone();
+            k1.sort_unstable();
+            assert_ne!(g0, k1, "both workers share one physical core");
+        }
+        if let Some(m) = main {
+            assert!(
+                !workers.contains(&m),
+                "main pinned on a worker cpu: main={m} workers={workers:?}"
+            );
+        }
+        if let (Some(m), Some(r)) = (main, rx) {
+            assert_ne!(m, r);
+        }
+        // Every worker cpu must be in the allowed set.
+        for w in &workers {
+            assert!(order.contains(w), "worker {w} outside the allowed set");
         }
     }
 }
