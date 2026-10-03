@@ -217,3 +217,68 @@ port — SMT pairs genuinely help it: 2cpu_smt 30.40 EXCEEDS the 1-thread
    The verdict that matters is an **8573C draw** (where the default
    placement runs the workers at 93.5% of their SMT cap and main has
    headroom). Keep fishing.
+
+## 8. The decisive 8573C draw (run 37108369001, attempt 16) — NEW RECORDS
+
+Attempt 16 drew the record silicon (8573C @ 2300 MHz, THP granted,
+fold512 1t 32.96 GB/s, 2cpu_distinct **67.03** — the Phase 4 plan's
+"67.9 theoretical" was measured, nearly exactly).
+
+**NEW RECORDS, both on the 11b default arm:**
+* **Sustained full verification: 1,234,801,472 msg/s** (6.174B messages in
+  5.00s, `PR1_R8_FULL_VERIFY_VERDICT -> PASS`, bit-exact
+  `0x881639cead506f25`, allocs=0, crc demand **34.15 GB/s** — ABOVE the
+  workers' 33.57 SMT cap: the prepatch-freed reset time converted into
+  assist CRC on the submitting core). **+11.3% over the gate-break draw,
+  +28.2% over the pre-R10 Intel record.**
+* **Pure ingest (Front A): 3,624,572,766 msg/s** (0.6346 cyc/msg span
+  median) — +4.3% over the gate-break draw.
+
+Full sweep (all bit-exact, per-pass tuples green):
+
+| arm | rate | vs default |
+|---|---|---|
+| **11b default (prepatch armed)** | **1,234,801,472** | — |
+| 11i slots=256 | 1,232,797,170 | −0.2% (64 stays) |
+| 11k distinct | 1,223,941,820 | −0.9% |
+| 11l tri | 1,222,607,791 | −1.0% |
+| 11h deep-pf | 1,203,705,271 | −2.5% |
+| 11e unarmed soak | 1,194,968,847 | −3.2% (the flip confirmed: 8/8) |
+| 11j pipe | 1,098,093,305 | −11.0% (retired) |
+| 11i slots=4 | 1,088,983,472 | −11.8% |
+| 11g eval2 | 1,053,367,526 | −14.7% |
+| 11f w3 | 950,892,082 | −23.0% |
+
+### 8.1 The distinct placement is REFUTED — and why
+
+On the worker-bound 8573C (the draw the lever was designed for): the
+workers DID move to distinct cores and folded **15% more spans**
+(131.7M vs 114.4M) — the unlock worked mechanically. But `assist_chunks`
+collapsed 309,307 → 20,631 (−93%) and main's `wait_ms` ballooned
+215 → 755 ms: with main and RX sitting on the SMT siblings of BUSY
+workers, the supply side lost more than the fold side gained, and the
+assist ring — the mechanism that converts main's surplus into CRC —
+starved with it. Net: **−0.9%**.
+
+**The structural lesson**: the 61-67 GB/s distinct-core ceiling is
+unreachable on a 4-logical-cpu runner that must also ingest. The
+`siblings` placement is not a bug — it is the correct shape: it
+sacrifices fold capacity (workers capped at the SMT pair's ~33.6 GB/s)
+to keep main+RX at full speed, and the deep assist ring recycles main's
+surplus into CRC anyway (34.15 GB/s delivered > the workers' own cap).
+Both Intel classes now agree (8370C −0.7%, 8573C −0.9%): the lever is
+closed.
+
+### 8.2 Where the frontier actually is
+
+At the new record: workers ~29-30 GB/s (SMT pair) + main-side assist
+~4-5 GB/s (fold_ms 346, 309k assist chunks). The remaining headroom on
+THIS silicon class is main's cycle budget: `work_ms` 3819 (76%) at
+0.63 cyc/msg ingest. The R12 vectorized ladder (0.63 → ~0.3 cyc/msg)
+frees ~20% of main's window for assist folding — the only remaining
+large lever. Realistic frontier on the 8573C: **~1.4-1.6B**. The 2.0B
+target exceeds this machine class's structural budget (fold 84% of
+issue + ingest 29%); it needs the R12 ladder AND either a larger runner
+class or a protocol-level change in what "full verify" must touch. That
+honesty is the claim scope: records are set per silicon class, and the
+class's physics are now mapped end to end.
