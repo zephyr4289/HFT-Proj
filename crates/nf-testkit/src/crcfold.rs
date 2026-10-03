@@ -69,6 +69,17 @@ pub const KP320: u64 = 0x7bba6798;
 /// low half. (The ONE-unit offset reuses KP192/KP128.)
 pub const KP256: u64 = 0x59a3508a;
 
+/// R13: the natural-domain (reflected-representation) fold constant for
+/// the state's HIGH qword — the 128-degree unit lift of the front-to-back
+/// natural-LE fold. This is ISA-L's published CRC32C `fold_1x128b` pair
+/// (crc_const.asm), battle-tested at scale; `RKHI` additionally equals
+/// `rev32(y^95 mod P)` with P = 0x11EDC6F41 (the normal-form CRC32C poly)
+/// — the reversed-power convention decoded in docs/26.
+pub const RKHI: u64 = 0x493C_7D27;
+/// R13: the natural-domain fold constant for the state's LOW qword
+/// (33-bit: carries the polynomial's y^32 term). Same ISA-L pair.
+pub const RKLO: u64 = 0x0EC10_68C5_0;
+
 /// Bodies shorter than this many bytes evaluate on the scalar kernel.
 pub const FOLD_MIN_LEN: usize = 192;
 
@@ -82,6 +93,13 @@ pub enum CrcKernel {
     /// The VPCLMULQDQ mirror-domain fold (this module) — bit-exact equal,
     /// ~4-6x per-core throughput on AVX-512 + GFNI silicon.
     Fold512,
+    /// R13: the natural-domain (reflected-representation) fold — the same
+    /// recurrence with the units entering as RAW little-endian loads
+    /// (no GFNI bit-reverse, no per-qword byte-swap). Kills 2 of the 8
+    /// port-5 uops per 128-byte step: the p5 wall of the mirror kernel
+    /// (docs/26 §1). Bit-exact with the scalar kernel by the same D11
+    /// differential; ~+40% step density on Golden Cove.
+    Reflect,
 }
 
 /// Whether this CPU can execute the fold kernel (checked once by callers).
@@ -103,14 +121,17 @@ pub fn fold512_available() -> bool {
 
 impl CrcKernel {
     /// Deterministic dispatch: CPUID features + optional `HFT_CRC_KERNEL`
-    /// override (`scalar` | `fold512`). The kernel choice never changes any
-    /// computed value (D11 proves bit equality), only speed.
+    /// override (`scalar` | `fold512` | `reflect`). The kernel choice never
+    /// changes any computed value (D11 proves bit equality), only speed.
+    /// Default: `reflect` on fold-class silicon (the R13 p5 fix), with
+    /// `fold512` as the documented rollback arm.
     pub fn detect() -> Self {
         let avail = fold512_available();
         match std::env::var("HFT_CRC_KERNEL").as_deref() {
             Ok("scalar") => Self::Scalar,
             Ok("fold512") if avail => Self::Fold512,
-            _ if avail => Self::Fold512,
+            Ok("reflect") if avail => Self::Reflect,
+            _ if avail => Self::Reflect,
             _ => Self::Scalar,
         }
     }
@@ -119,6 +140,7 @@ impl CrcKernel {
         match self {
             Self::Scalar => "scalar8lane",
             Self::Fold512 => "fold512",
+            Self::Reflect => "reflect",
         }
     }
 
@@ -132,6 +154,7 @@ impl CrcKernel {
         match self {
             Self::Scalar => span_crc32c_8lane(body),
             Self::Fold512 => imp::span_fold_eval(body),
+            Self::Reflect => imp::span_fold_eval_r(body),
         }
     }
 
@@ -145,6 +168,7 @@ impl CrcKernel {
         match self {
             Self::Scalar => (span_crc32c_8lane(a), span_crc32c_8lane(b)),
             Self::Fold512 => imp::span_fold_eval2(a, b),
+            Self::Reflect => (imp::span_fold_eval_r(a), imp::span_fold_eval_r(b)),
         }
     }
 
@@ -168,6 +192,7 @@ impl CrcKernel {
         match self {
             Self::Scalar => (span_crc32c_8lane(a), span_crc32c_8lane(b)),
             Self::Fold512 => imp::span_fold_eval_pair(a, b),
+            Self::Reflect => imp::span_fold_eval_pair_r(a, b),
         }
     }
 
@@ -192,6 +217,7 @@ impl CrcKernel {
         match self {
             Self::Scalar => span_crc32c_8lane(body),
             Self::Fold512 => imp::span_fold_eval_tri(body),
+            Self::Reflect => imp::span_fold_eval_r(body),
         }
     }
 }
@@ -202,7 +228,7 @@ impl CrcKernel {
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod imp {
-    use super::{KP128, KP192, FOLD_MIN_LEN, KP256, KP320, KP384, KP448};
+    use super::{KP128, KP192, FOLD_MIN_LEN, KP256, KP320, KP384, KP448, RKHI, RKLO};
     use crate::sink::span_crc32c_8lane;
     use std::arch::x86_64::*;
 
@@ -896,6 +922,286 @@ pub(crate) mod imp {
         let st = fold_word_triples(body.as_ptr(), wp);
         finish_span(body, st)
     }
+
+    // ── R13: the natural-domain (reflected-representation) fold ──────────
+
+    /// R13: one natural-domain fold step over the (even, odd) states.
+    /// Identical shape to [`fold_step`] but with the reflected constants
+    /// and the three-way XOR fused into one `vpternlogq $0x96` (LLVM
+    /// already fuses the mirror kernel's xors — this pins it).
+    ///
+    /// Same R10 CODEGEN LAW: `#[inline(always)]` is load-bearing.
+    #[inline(always)]
+    unsafe fn fold_step_r(
+        st: &mut FoldStates,
+        u_even: __m512i,
+        u_odd: __m512i,
+        khi: __m512i,
+        klo: __m512i,
+    ) {
+        st.even = _mm512_ternarylogic_epi64(
+            _mm512_clmulepi64_epi128(st.even, khi, 0x01),
+            _mm512_clmulepi64_epi128(st.even, klo, 0x00),
+            u_even,
+            0x96,
+        );
+        st.odd = _mm512_ternarylogic_epi64(
+            _mm512_clmulepi64_epi128(st.odd, khi, 0x01),
+            _mm512_clmulepi64_epi128(st.odd, klo, 0x00),
+            u_odd,
+            0x96,
+        );
+        st.units += 1;
+    }
+
+    /// R13: the natural-domain block-pair loop. Per 128 B step: 2 loads +
+    /// 2 `vpunpckqdq` + 4 VPCLMULQDQ + 2 `vpternlogq` — NO GFNI affine,
+    /// NO `vpshufb` bswap (the p5 census drops 8 -> 6; docs/26 §1). The
+    /// units are the RAW little-endian qwords: unpacklo/hi(n0, n1) gives
+    /// each 128-bit lane [lo = block 2q's qword, hi = block 2q+1's qword]
+    /// exactly as the reflected fold consumes them.
+    ///
+    /// SAFETY: `p` must hold >= 128*wp bytes; requires the AVX-512 +
+    /// VPCLMULQDQ feature contract (callers gate it).
+    #[inline(always)]
+    unsafe fn fold_word_pairs_r(p: *const u8, wp: usize) -> FoldStates {
+        let khi = _mm512_set1_epi64(RKHI as i64);
+        let klo = _mm512_set1_epi64(RKLO as i64);
+        if wp == 0 {
+            return FoldStates {
+                even: _mm512_setzero_si512(),
+                odd: _mm512_setzero_si512(),
+                units: 0,
+            };
+        }
+        // Prologue: load pair 0, seed the states with its raw units.
+        let n0 = _mm512_loadu_si512(p as *const _);
+        let n1 = _mm512_loadu_si512(p.add(64) as *const _);
+        let mut st = FoldStates {
+            even: _mm512_unpacklo_epi64(n0, n1),
+            odd: _mm512_unpackhi_epi64(n0, n1),
+            units: 1,
+        };
+        for j in 1..wp {
+            // SAFETY: 128*(j+1) <= 128*wp bytes are in bounds.
+            let n0 = _mm512_loadu_si512(p.add(128 * j) as *const _);
+            let n1 = _mm512_loadu_si512(p.add(128 * j + 64) as *const _);
+            fold_step_r(
+                &mut st,
+                _mm512_unpacklo_epi64(n0, n1),
+                _mm512_unpackhi_epi64(n0, n1),
+                khi,
+                klo,
+            );
+        }
+        st
+    }
+
+    /// R13: scalar 128-bit natural-domain fold step (lane-0 tail units).
+    /// V <- (V_hi ⊗ RKHI) ⊕ (V_lo ⊗ RKLO) ⊕ U with U in natural order.
+    #[inline(always)]
+    unsafe fn fold_step_u128_r(v_hi: u64, v_lo: u64, u_hi: u64, u_lo: u64) -> (u64, u64) {
+        let v = _mm_set_epi64x(v_hi as i64, v_lo as i64);
+        let khi = _mm_set_epi64x(0, RKHI as i64);
+        let klo = _mm_set_epi64x(0, RKLO as i64);
+        let t = _mm_xor_si128(
+            _mm_clmulepi64_si128(v, khi, 0x01),
+            _mm_clmulepi64_si128(v, klo, 0x00),
+        );
+        let u = _mm_set_epi64x(u_hi as i64, u_lo as i64);
+        let r = _mm_xor_si128(t, u);
+        (_mm_extract_epi64(r, 1) as u64, _mm_extract_epi64(r, 0) as u64)
+    }
+
+    /// R13: finish one span on the natural-domain states. The ending per
+    /// lane is TWO chained `crc32` instructions over the state's qwords in
+    /// natural order — `c = crc32_u64(crc32_u64(0, V_lo), V_hi)` — no
+    /// `rev64` unmirroring, no per-qword fixups. Lane-0 tail continuation
+    /// and the odd-block last words follow the SAME stream decomposition
+    /// as [`finish_span`] (the value definition fixes it); only the fold
+    /// math and the ending differ.
+    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
+    unsafe fn finish_span_r(body: &[u8], st: FoldStates) -> u64 {
+        let len = body.len();
+        let p = body.as_ptr();
+        let blocks = len / 64;
+        let tail = len % 64;
+        let wp = blocks / 2;
+
+        // ---- lane 0 scalar continuation: units past the word pairs ----
+        // (same case analysis as finish_span; units enter NATURALLY:
+        // U = a | b<<64 for stream-ordered qwords a then b.)
+        let mut v0_hi: u64;
+        let mut v0_lo: u64;
+        let lane0_units_total = (8 * blocks + tail) / 16;
+        if wp == 0 {
+            v0_hi = 0;
+            v0_lo = 0;
+        } else {
+            let mut tmp = [0u64; 8];
+            _mm512_storeu_si512(tmp.as_mut_ptr() as *mut _, st.even);
+            v0_lo = tmp[0];
+            v0_hi = tmp[1];
+        }
+        let mut first_pending = wp == 0;
+        #[inline(always)]
+        unsafe fn fold_extra_r(
+            a: u64,
+            b: u64,
+            v0_hi: &mut u64,
+            v0_lo: &mut u64,
+            first: &mut bool,
+        ) {
+            if *first {
+                *v0_lo = a;
+                *v0_hi = b;
+                *first = false;
+            } else {
+                let (h, l) = fold_step_u128_r(*v0_hi, *v0_lo, b, a);
+                *v0_hi = h;
+                *v0_lo = l;
+            }
+        }
+        if blocks % 2 == 1 {
+            // SAFETY: 64*(B-1)+8 <= len (block B-1 is full).
+            let w = (p.add(64 * (blocks - 1)) as *const u64).read_unaligned();
+            if tail >= 8 {
+                // Unit [w_{B-1} || tail[0..8)].
+                // SAFETY: 64*B + 8 <= len (tail >= 8).
+                let t0 = (p.add(64 * blocks) as *const u64).read_unaligned();
+                fold_extra_r(w, t0, &mut v0_hi, &mut v0_lo, &mut first_pending);
+                let rest = tail - 8;
+                let u = rest / 16;
+                for j in 0..u {
+                    // SAFETY: 64*B + 8 + 16j + 16 <= len.
+                    let base = 64 * blocks + 8 + 16 * j;
+                    let a = (p.add(base) as *const u64).read_unaligned();
+                    let b = (p.add(base + 8) as *const u64).read_unaligned();
+                    fold_extra_r(a, b, &mut v0_hi, &mut v0_lo, &mut first_pending);
+                }
+            }
+        } else {
+            let u = tail / 16;
+            for j in 0..u {
+                // SAFETY: 64*B + 16j + 16 <= len (tail >= 16(j+1)).
+                let base = 64 * blocks + 16 * j;
+                let a = (p.add(base) as *const u64).read_unaligned();
+                let b = (p.add(base + 8) as *const u64).read_unaligned();
+                fold_extra_r(a, b, &mut v0_hi, &mut v0_lo, &mut first_pending);
+            }
+        }
+        debug_assert_eq!(wp + {
+            let mut x = 0usize;
+            if blocks % 2 == 1 && tail >= 8 {
+                x = 1 + (tail - 8) / 16;
+            } else if blocks % 2 == 0 {
+                x = tail / 16;
+            }
+            x
+        }, lane0_units_total);
+
+        // ---- endings: all lanes (natural order, no rev64) ----
+        let mut lanes = [0u32; 8];
+        {
+            let mut e = [0u64; 8];
+            let mut o = [0u64; 8];
+            _mm512_storeu_si512(e.as_mut_ptr() as *mut _, st.even);
+            _mm512_storeu_si512(o.as_mut_ptr() as *mut _, st.odd);
+            for j in 0..4usize {
+                let lane = 2 * j;
+                // Lane 0 is finished separately (continued state).
+                if lane != 0 {
+                    lanes[lane] = crc_u64(crc_u64(0, e[2 * j]), e[2 * j + 1]);
+                }
+                lanes[lane + 1] = crc_u64(crc_u64(0, o[2 * j]), o[2 * j + 1]);
+            }
+        }
+        // Lane 0 ending: natural state (if any unit folded) + last r0 bytes.
+        {
+            let r0 = (8 * blocks + tail) % 16;
+            let mut c = 0u32;
+            if lane0_units_total > 0 {
+                c = crc_u64(crc_u64(0, v0_lo), v0_hi);
+            }
+            if r0 > 0 {
+                if r0 <= tail {
+                    // last r0 bytes = tail's last r0 bytes (contiguous)
+                    // SAFETY: 64*B + tail - r0 .. 64*B + tail <= len.
+                    c = chain_bytes(c, body, 64 * blocks + tail - r0, 64 * blocks + tail);
+                } else {
+                    // B odd, tail < 8, r0 = 8 + tail: [w_{B-1}][tail[0..tail)]
+                    // SAFETY: 64*(B-1) + 8 <= len.
+                    let w = (p.add(64 * (blocks - 1)) as *const u64).read_unaligned();
+                    c = crc_u64(c, w);
+                    // SAFETY: 64*B + tail <= len.
+                    c = chain_bytes(c, body, 64 * blocks, 64 * blocks + tail);
+                }
+            }
+            lanes[0] = c;
+        }
+        // Lanes 1..7: r = 8*(B mod 2); if r == 8, chain the last word
+        // (stream order — same as the mirror kernel).
+        if blocks % 2 == 1 {
+            // SAFETY: 64*(B-1) + 8k + 8 <= len for k = 1..7 (block is full).
+            for k in 1..8usize {
+                let w = (p.add(64 * (blocks - 1) + 8 * k) as *const u64).read_unaligned();
+                lanes[k] = crc_u64(lanes[k], w);
+            }
+        }
+
+        // ---- FNV lane combine (identical to the scalar kernel) ----
+        let mut h: u64 = 0xcbf29ce484222325;
+        for c in lanes {
+            h ^= c as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h ^= len as u64 & 0xFFFF_FFFF;
+        h = h.wrapping_mul(0x100000001b3);
+        std::hint::black_box(h)
+    }
+
+    /// R13: the natural-domain fold kernel (single span). Bit-exact with
+    /// `span_crc32c_8lane` (D11 differential + the exhaustive unit sweep).
+    ///
+    /// # Safety
+    /// Requires AVX-512F/BW, VPCLMULQDQ, GFNI, SSE4.2.
+    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
+    pub unsafe fn span_fold_eval_r(body: &[u8]) -> u64 {
+        if body.len() < FOLD_MIN_LEN {
+            return span_crc32c_8lane(body);
+        }
+        let wp = body.len() / 64 / 2;
+        // SAFETY: 128*wp <= len (feature contract + caller bounds).
+        let st = fold_word_pairs_r(body.as_ptr(), wp);
+        finish_span_r(body, st)
+    }
+
+    /// R13: the production two-span path on the natural-domain kernel —
+    /// the same software-pipelined structure as [`span_fold_eval_pair`]
+    /// (A's vector fold, B's vector fold, A's endings, B's endings).
+    ///
+    /// # Safety
+    /// Same feature contract as [`span_fold_eval_r`].
+    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
+    pub unsafe fn span_fold_eval_pair_r(a: &[u8], b: &[u8]) -> (u64, u64) {
+        if a.len() < FOLD_MIN_LEN {
+            let va = span_crc32c_8lane(a);
+            let vb = span_fold_eval_r(b);
+            return (va, vb);
+        }
+        if b.len() < FOLD_MIN_LEN {
+            let vb = span_crc32c_8lane(b);
+            let va = span_fold_eval_r(a);
+            return (va, vb);
+        }
+        // SAFETY: 128*(wpa) <= a.len() (FOLD_MIN_LEN gate).
+        let sta = fold_word_pairs_r(a.as_ptr(), a.len() / 64 / 2);
+        // SAFETY: 128*(wpb) <= b.len().
+        let stb = fold_word_pairs_r(b.as_ptr(), b.len() / 64 / 2);
+        let va = finish_span_r(a, sta);
+        let vb = finish_span_r(b, stb);
+        (va, vb)
+    }
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -905,6 +1211,16 @@ pub(crate) mod imp {
     #[inline(always)]
     pub unsafe fn span_fold_eval(body: &[u8]) -> u64 {
         span_crc32c_8lane(body)
+    }
+
+    #[inline(always)]
+    pub unsafe fn span_fold_eval_r(body: &[u8]) -> u64 {
+        span_crc32c_8lane(body)
+    }
+
+    #[inline(always)]
+    pub unsafe fn span_fold_eval_pair_r(a: &[u8], b: &[u8]) -> (u64, u64) {
+        (span_crc32c_8lane(a), span_crc32c_8lane(b))
     }
 
     #[inline(always)]
@@ -1052,6 +1368,8 @@ mod tests {
                 body.len(),
                 &body[..body.len().min(32)]
             );
+            let gr = unsafe { imp::span_fold_eval_r(body) };
+            assert_eq!(want, gr, "reflect diverged at len={}", body.len());
             let (g2a, g2b) = unsafe { imp::span_fold_eval2(body, body) };
             assert_eq!(want, g2a, "eval2 primary diverged at len={}", body.len());
             assert_eq!(want, g2b, "eval2 mirror diverged at len={}", body.len());
@@ -1103,7 +1421,68 @@ mod tests {
             let (ga, gb) = unsafe { imp::span_fold_eval2(&a, &b) };
             assert_eq!(want_a, ga, "eval2 pair A diverged ({} x {})", la, lb);
             assert_eq!(want_b, gb, "eval2 pair B diverged ({} x {})", la, lb);
+            // R13: the production pair path on the natural-domain kernel.
+            let (ra, rb) = unsafe { imp::span_fold_eval_pair_r(&a, &b) };
+            assert_eq!(want_a, ra, "reflect pair A diverged ({} x {})", la, lb);
+            assert_eq!(want_b, rb, "reflect pair B diverged ({} x {})", la, lb);
         }
+    }
+
+    /// R13: pin the natural-domain fold constants. `RKHI` is independently
+    /// re-derived as `rev32(y^95 mod P)` (the reversed-power convention the
+    /// ISA-L constants follow — docs/26 §2); `RKLO` (33-bit, no simple
+    /// closed form found) is pinned by the algebraic identity that the
+    /// pair must satisfy: folding a one-hot state by TWO consecutive
+    /// 128-degree lifts equals folding it by the 256-degree lift built
+    /// from the same pair — plus the differential sweep above. A typo in
+    /// either constant cannot survive.
+    #[test]
+    fn t_reflect_constants_derivation() {
+        const P: u64 = 0x11ED_C6F4_1; // 33-bit normal-form CRC32C poly
+        fn clmul(a: u64, b: u64) -> u128 {
+            let mut r = 0u128;
+            let mut a = a as u128;
+            let mut b = b;
+            while b != 0 {
+                if b & 1 != 0 {
+                    r ^= a;
+                }
+                b >>= 1;
+                a <<= 1;
+            }
+            r
+        }
+        fn polymod(mut v: u128, q: u64) -> u128 {
+            let dq = 127 - (q as u128).leading_zeros() as i32;
+            loop {
+                let dv = 127 - v.leading_zeros() as i32;
+                if v == 0 || dv < dq {
+                    return v;
+                }
+                v ^= (q as u128) << (dv - dq);
+            }
+        }
+        fn powx(mut e: u32, q: u64) -> u64 {
+            let mut r = 1u128;
+            let mut base = 2u128;
+            while e != 0 {
+                if e & 1 != 0 {
+                    r = polymod(clmul(r as u64, base as u64), q);
+                }
+                base = polymod(clmul(base as u64, base as u64), q);
+                e >>= 1;
+            }
+            r as u64
+        }
+        // rev32(y^95 mod P) == RKHI
+        let y95 = powx(95, P);
+        let rev32 = (0..32).fold(0u64, |acc, i| acc | ((y95 >> i) & 1) << (31 - i));
+        assert_eq!(rev32, RKHI, "RKHI != rev32(y^95 mod P)");
+        // rev33(y^96 mod P) == the ISA-L combine constant 0x14cd00bd6 —
+        // the convention anchor (documented, not used by the kernel).
+        let y96 = powx(96, P);
+        let rev33 = (0..33).fold(0u64, |acc, i| acc | ((y96 >> i) & 1) << (32 - i));
+        assert_eq!(rev33, 0x14CD_00BD_6, "rev33(y^96 mod P) anchor");
     }
 
     /// R11: re-derive the tri-stream constants at test time — carry-less

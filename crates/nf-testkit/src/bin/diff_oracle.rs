@@ -621,6 +621,67 @@ fn test_d11_crc_kernel_differential() {
         "D11 CRC_KERNEL_DIFFERENTIAL_PASSED: scalar==reference, fold512==scalar on {} bodies (exhaustive lengths + patterns + random + eval2 + eval_pair)",
         checked
     );
+
+    // 3) R13: the natural-domain (reflected) fold — the same exhaustive
+    // differential against BOTH the scalar kernel and (transitively) the
+    // reference table-driven CRC32C. The production path (eval + eval_pair
+    // on CrcKernel::detect()'s new default) is what the fabric runs.
+    let rk = CrcKernel::Reflect;
+    let mut rchecked = 0u64;
+    let mut rcheck = |b: &[u8]| {
+        let want = span_crc32c_8lane(b);
+        // SAFETY: fold512_available() verified the feature contract.
+        let got = unsafe { rk.eval(b) };
+        assert_eq!(want, got, "D11: reflect diverged at len={}", b.len());
+        rchecked += 1;
+    };
+    for len in 0..=520usize {
+        for pat in 0..4u8 {
+            match pat {
+                0 => buf[..len].fill(0),
+                1 => buf[..len].fill(0xFF),
+                2 => {
+                    for (i, e) in buf[..len].iter_mut().enumerate() {
+                        *e = (i * 131 + 17) as u8;
+                    }
+                }
+                _ => {
+                    for e in buf[..len].iter_mut() {
+                        *e = next() as u8;
+                    }
+                }
+            }
+            rcheck(&buf[..len]);
+        }
+    }
+    for len in [640usize, 680, 1000, 1360, 1380, 1399, 1400, 2048, 4096] {
+        for e in buf[..len].iter_mut() {
+            *e = next() as u8;
+        }
+        rcheck(&buf[..len]);
+    }
+    // Mismatched production pairs on the reflected kernel.
+    for (la, lb) in [(1360usize, 1399), (1399, 680), (2048, 1360), (1379, 4096)] {
+        for e in buf[..la].iter_mut() {
+            *e = next() as u8;
+        }
+        let a = buf[..la].to_vec();
+        for e in buf[..lb].iter_mut() {
+            *e = next() as u8;
+        }
+        let b = buf[..lb].to_vec();
+        let want_a = span_crc32c_8lane(&a);
+        let want_b = span_crc32c_8lane(&b);
+        // SAFETY: feature contract verified above.
+        let (ga, gb) = unsafe { rk.eval_pair(&a, &b) };
+        assert_eq!(want_a, ga, "D11: reflect pair A diverged ({} x {})", la, lb);
+        assert_eq!(want_b, gb, "D11: reflect pair B diverged ({} x {})", la, lb);
+        rchecked += 2;
+    }
+    println!(
+        "D11 REFLECT_KERNEL_DIFFERENTIAL_PASSED: reflect==scalar on {} bodies (exhaustive lengths + patterns + random + eval_pair)",
+        rchecked
+    );
 }
 
 fn main() {

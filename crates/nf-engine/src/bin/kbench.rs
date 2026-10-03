@@ -86,6 +86,8 @@ fn main() {
     bench_1t("crc32_pclmul_mix", c0, mode_mix);
     if fold512_available() {
         bench_1t("fold512", c0, mode_fold512);
+        bench_1t("fold512_r", c0, mode_fold512_r);
+        bench_1t("fold512_r_pair", c0, mode_fold512_r_pair);
         bench_1t("fold512_eval2", c0, mode_fold512_eval2);
         bench_1t("fold512_pair", c0, mode_fold512_pair);
         bench_1t("fold512_tri", c0, mode_fold512_tri);
@@ -97,6 +99,7 @@ fn main() {
         bench_2t("scalar8lane", "2cpu_distinct", a, b, mode_scalar);
         if fold512_available() {
             bench_2t("fold512", "2cpu_distinct", a, b, mode_fold512);
+            bench_2t("fold512_r", "2cpu_distinct", a, b, mode_fold512_r);
             bench_2t("fold512_tri", "2cpu_distinct", a, b, mode_fold512_tri);
         }
     }
@@ -104,6 +107,7 @@ fn main() {
         bench_2t("scalar8lane", "2cpu_smt", a, b, mode_scalar);
         if fold512_available() {
             bench_2t("fold512", "2cpu_smt", a, b, mode_fold512);
+            bench_2t("fold512_r", "2cpu_smt", a, b, mode_fold512_r);
             bench_2t("fold512_tri", "2cpu_smt", a, b, mode_fold512_tri);
         }
     }
@@ -284,6 +288,39 @@ fn mode_fold512(buf: &[u8], sink: &mut u64) -> usize {
         // SAFETY: main() only dispatches here when fold512_available().
         acc ^= unsafe { kernel.eval(&buf[off..off + SPAN]) };
         off += SPAN;
+    }
+    *sink = acc;
+    off
+}
+
+/// R13: the natural-domain (reflected) fold on the same packed-SPAN
+/// corpus — the kernel-level attribution of the p5 fix (fold512_r vs
+/// fold512 on the SAME runner isolates the removed GFNI/pshufb pair from
+/// all fabric effects).
+fn mode_fold512_r(buf: &[u8], sink: &mut u64) -> usize {
+    let kernel = CrcKernel::Reflect;
+    let mut off = 0usize;
+    let mut acc = 0u64;
+    while off + SPAN <= buf.len() {
+        // SAFETY: main() only dispatches here when fold512_available().
+        acc ^= unsafe { kernel.eval(&buf[off..off + SPAN]) };
+        off += SPAN;
+    }
+    *sink = acc;
+    off
+}
+
+/// R13: the production pair path on the natural-domain kernel.
+fn mode_fold512_r_pair(buf: &[u8], sink: &mut u64) -> usize {
+    let kernel = CrcKernel::Reflect;
+    let mut off = 0usize;
+    let mut acc = 0u64;
+    while off + 2 * SPAN <= buf.len() {
+        // SAFETY: main() only dispatches here when fold512_available().
+        let (a, b) =
+            unsafe { kernel.eval_pair(&buf[off..off + SPAN], &buf[off + SPAN..off + 2 * SPAN]) };
+        acc ^= a ^ b;
+        off += 2 * SPAN;
     }
     *sink = acc;
     off
