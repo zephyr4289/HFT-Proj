@@ -1069,9 +1069,6 @@ pub struct HydraSpanSink<'a> {
     pending_lane: usize,
     /// desc_head cursor value at the start of the current chunk.
     pending_head: u64,
-    /// R12 Desc8: the current chunk opened at a grid boundary (its first
-    /// desc carries the block-start flag; set by open_chunk).
-    pending_block_start: bool,
     /// H6: division-free lane tracking. `lane = (span/CHUNK) mod W` needs a
     /// runtime `idiv` (~20-40c) per call — called twice per span that is
     /// ~40-80c/span of pure main-thread fat. Incremental advance + wrap
@@ -1154,7 +1151,6 @@ impl<'a> HydraSpanSink<'a> {
             pending_len: 0,
             pending_lane: 0,
             pending_head: 0,
-            pending_block_start: true,
             n_lanes: fabric.map(|f| f.lanes.len()).unwrap_or(0),
             // Chunk 0 → lane 0; advance on chunk completion (after-use).
             submit_lane: 0,
@@ -1445,10 +1441,11 @@ impl<'a> HydraSpanSink<'a> {
             let mut pos = self.pending_head + self.pending_len;
             let lane = &fabric.lanes[self.pending_lane];
             if self.desc8 {
-                // Grid-aligned chunk-open: ONE anchor desc first (carries
-                // the chunk's first span id; the space check reserved the
-                // +1 slot).
-                if self.pending_block_start && self.pending_len == 0 {
+                // Chunk-open (always): ONE anchor desc first — the chunk's
+                // absolute first span id; the space check reserved the +1
+                // slot. Every lane chunk re-anchors the worker's derivation
+                // (see open_chunk).
+                if self.pending_len == 0 {
                     lane.desc_words()[(pos & DESC_MASK) as usize] =
                         desc8_pack_anchor(self.next_span as u32);
                     self.pending_len += 1;
@@ -1515,12 +1512,15 @@ impl<'a> HydraSpanSink<'a> {
         // Start a new chunk on the lane that owns this span id.
         self.pending_lane = self.submit_lane;
         let lane = &fabric.lanes[self.pending_lane];
-        // R12 Desc8: this chunk-open's grid alignment — a chunk starting at
-        // a 64-span grid boundary carries the block-start flag on its FIRST
-        // desc (re-anchoring the workers' span-id derivation); a chunk
-        // CONTINUED across a pass boundary (submit_rem < CHUNK after the
-        // end_pass flush) does not.
-        self.pending_block_start = self.submit_rem == CHUNK;
+        // R12 Desc8: EVERY lane chunk-open writes an anchor as its first
+        // desc. Grid alignment is NOT sufficient: a mid-grid continuation
+        // (after an end_pass partial flush) can take the lane path while
+        // the interleaved spans went INLINE (assist) — the worker's running
+        // derivation would continue from its stale position and drift by
+        // exactly the diverted span count (the fold-order assert caught
+        // this on the first 8573C draw: drift 32/112 = inline-taken spans).
+        // An unconditional anchor means the worker NEVER extrapolates
+        // across any chunk boundary.
         if self.desc8 && self.blob_base != 0 {
             // Write-once-per-lane blob base (ordered before this chunk's
             // publish; the worker reads it after its desc_head Acquire).
