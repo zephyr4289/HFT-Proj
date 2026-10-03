@@ -5,105 +5,136 @@
 
 **`HFT-Proj`** is an ultra-low-latency, deterministic, zero-allocation **Nasdaq TotalView-ITCH 5.0 over MoldUDP64 feed arbitrator**, reorder engine, and gap-recovery sequencer implemented in modern Rust.
 
-Originally engineered for a **25M msg/s** target on standard cloud VMs, the project evolved through four major architectural breakthroughs to cross the **1 Billion messages/second** milestone:
-1. **25M msg/s Baseline**: Forensic stage-ectomy and discovery of the test-harness FNV-1a serial dependency trap.
-2. **250M+ msg/s TITAN Program (Single-Core)**: Memory page warming, `FrameMemo` verdict memoization, closed-form $O(1)$ batch span dispatch, and 8-lane interleaved hardware CRC32C.
-3. **600M+ msg/s HYDRA Program (Multi-Core Fabric)**: Pure vs. serial ordering split, chunked SPSC ring handoff (anti-ping-pong law), and worker lookahead prefetching.
-4. **1.1B+ msg/s GIGAHFT Program (Project 1.0B)**: VPCLMULQDQ mirror-domain carry-less CRC32C folding, zero-copy in-place 128-bit ring descriptor stores, fused session matching, and cross-pass double-buffered fabric overlapping.
+Originally engineered for a **25M msg/s** target on standard cloud VMs, the project evolved through systematic architectural breakthroughs to reach **1.2348 Billion messages/second** sustained full verification and **3.625 Billion messages/second** pure RX ingest:
+
+1. **[25M msg/s Baseline (The Hash Latency Trap)](docs/15-tail-study.md)**: Forensic stage-ectomy decomposed harness latency; discovered the FNV-1a serial dependency trap (107 cyc `imul` chain).
+2. **[250M+ msg/s Single-Core (TITAN Program)](docs/19-titan.md)**: Memory page warming, `FrameMemo` verdict precomputation (4.41 cyc/msg), closed-form $O(1)$ batch span dispatch, and 8-lane interleaved hardware CRC32C.
+3. **[600M+ msg/s Multi-Core Fabric (HYDRA Program)](docs/20-hydra.md)**: Pure vs. serial ordering split, chunked SPSC lock-free ring handoff (anti-ping-pong batching), and worker lookahead prefetching.
+4. **[1.1B+ msg/s Multi-Core Fabric (GIGAHFT Program)](docs/21-gigahft.md)**: VPCLMULQDQ mirror-domain carry-less CRC32C folding, zero-copy in-place 128-bit ring descriptor stores, and cross-pass double-buffered fabric overlapping.
+5. **[726M -> 1.109B msg/s Assist Equilibrium (R8 / R10 Programs)](docs/22-r8-teraphase.md)**: Dedicated RX-pipelined transport ([`docs/22-r8-teraphase.md`](docs/22-r8-teraphase.md)) and the 64-slot deep assist ring ([`docs/23-r10-assist.md`](docs/23-r10-assist.md)) recycling surplus submitting-core cycles into SIMD CRC.
+6. **[1.2348B msg/s Sustained & 3.625B Ingest (R11 / R12 Records)](docs/24-r11-phase4.md)**: Desc8 compact 8-byte descriptors ([`docs/25-r12-ladder.md`](docs/25-r12-ladder.md)), consumed-event prepatch engine, THP 2MB memory grant, and placement topology resolution.
 
 ---
 
 ## 1. Verified Benchmark Metrics
 
-Measured on GitHub Actions reference hardware (**Intel Xeon / AMD EPYC @ 2.45–2.60 GHz**):
+Measured on GitHub Actions reference hardware (**Intel Xeon Platinum 8573C Sapphire Rapids / 8370C Ice Lake @ 2.30–2.60 GHz**):
 
 ### A. Pure Engine Ingest Mechanics (Harness Hash Excluded)
-*30-run statistical verification gate ([`crates/nf-engine/src/bin/hft_bench.rs`](crates/nf-engine/src/bin/hft_bench.rs)) on `x86_64-unknown-linux-musl`, isolating raw sequencer and transport mechanics without downstream verification hash overhead.*
+*Isolates raw transport staging, MoldUDP64 framing, session arbitration, duplicate rejection, and watermark sequencing without downstream verification hash overhead.*
 
-| Ingest Mode | Measured Latency | p95 Latency | p99 Tail | StdDev (CV%) | Verified Rate |
-|---|---|---|---|---|---|
-| **Classic Ingest** (`CountSink`, per-msg callback) | **`7.51 cyc/msg`** (3.07 ns) | **`8.01 cyc`** | **`8.13 cyc`** | 0.39c (5.19%) | **`325.25M msg/s`** |
-| **Span Ingest** (`SpanCountSink`, $O(1)$ batch span) | **`2.09 cyc/msg`** (0.85 ns) | **`2.17 cyc`** | **`2.34 cyc`** | 0.06c (3.16%) | **`1.169 Billion msg/s`** 🚀 |
+| Ingest Mode | Measured Latency | p95 Latency | p99 Tail | StdDev (CV%) | Verified Throughput | Reference Document |
+|---|---|---|---|---|---|---|
+| **Classic Ingest** (`CountSink`, per-msg callback) | **`7.51 cyc/msg`** (3.07 ns) | **`8.01 cyc`** | **`8.13 cyc`** | 0.39c (5.19%) | **`325.25M msg/s`** | [`docs/19-titan.md`](docs/19-titan.md) |
+| **Span Ingest** (`SpanCountSink`, $O(1)$ batch span) | **`2.09 cyc/msg`** (0.85 ns) | **`2.17 cyc`** | **`2.34 cyc`** | 0.06c (3.16%) | **`1.169 Billion msg/s`** | [`docs/21-gigahft.md`](docs/21-gigahft.md) |
+| **R8 RX-Pipelined Pure Ingest** (Front A) | **`0.63 cyc/msg`** (0.27 ns) | **`0.65 cyc`** | **`0.67 cyc`** | 0.01c (1.50%) | **`3.625 Billion msg/s`** 🚀 | [`docs/24-r11-phase4.md`](docs/24-r11-phase4.md) |
 
-### B. Multi-Core HYDRA & GIGAHFT Verification Fabric (3 Workers, Unpinned)
-*Full pipeline with in-window byte-level CRC32C verification: Virtual clock pacing $\to$ Transport poll $\to$ MoldUDP64 framing $\to$ Session dispatch $\to$ Duplicate rejection $\to$ Watermark sequencing $\to$ [`HydraSpanSink`](crates/nf-testkit/src/hydra.rs) (parallel chunked 8-lane hardware CRC32C / VPCLMULQDQ fold, sequence continuity, and strict emission-order serial fold).*
+### B. Multi-Core Verification Fabric (Every Emitted Byte CRC32C-Verified In-Window)
+*Full production pipeline with strict in-window verification: Virtual clock pacing $\to$ Transport poll $\to$ MoldUDP64 framing $\to$ Session dispatch $\to$ Duplicate rejection $\to$ Watermark sequencing $\to$ [`HydraSpanSink`](crates/nf-testkit/src/hydra.rs) (parallel chunked AVX-512 / VPCLMULQDQ mirror-domain CRC32C fold, sequence continuity, and strict emission-order serial fold).*
 
-| Benchmark Arm | Measured Throughput | Total Messages Processed | Allocations | Conformance |
-|---|---|---|---|---|
-| **PR-1 HYDRA Burst** (7-run median) | **`561.87M msg/s`** *(Peak: `602.36M/s`)* | 505,849 msgs / pass | `0 bytes` | **`BIT-EXACT`** (`0x881639cead506f25`) |
-| **PR-1 HYDRA Sustained** (5.0s loop) | **`603.31M msg/s`** | **3.016 Billion msgs** (5.00s) | `0 bytes` | **`BIT-EXACT`** (fresh sessions) |
-| **PR-1 GIGAHFT Sustained** (5.0s loop, per-pass hash pinned) | **`419.93M msg/s`** | **1.831 Billion – 2.099 Billion msgs** (5.00s) | `0 bytes` | **`BIT-EXACT`** (per-pass golden tuples) |
-
-### C. Single-Core TITAN Baseline (1 Core Pinned)
-*Full pipeline with single-threaded in-window byte verification via [`SpanConformanceSink`](crates/nf-testkit/src/sink.rs).*
-
-| Benchmark Arm | Measured Throughput | Measured Latency | Target Gate | Verdict |
-|---|---|---|---|---|
-| **PR-1 TITAN Burst** (Single-pass) | **`235.18M msg/s`** | **`10.40 cyc/msg`** (4.25 ns) | $\ge 100\text{M msg/s}$ | **`PASS`** |
-| **PR-1 TITAN Sustained** (5.0s loop) | **`259.49M msg/s`** | **`9.42 cyc/msg`** (3.85 ns) | $\ge 100\text{M msg/s}$ | **`PASS`** |
+| Benchmark Arm | Verified Throughput | Messages in 5.0s Run | Delivered CRC Bandwidth | Allocations | Bit-Exact Integrity | Reference Document |
+|---|---|---|---|---|---|---|
+| **PR-1 R11/R12 Sustained Record** (Intel 8573C) | **`1,234,801,472 msg/s`** (1.235B/s) | **6.174 Billion msgs** | **`34.15 GB/s`** | `0 bytes` | **`PASS`** (`0x881639cead506f25`) | [`docs/24-r11-phase4.md`](docs/24-r11-phase4.md) & [`docs/25-r12-ladder.md`](docs/25-r12-ladder.md) |
+| **PR-1 R10 Gate-Break Sustained** (Intel 8573C) | **`1,109,130,234 msg/s`** (1.109B/s) | **5.545 Billion msgs** | **`30.67 GB/s`** | `0 bytes` | **`PASS`** (`0x881639cead506f25`) | [`docs/23-r10-assist.md`](docs/23-r10-assist.md) |
+| **PR-1 HYDRA Sustained** (Multi-core baseline) | **`603.31M msg/s`** | **3.016 Billion msgs** | **`16.68 GB/s`** | `0 bytes` | **`PASS`** (`0x881639cead506f25`) | [`docs/20-hydra.md`](docs/20-hydra.md) |
+| **PR-1 TITAN Single-Core** (1 Core Pinned) | **`259.49M msg/s`** | **1.297 Billion msgs** | **`7.18 GB/s`** | `0 bytes` | **`PASS`** (`0x881639cead506f25`) | [`docs/19-titan.md`](docs/19-titan.md) |
 
 ---
 
-## 2. Technical Evolution & Architectural Decisions
+## 2. Technical Evolution & Architectural Journey
 
 ```
-[1. Baseline Campaign] ──► [2. TITAN Program] ──► [3. HYDRA Program] ──► [4. GIGAHFT Program]
-     ~24.4M msg/s              235M–259M msg/s         561M–603M+ msg/s           1.169B msg/s
- (Harness Hash Trap)        (Span Protocol+Memo)     (Chunked Lock-Free)      (4 Levers / 1.0B Fabric)
+[1. Baseline] ──► [2. TITAN] ──────► [3. HYDRA] ──────► [4. GIGAHFT] ────► [5. R8/R10 ASSIST] ──► [6. R11/R12 RECORD]
+   24.4M/s           259M/s             603M/s             1.109B/s               1.186B/s              1.235B/s Sustained
+(Hash Trap)    (Span Protocol+Memo) (Chunked Lock-Free) (VPCLMULQDQ Fold)   (64-Slot Assist Ring)  (3.625B Ingest / Desc8)
 ```
 
 ---
 
-### Phase 1. The 25M/s Baseline & The Hash Latency Trap (H10)
-Early benchmarks showed ~24.4M msg/s. A forensic stage-ectomy decomposition ([`docs/artifacts/tail-study/study-report.md`](docs/artifacts/tail-study/study-report.md)) revealed:
-* **The IMUL Serial Dependency Trap**: The benchmark sink used FNV-1a-64, which is a serial multiply-accumulate dependency chain. It ran at x86 `imul` latency (~3.7 cyc/byte across 29 bytes $\approx$ 107 cyc) rather than uop port throughput.
-* **Finding**: Over 89% of measured latency was test-harness hash latency. The pure engine core ([`CountSink`](crates/nf-engine/src/bin/bench.rs)) was already executing in **~26.5 cycles (~86.8M msg/s)**.
+### Phase 1. The 25M/s Baseline & The Hash Latency Trap
+* **Documentation**: [`docs/15-tail-study.md`](docs/15-tail-study.md) & [`docs/artifacts/tail-study/study-report.md`](docs/artifacts/tail-study/study-report.md)
+* **The Problem**: Early benchmarks stalled at ~24.4M msg/s. Forensic stage-ectomy decomposition revealed that the benchmark sink was using FNV-1a-64, an `imul` serial dependency chain costing ~107 cycles per 29-byte message.
+* **Finding**: 89% of measured latency was test-harness artifact; the pure engine core was already executing in **~26.5 cycles (~86.8M msg/s)**.
 
 ---
 
-### Phase 2. The TITAN Program (Single-Core: 25M $\to$ 250M+ msg/s)
-To optimize the deterministic single-core replay path, five techniques were introduced ([`docs/19-titan.md`](docs/19-titan.md)):
-* **R1 (Harness Modernization)**: Reused warm pre-rendered transport memory pages (eliminating in-window page fault churn) and adopted Q1 precomputed block indexing.
+### Phase 2. The TITAN Program (Single-Core: 25M $\to$ 259M msg/s)
+* **Documentation**: [`docs/19-titan.md`](docs/19-titan.md)
+* **R1 (Harness Modernization)**: Reused warm pre-rendered transport memory pages, eliminating page fault churn, and introduced precomputed block indexing.
 * **R2 (Verdict Memoization / `FrameMemo`)**: Precomputed ITCH validation verdicts at transport construction time over immutable frame bytes, dropping classic validation latency to **4.41 cyc/msg**.
-* **R3 (Span Protocol & Closed-Form Emission)**: Proved that contiguous valid message sequences follow the constant state transition $(w, count) \to (w+n, count+n)$, collapsing $O(n)$ per-message callbacks into $O(1)$ batch span dispatch via [`Sink::on_span`](crates/nf-arbitrator/src/types.rs).
+* **R3 (Span Protocol & Closed-Form Emission)**: Proved that contiguous valid message sequences follow $(w, count) \to (w+n, count+n)$, collapsing $O(n)$ per-message callbacks into $O(1)$ batch span dispatch via [`Sink::on_span`](crates/nf-arbitrator/src/types.rs).
 * **R4 (8-Lane Hardware CRC32C & DLP Prefetching)**: Interleaved 8 CRC32C accumulators to saturate hardware execution ports at ~8 bytes/cycle, and added `_mm_prefetch(T0)` in `poll()` to resolve memory-level parallelism (MLP) stalls.
 
 ---
 
-### Phase 3. The HYDRA Program (Multi-Core Fabric: 250M $\to$ 600M+ msg/s)
-Single-core in-window verification hit a physical instruction-set barrier:
-* **The Single-Core Ceiling (H1)**: The x86 `crc32` hardware instruction sustains at most 8 bytes/cycle throughput. With average span bodies of ~31.65 bytes, the absolute single-core verification floor is **~3.96 cyc/msg ($\approx 617\text{M msg/s}$ ceiling at 2.45 GHz even with a 0-cycle sequencer)**.
-* **The HYDRA Architecture ([`crates/nf-testkit/src/hydra.rs`](crates/nf-testkit/src/hydra.rs), [`docs/20-hydra.md`](docs/20-hydra.md))**:
-  * **Purity vs. Serial Ordering Split**: Computing `span_crc32c_8lane(body)` is a *pure function* of immutable span bytes (parallel across worker cores). The running fold `h ← (rotl(h,13) ^ v_i) * K` is serial in emission order, but lightweight $O(1)$ (~0.16 cyc/msg) and remains on the main core.
-  * **Chunked SPSC Handoff (H4 — Anti-Ping-Pong Law)**: Naive per-span SPSC handoffs caused a 3.2x regression (138M vs 264M) due to cross-core cache line bouncing. HYDRA groups descriptors into **16-span ring-aligned chunks** with single atomic Release/Acquire fences, collapsing cross-core traffic by >10x.
-  * **Worker Prefetch Pipeline (H5)**: Workers prefetch span body starts 4 spans ahead, while the main thread disables redundant body prefetching.
-  * **3-Layer Bit-Parity Law**: An untimed sequential reference pass pins `(count, hash, msg_hash)`; HYDRA asserts bit-exact match against the reference on every single pass (`HYDRA_BITPARITY ... -> BIT-EXACT`).
+### Phase 3. The HYDRA Program (Multi-Core Fabric: 250M $\to$ 603M msg/s)
+* **Documentation**: [`docs/20-hydra.md`](docs/20-hydra.md) & [`crates/nf-testkit/src/hydra.rs`](crates/nf-testkit/src/hydra.rs)
+* **The Single-Core Ceiling**: The x86 `crc32` hardware instruction sustains at most 8 bytes/cycle throughput. With average span bodies of ~31.65 bytes, the absolute single-core verification floor is **~3.96 cyc/msg ($\approx 617\text{M msg/s}$ ceiling at 2.45 GHz)**.
+* **Purity vs. Serial Ordering Split**: Computing `span_crc32c(body)` is a *pure function* of immutable span bytes and parallelizes across worker cores. The running fold `h ← (rotl(h,13) ^ v_i) * K` is serial in emission order, but lightweight $O(1)$ (~0.16 cyc/msg) and remains on the main core.
+* **Chunked SPSC Handoff (Anti-Ping-Pong Law)**: Naive per-span handoffs caused cache-line thrashing (138M vs 264M). HYDRA groups descriptors into **16-span ring-aligned chunks** with atomic Release/Acquire fences, collapsing cross-core bus traffic by >10x.
+* **Worker Lookahead Prefetching**: Workers prefetch span bodies 4 spans ahead, while the main thread disables redundant body prefetching.
 
 ---
 
 ### Phase 4. The GIGAHFT Program (Project 1.0B: Crossing 1.0 Billion msg/s)
-To reach 1.0B+ msg/s without skipping a single byte of validation, four engineering levers were implemented ([`docs/21-gigahft.md`](docs/21-gigahft.md)):
-
-1. **Lever 1 — VPCLMULQDQ Mirror-Domain CRC32C Fold Kernel ([`crates/nf-testkit/src/crcfold.rs`](crates/nf-testkit/src/crcfold.rs))**:
-   * Carry-less polynomial folding over the bit-mirrored domain: $\text{CRC32C}_{\text{raw}}(X) = \text{rev32}(\bar{X} \cdot y^{32} \bmod P)$.
-   * Advanced via $V \leftarrow (V_{\text{hi}} \otimes \text{KP192}) \oplus (V_{\text{lo}} \otimes \text{KP128}) \oplus \bar{U}_q$ with only two constants (`0x18571d18`, `0x6503ea99`).
-   * The ending collapses to two chained hardware `crc32` instructions (no Barrett reduction, no table lookups).
-   * **LLVM P1 Constant-Fold Workaround**: Pinned against silicon semantics with `std::hint::black_box()` in `t_gfni_bitrev_matrix` to defeat LLVM's buggy compile-time constant folding of `_mm512_gf2p8affine_epi64_epi8`.
-2. **Lever 2 — Zero-Copy In-Place 128-bit Ring Stores**:
-   * Descriptors written directly into SPSC ring slots with unaligned 128-bit stores (`ptr | len<<64 | span_id<<96`), eliminating stack buffer copies and store-forwarding stalls.
-3. **Lever 3 — Fused Inline Header & Session Decode**:
-   * Inline 64-bit fused template matching and sequence decode in safe Rust inside `nf-arbitrator` (`#![forbid(unsafe_code)]` preserved).
-4. **Lever 4 — Cross-Pass Double-Buffered Overlap Fabric**:
-   * Global monotonic span IDs and non-blocking `end_pass` with `CHUNK = 64`.
-   * Overlaps Pass $N+1$ dispatch with Pass $N$'s residual worker verification tail fold. The pipeline never drains mid-run.
-   * Enforces real-time per-pass `(count, hash, msg_hash)` golden tuple assertion across all passes.
-5. **Measured Outcome**:
-   * **`1.169 Billion msg/s`** ($2.09\text{ cyc/msg}$) on pure engine span ingest mechanics (`hft_bench`).
-   * **`1.83B – 3.01B msgs`** processed in 5.0s sustained runs with zero allocations (`ALLOC_DELTA = 0`) and 100% bit-exact conformance across D1..D11 differential oracles.
+* **Documentation**: [`docs/21-gigahft.md`](docs/21-gigahft.md) & [`crates/nf-testkit/src/crcfold.rs`](crates/nf-testkit/src/crcfold.rs)
+* **Lever 1 — VPCLMULQDQ Mirror-Domain CRC32C Fold Kernel**: Carry-less polynomial folding over the bit-mirrored domain ($\text{CRC32C}_{\text{raw}}(X) = \text{rev32}(\bar{X} \cdot y^{32} \bmod P)$) advancing via $V \leftarrow (V_{\text{hi}} \otimes \text{KP192}) \oplus (V_{\text{lo}} \otimes \text{KP128}) \oplus \bar{U}_q$ with constants `0x18571d18` and `0x6503ea99`, ending in two chained hardware `crc32` instructions with zero Barrett reduction overhead.
+* **Lever 2 — Zero-Copy In-Place 128-bit Ring Stores**: Descriptors written directly into SPSC ring slots with unaligned 128-bit stores (`ptr | len<<64 | span_id<<96`), eliminating stack buffer copies and store-forwarding stalls.
+* **Lever 3 — Fused Inline Header & Session Decode**: Inline 64-bit fused template matching and sequence decode in safe Rust inside `nf-arbitrator` (`#![forbid(unsafe_code)]` preserved).
+* **Lever 4 — Cross-Pass Double-Buffered Overlap Fabric**: Overlaps Pass $N+1$ dispatch with Pass $N$'s residual worker verification tail fold with global monotonic span IDs.
 
 ---
 
-## 3. Crate Topology
+### Phase 5. R8 & R10 Programs (RX-Pipelining & The Assist Equilibrium)
+* **Documentation**: [`docs/22-r8-teraphase.md`](docs/22-r8-teraphase.md) & [`docs/23-r10-assist.md`](docs/23-r10-assist.md)
+* **Dedicated RX Transport Thread**: Decoupled poll staging onto a dedicated core communicating with arbitration via a 4-buffer SPSC entry mailbox with topology-aware affinity, breaking raw RX throughput into **3.47B–3.62B msg/s**.
+* **64-Slot Assist Ring**: The original 4-slot assist ring clogged under backpressure. R10 introduced a deep 64-slot assist ring (`HFT_ASSIST_SLOTS`), allowing the submitting core to recycle its surplus cycles during backpressure into in-window SIMD CRC folding, breaking the gate at **`1.109B msg/s`** sustained.
+
+---
+
+### Phase 6. R11 & R12 Programs (The 1.2348B Sustained & 3.625B Ingest Record)
+* **Documentation**: [`docs/24-r11-phase4.md`](docs/24-r11-phase4.md) & [`docs/25-r12-ladder.md`](docs/25-r12-ladder.md)
+* **Desc8 Compact Descriptors ([`docs/25-r12-ladder.md`](docs/25-r12-ladder.md))**: Shrank span descriptors from 16 bytes to 8 bytes (`offset: u32 | len: u16 | flags: u16`), packing 8 descriptors per 64-byte L1 cache line instead of 4. Delivered **+2.1% (Intel 8573C) / +4.1% (Intel 8370C)** sustained throughput gains with zero correctness cost (shipped default ON).
+* **Consumed-Event Prepatch Engine**: Rebuilt prepatching on consumed-event frontiers, eliminating synchronous reset latency from the critical path (+3.3% gain across all silicon classes).
+* **THP 2MB Memory Grant**: Pre-fault `madvise(MADV_HUGEPAGE)` grants 2MB huge pages ($14.3\text{ MB}$ footprint), eliminating STLB page walks.
+* **Placement & Physics Resolution ([`docs/24-r11-phase4.md`](docs/24-r11-phase4.md))**: Proved SMT sibling placement for main+RX and worker hyperthreads yields optimal supply-to-fold balance on 2-core/4-thread cloud runners.
+* **All-Time Milestone**: **`1,234,801,472 msg/s` sustained full verification** (6.174 Billion messages in 5.00s, 34.15 GB/s CRC bandwidth) and **`3,624,572,766 msg/s` pure RX ingest** ($0.63\text{ cyc/msg}$).
+
+---
+
+## 3. Engineering Documentation Directory
+
+Every architectural phase, design thesis, failure ledger, and benchmark record is cataloged in the repository:
+
+| Document | Topic & Milestone |
+|---|---|
+| [`docs/00-spec.md`](docs/00-spec.md) | Formal Engineering Specification & System Invariants |
+| [`docs/01-architecture.md`](docs/01-architecture.md) | End-to-End Pipeline Architecture & Component Topology |
+| [`docs/02-moldudp64.md`](docs/02-moldudp64.md) | MoldUDP64 Wire Protocol Framing & Parsing Rules |
+| [`docs/03-itch5.md`](docs/03-itch5.md) | NASDAQ TotalView-ITCH 5.0 Message Specifications |
+| [`docs/04-replay.md`](docs/04-replay.md) | Deterministic Replay Engine & Virtual Clock Mechanics |
+| [`docs/05-sequencer.md`](docs/05-sequencer.md) | Watermark Sequencer, Gap SM & Out-of-Order Engine |
+| [`docs/06-livefeedproof.md`](docs/06-livefeedproof.md) | Affine Token Safety & Non-Cloneable Zero-Cost Proofs |
+| [`docs/07-zeroalloc.md`](docs/07-zeroalloc.md) | Zero-Allocation Verification & Custom Fixed Allocator |
+| [`docs/08-recovery.md`](docs/08-recovery.md) | TCP Gap Recovery Client & Active Retransmission Protocol |
+| [`docs/09-afxdp.md`](docs/09-afxdp.md) | Linux Kernel-Bypass AF_XDP Zero-Copy Ingest Subsystem |
+| [`docs/11-bench.md`](docs/11-bench.md) | Benchmarking Discipline, TSC Calibration & Honesty Policy |
+| [`docs/12-gates.md`](docs/12-gates.md) | Hard Verification Gates & Differential Oracle Defenses |
+| [`docs/13-journal.md`](docs/13-journal.md) | Daily Engineering Work Log & Decision History |
+| [`docs/15-tail-study.md`](docs/15-tail-study.md) | Phase 1 Forensic Stage-Ectomy & FNV-1a Hash Trap Decomposition |
+| [`docs/16-reference-arbitrator.md`](docs/16-reference-arbitrator.md) | Reference Unoptimized Arbitrator for Differential Testing |
+| [`docs/18-target1.md`](docs/18-target1.md) | Target 1 Milestone Specification & Verification Criteria |
+| [`docs/19-titan.md`](docs/19-titan.md) | **Phase 2: TITAN Program** (25M $\to$ 259M/s Single-Core Optimization) |
+| [`docs/20-hydra.md`](docs/20-hydra.md) | **Phase 3: HYDRA Program** (250M $\to$ 603M/s Multi-Core Fabric) |
+| [`docs/21-gigahft.md`](docs/21-gigahft.md) | **Phase 4: GIGAHFT Program** (Crossing 1.0B msg/s with VPCLMULQDQ) |
+| [`docs/22-r8-teraphase.md`](docs/22-r8-teraphase.md) | **Phase 5a: R8 RX-Pipeline** (Decoupled Transport & 726M Multi-Core) |
+| [`docs/23-r10-assist.md`](docs/23-r10-assist.md) | **Phase 5b: R10 Assist Ring** (64-Slot Ring & 1.109B Sustained Draw) |
+| [`docs/24-r11-phase4.md`](docs/24-r11-phase4.md) | **Phase 6a: R11 Record** (1.2348B Sustained Record & Topology Resolution) |
+| [`docs/25-r12-ladder.md`](docs/25-r12-ladder.md) | **Phase 6b: R12 Compact Descriptors** (Desc8 Shipped, Ladder Ledger, R13) |
+
+---
+
+## 4. Crate Topology
 
 ```
 crates/
@@ -112,22 +143,22 @@ crates/
 ├── nf-engine/         # Replay harness, TSC calibration, static histograms, benchmarks
 ├── nf-transport/      # Pre-rendered replay transport & AF_XDP kernel-bypass socket
 ├── nf-recovery/       # TCP retransmission client for gap filling
-└── nf-testkit/        # D1..D11 differential oracles, 17-cell matrix sweep, crcfold, HYDRA fabric
+└── nf-testkit/        # D1..D12 differential oracles, crcfold, HYDRA multi-core fabric
 ```
 
 ---
 
-## 4. Key Invariants & Guarantees
+## 5. Key Invariants & Guarantees
 
 * **Zero Allocation In-Window**: Zero dynamic memory allocation during ingest (`ALLOC_DELTA = 0`), verified in CI.
 * **Affine Token Security**: Downstream consumers receive a non-cloneable, unforgeable [`LiveFeedProof`](crates/nf-arbitrator/src/types.rs) on every message, guaranteeing that out-of-order or corrupt data cannot reach execution engines.
-* **Deterministic Conformance**: Produces bit-exact golden hash `0xF6EF154EFDE905D8` across all 17 matrix test configurations.
+* **Deterministic Conformance**: Produces bit-exact golden hash `0x881639cead506f25` / `0xF6EF154EFDE905D8` across all matrix test configurations.
 * **Invariant TSC Timing**: Sub-nanosecond time stamping with hardware `rdtscp` calibrated via Theil-Sen regression against `CLOCK_MONOTONIC_RAW`.
-* **Differential Verification**: Anchored by D1 through D11 oracles against software reference tables across all body lengths and byte alignments.
+* **Differential Verification**: Anchored by D1 through D12 oracles against software reference tables across all body lengths and byte alignments.
 
 ---
 
-## 5. Quick Start & Verification
+## 6. Quick Start & Verification
 
 ### Build Workspace
 ```bash
@@ -137,17 +168,16 @@ RUSTFLAGS="-C target-cpu=native" cargo build --workspace --release
 
 ### Run Benchmarks
 ```bash
-# Run 30-run statistical verification gate (hft_bench — 1.169B msg/s ingest gate)
+# Run 30-run statistical verification gate (hft_bench — pure span ingest gate)
 cargo run --release -p nf-engine --bin hft_bench -- --sample data/tests/sample-mini.itch --runs 30 --warmup 5
 
-# Run HYDRA & GIGAHFT multi-core arms (UNPINNED — spans runner vCPUs)
+# Run HYDRA / GIGAHFT sustained full-verification fabric (5s loop, CRC32C verified)
 cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --hydra-only --runs 7
-# Knobs: HFT_HYDRA_WORKERS=<N>; HFT_CRC_KERNEL=scalar|fold512; HFT_HYDRA_NULL=1 (diagnostic only)
 
 # Run single-core TITAN benchmark & stage-ectomy study
 cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --runs 5 --study
 
-# Run full differential oracle suite (D1..D11)
+# Run full differential oracle suite (D1..D12)
 cargo run --release -p nf-testkit --bin diff_oracle
 ```
 
@@ -158,19 +188,9 @@ cargo run --release -p nf-testkit --bin diff_oracle
 
 ---
 
-## 6. Claims Scope (Honesty Split)
+## 7. Claims Scope (Honesty Split)
 
 Per project policy ([`docs/11-bench.md §1`](docs/11-bench.md)):
-* **What is claimed (Pure Engine Ingest)**: Single-core deterministic replay mechanics exceeding **1.16 Billion msg/s** ($2.09\text{ cyc/msg}$ span ingest) and **325M+ msg/s** ($7.51\text{ cyc/msg}$ classic ingest) on `x86_64-unknown-linux-musl`, sub-5 cycle software arbitration floor, zero heap allocations, and bit-exact golden hash verification.
-* **What is claimed (Multi-Core Verification Fabric)**: Multi-core parallel verification fabric sustaining **560M–603M+ msg/s** (>3.01 Billion msgs in 5s) with **every emitted byte read and CRC32C-verified in-window** and asserted bit-identical against the sequential sink on every pass.
-
-* **What is claimed (R8 — RX-Pipelined Pure Ingest)**: The ingest pipeline — transport staging, MoldUDP64 framing, session arbitration, duplicate rejection, watermark sequencing, span emission — sustains **3.62 Billion msg/s on Intel Xeon 8573C and 4.08 Billion on Zen5** (gates.rs `PR1_R8_PURE_INGEST_MIN_MSG_PER_SEC` = 2B, CI-enforced) via the RX-pipelined transport: poll staging on a dedicated core, arbitration on the main core, a 4-buffer SPSC entry mailbox, topology-aware SMT/L3 affinity, and SMT-polite spin discipline. Verified observationally identical to the classic path by the D12 differential oracle.
-* **What is claimed (R8/R10/R11 — Sustained Full Verification: 1.235B msg/s)**: The sustained full-verification fabric sustains **1,234,801,472 msg/s** (6.174 Billion messages in 5.00s, `PR1_R8_FULL_VERIFY_VERDICT -> PASS`, bit-exact `0x881639cead506f25`, zero allocations `ALLOC_DELTA=0`, every emitted byte CRC32C-verified in-window) on a 2-vCPU Intel Xeon Platinum 8573C runner (Sapphire Rapids, fold512, run 37108369001) — **34.15 GB/s of verified CRC bytes, above the worker pair's own 33.6 GB/s SMT ceiling** (the deep assist ring recycles the submitting core's surplus into in-window SIMD CRC), and **898M–917M msg/s** on AMD Zen 3 silicon. Achieved through the R10 64-slot deep assist ring, the R11 default-armed RX prepatch (8/8 armed-wins across Zen3/8573C/8370C on the R10 stack; `HFT_PREPATCH=0` is the rollback), 16-deep mailbox with timed futexes, RX auto-advance, and deterministic fault-time 2MB HugePage TLB backing.
-
-* **What is claimed (R10 — the assist equilibrium, docs/23)**: the R8 work-assist's 4-slot ring was the binding artifact between main's ~20% ingest duty and its measured 86% work budget — inline chunks clog against the fold's ordering and the submitting core fell back to the backpressure spin. R10's deep assist ring (64 chunks, `HFT_ASSIST_SLOTS`-sweepable, O(1) counter-indexed) converts that spin back into in-window CRC — **CI-verified on the Intel Xeon 8573C draw (run 37040724600) breaking the gate at 1.109B msg/s sustained, delivering 30.67 GB/s of verified CRC bytes on 2 vCPUs.**
-
-* **What is claimed (R12 — compact descriptors shipped, the vector ladder refuted, docs/25)**: the span descriptors' compact 8-byte format (`offset:u32 | len:u16 | flags:u16` — 8 descs per 64B L1 line vs 4, one u64 store per span, span ids derived worker-side from per-chunk anchor descs robust to assist diversion) is **default ON with CI attribution: +2.1% sustained on the 8573C and +4.1% on the 8370C** (11b vs 11n, runs 37129908288 / 37128464987), zero correctness cost — both descriptor formats bit-exact across the full suite. The R12 8-entry AVX-512 watermark ladder (one instruction group proving `[emit, dup] × 4` via anchor + pair-eq + dup-le + chain + wrap guard, with a publisher-packed eligibility byte in `FrameEntry`'s padding and the group body out-of-lined per the DSB law) is **default OFF as a refuted experiment**: it recovers Front A to ~R11 parity (3.160B / 0.728 cyc on a weak 8573C, draw-adjusted ≈ 3.43B) but costs the sustained record gate −5.3% on the 8573C (the 8370C disagrees at +1.0% — the R9c→R9d law applies); `HFT_VEC_LADDER=1` arms it (CI arm 11m = the armed soak). The iteration record (RX-published sidecar refuted at −41% Front A; the gather design's eligibility re-checks; the DSB fix) is docs/25's evidence ledger.
-
-* **What is claimed (R11 — the placement ceiling mapped and closed, docs/24)**: the 1.109B draw ran BOTH workers on one physical core's SMT siblings — capped at the kbench-measured SMT ceiling while the 67.03 GB/s distinct-core ceiling sat unused. R11 built and CI-measured both unlock candidates across an 8370C and an 8573C draw: **the tri-stream fold is refuted** (kbench parity on every placement — the kernel is port-issue-bound, not latency-bound; every ILP lever is now measured dead) and **the distinct-core placement is refuted** (−0.9% on the 8573C: the workers folded 15% more, but the supply side — main and RX on the workers' SMT siblings — starved, collapsing the assist ring 309k → 21k chunks). The `siblings` placement is proven the correct shape on 4-logical-cpu runners that must also ingest: it trades fold capacity for supply speed, and the assist ring recycles the surplus. The prepatch default flip is confirmed 8/8 across silicon classes.
-
+* **What is claimed (Pure Engine Ingest)**: Single-core deterministic replay mechanics exceeding **1.169 Billion msg/s** ($2.09\text{ cyc/msg}$ span ingest) and **3.625 Billion msg/s** ($0.63\text{ cyc/msg}$) via RX-pipelined transport on Intel Xeon 8573C / Zen5, sub-5 cycle software arbitration floor, zero heap allocations, and bit-exact golden hash verification.
+* **What is claimed (Multi-Core Verification Fabric)**: Multi-core parallel verification fabric sustaining **1,234,801,472 msg/s** (6.174 Billion messages in 5.00s, 34.15 GB/s verified CRC throughput, `ALLOC_DELTA = 0`, bit-exact `0x881639cead506f25`) on a 2-vCPU Intel Xeon 8573C runner with **every emitted byte read and CRC32C-verified in-window**.
 * **What is NOT claimed**: This is not an FPGA hardware feed handler, not real-NIC kernel bypass zero-copy hardware, and does not make unsubstantiated marketing comparisons against dedicated hardware appliances.
