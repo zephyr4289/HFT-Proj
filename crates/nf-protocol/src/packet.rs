@@ -32,6 +32,96 @@ pub struct FrameMemo {
     pub valid_count: u16,
 }
 
+/// R12: the steady-scan SoA sidecar — per-frame scan facts in structure-of-
+/// arrays layout, published by the RX thread alongside the `FrameEntry`
+/// array it already builds (one entry per slot, same indices).
+///
+/// # Why
+///
+/// The R8 steady scan walks the AoS `FrameEntry` array one frame at a time:
+/// per entry it loads `first_seq`, `blocks.len()`, the session words, the
+/// memo, the feed and the frame length from a 64-byte struct, then runs the
+/// serial watermark ladder (`first == w`, advance `w`, next frame). At the
+/// R11 record that ladder costs ~30 µops per entry — 0.63 cycles per message
+/// of pure main-core ingest, the single largest remaining cycle budget on
+/// the submitting core. The dual-feed default schedule's frame stream is
+/// STRICTLY ALTERNATING: feed A publishes packet k (an emit), feed B
+/// re-publishes the same packet (a pure duplicate), A publishes k+1, and so
+/// on — so the ladder's work is one repeated two-frame shape that a single
+/// AVX-512 instruction group can prove for EIGHT entries at once (see
+/// `nf_testkit::soa` for the vector check).
+///
+/// # Fields (one slot per `FrameEntry`, same index)
+///
+/// * `firsts[i]` — the entry's first block sequence number (`FrameEntry::
+///   first_seq`, duplicated SoA for vector loads).
+/// * `ns[i]` — the entry's block count (`blocks.len()`).
+/// * `lens[i]` — the entry's frame byte length (`bytes.len()`).
+/// * `feeds[i]` — the entry's origin feed (`FrameEntry::feed`).
+/// * `ok8[i]` — one bit per entry (bit `j` of word `i` = entry `8*i + j`):
+///   1 ⟺ the entry is *steady-eligible against the baked session* — it
+///   carries a non-empty block index, its R2 memo proves every block
+///   valid, and its session equals the session the RX baked
+///   (`baked_lo`/`baked_hi` below). The consumer-side session compare is
+///   therefore EXACT only while the consumer's own session template
+///   equals the baked one — the scan enforces exactly that (it compares
+///   its live template words against `baked_lo`/`baked_hi` once per scan
+///   and disables the vector path otherwise). This is load-bearing:
+///   `session_change_at_msg` + blob aliasing produce mid-pass frames with
+///   mixed sessions (aliased post-split regions share the patched
+///   prefix), so the consumer's session can flip mid-pass and a static
+///   ok bit alone would skip boundary events — the parity suite caught
+///   exactly this. An entry with `ok = 0` (control frame, unmemoized
+///   frame, partial-valid frame, session != baked) makes the vector path
+///   fall back to the scalar ladder, which then applies the full classic
+///   semantics — the bit is an acceleration hint whose failure mode is
+///   the (slower) correct path.
+/// * `baked_lo`/`baked_hi` — the RX's baked-session compare words for THIS
+///   publication (the template the ok bits were keyed against).
+///
+/// Stale bits beyond the publication's entry count are never read: the
+/// vector path only inspects groups of 8 entries entirely below `len`, and
+/// the scalar fallback only touches `entries[pos]` with `pos < len`.
+#[derive(Debug, Clone, Copy)]
+pub struct EntrySoA<'a> {
+    pub firsts: &'a [u64],
+    pub ns: &'a [u64],
+    pub lens: &'a [u64],
+    pub feeds: &'a [u8],
+    pub ok8: &'a [u64],
+    /// The baked-session words the ok bits' session component was keyed
+    /// against (see the field docs above — the scan must verify its own
+    /// live template equals these before trusting an ok bit's session
+    /// component).
+    pub baked_lo: u64,
+    pub baked_hi: u64,
+}
+
+/// R12: the 8-entry vectorized watermark-ladder check — a pure function of
+/// the SoA sidecar. Given pointers to `firsts[pos..pos+8]` and
+/// `ns[pos..pos+8]` (the caller guarantees 8 readable elements — the group
+/// is fully below the publication length) and the scan's current watermark
+/// `w`, it returns whether the 8 entries are exactly:
+///
+/// * `[emit, dup, emit, dup, emit, dup, emit, dup]` — even entries emit
+///   (their `first`s chain `w → w+n₀ → …`), odd entries are PURE duplicates
+///   (same `first` as their even partner, `n_odd ≤ n_even` so their last
+///   sequence sits below the watermark at their turn),
+///
+/// in which case the scan can advance `w` by `Σ n_even`, emit the four even
+/// spans, and count the four odd entries as duplicates — observably
+/// identical (counters, emissions, watermark) to running the scalar ladder
+/// over the same eight entries, proven by the pair/chains/anchor relations
+/// (see `nf_testkit::soa` for the derivation).
+///
+/// The implementation lives behind a runtime CPU gate (`avx512f`) in
+/// `nf_testkit::soa` because CI compiles `x86-64-v3`; the type lives here as
+/// the shared contract between the transport (producer), the arbitrator
+/// (consumer), and the testkit (SIMD implementation). Raw pointers keep the
+/// per-group call lean (no fat slices); passing raw pointers is safe, and
+/// the implementation's dereference is bounded by the documented contract.
+pub type SoaLadder8 = fn(*const u64, *const u64, u64) -> bool;
+
 /// R8: one frame ready for batched ingest — the frame bytes together with
 /// the transport's precomputed per-frame index (Q1 block triples + R2
 /// validation memo) in a single value, so the sequencer's batch apply loop

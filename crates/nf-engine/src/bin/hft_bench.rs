@@ -180,6 +180,10 @@ fn wall_pass_pipelined<S: Sink>(
     transport.reset(sess); // rewind + session bake (RX handshake)
     let mut seq = Sequencer::new();
     let mut sink = mk();
+    // R12: the vectorized watermark ladder — read once per pass (std's
+    // detection caches after the first call; the env rollback is
+    // HFT_VEC_LADDER=0).
+    let ladder = nf_testkit::soa::ladder8_best();
     let t0 = read_monotonic_raw_ns();
     let mut nb = 0usize;
     let mut max_batch_ns: u128 = 0;
@@ -187,13 +191,13 @@ fn wall_pass_pipelined<S: Sink>(
     while transport.next_batch() {
         if diag {
             let tb = read_monotonic_raw_ns();
-            seq.ingest_entries(transport.entries(), transport.now_ns(), &mut sink);
+            seq.ingest_entries_soa(transport.entries(), &transport.soa(), transport.now_ns(), &mut sink, ladder);
             let db = read_monotonic_raw_ns().saturating_sub(tb) as u128;
             if db > max_batch_ns {
                 max_batch_ns = db;
             }
         } else {
-            seq.ingest_entries(transport.entries(), transport.now_ns(), &mut sink);
+            seq.ingest_entries_soa(transport.entries(), &transport.soa(), transport.now_ns(), &mut sink, ladder);
         }
         nb += 1;
     }

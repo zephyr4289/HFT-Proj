@@ -106,12 +106,32 @@ const CMD_SHUTDOWN: u8 = 2;
 /// never touches the cross-core frame lines on the steady path), then
 /// publishes the whole buffer with one Release store.
 ///
+/// R12: the batch also carries the steady-scan SoA sidecar (see
+/// `nf_protocol::packet::EntrySoA`) — the per-frame scan facts in
+/// structure-of-arrays layout, filled by the same RX loop that builds the
+/// entries (every value it needs is already in registers). The consumer's
+/// vectorized watermark ladder loads `firsts`/`ns` as one zmm each and
+/// proves eight frames per instruction group; the scalar fallback keeps
+/// reading the AoS `FrameEntry` array. Stale sidecar slots beyond `len` are
+/// never read (the vector path only touches groups fully below `len`, the
+/// scalar path only `entries[pos]` with `pos < len`).
+///
 /// SAFETY-of-lifetime: the entries' slices point into the RX transport's
 /// blob/triples (which outlive the pipeline — the RX thread is joined in
 /// `Drop`) and are never dereferenced after the consumer frees the buffer
 /// (the harness consumes each batch fully before the next `next_batch`).
 struct EntryBuf {
     entries: Box<[FrameEntry<'static>; ENTRY_CAP]>,
+    firsts: Box<[u64; ENTRY_CAP]>,
+    ns: Box<[u64; ENTRY_CAP]>,
+    lens: Box<[u64; ENTRY_CAP]>,
+    feeds: Box<[u8; ENTRY_CAP]>,
+    ok8: Box<[u64; ENTRY_CAP / 8]>,
+    /// R12: the baked-session words this publication's ok bits were keyed
+    /// against (the scan trusts an ok bit's session component only while
+    /// its own live template equals them — see EntrySoA).
+    baked_lo: u64,
+    baked_hi: u64,
     len: u32,
     clock: u64,
 }
@@ -132,6 +152,13 @@ impl EntryBuf {
                 sess_lo: 0,
                 sess_hi: 0,
             })),
+            firsts: Box::new([0; ENTRY_CAP]),
+            ns: Box::new([0; ENTRY_CAP]),
+            lens: Box::new([0; ENTRY_CAP]),
+            feeds: Box::new([0; ENTRY_CAP]),
+            ok8: Box::new([0; ENTRY_CAP / 8]),
+            baked_lo: 0,
+            baked_hi: 0,
             len: 0,
             clock: 0,
         }
@@ -358,11 +385,52 @@ fn pin_cpu(cpu: usize) -> bool {
 
 /// RX thread main loop: poll ahead into free buffers, serve resets.
 /// `pin_cpu_id` pins the RX thread to an absolute CPU (None = unpinned).
+/// `init_session` is the construction pass's session (pass 0) — the R12 SoA
+/// sidecar's ok-bit session compare runs against the session the RX baked,
+/// tracked here and refreshed at every bake point (reset serve, EOS-park
+/// reset serve, auto-advance).
 #[allow(clippy::disallowed_types)]
-fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<usize>) {
+fn rx_thread(
+    mut inner: ReplayTransport,
+    mb: Arc<Mailbox>,
+    pin_cpu_id: Option<usize>,
+    init_session: [u8; 10],
+) {
     if let Some(cpu) = pin_cpu_id {
         let _ = pin_cpu(cpu);
     }
+    // R12: the baked-session compare template, mirrored from the
+    // arbitrator's `refresh_session_tmpl` (bytes 0..8 / 2..10
+    // little-endian). Every frame the bake protocol publishes carries the
+    // baked session, so comparing the slot's words against this template
+    // is EXACTLY the consumer-side session compare of the scalar steady
+    // ladder — and a mismatch (impossible by the bake contract) merely
+    // clears the ok bit, routing the frame through the scalar fallback's
+    // full classic semantics.
+    let mut sess_lo_tmpl = u64::from_le_bytes([
+        init_session[0],
+        init_session[1],
+        init_session[2],
+        init_session[3],
+        init_session[4],
+        init_session[5],
+        init_session[6],
+        init_session[7],
+    ]);
+    let mut sess_hi_tmpl = u64::from_le_bytes([
+        init_session[2],
+        init_session[3],
+        init_session[4],
+        init_session[5],
+        init_session[6],
+        init_session[7],
+        init_session[8],
+        init_session[9],
+    ]);
+    let refresh_tmpl = |s: &[u8; 10], lo: &mut u64, hi: &mut u64| {
+        *lo = u64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]);
+        *hi = u64::from_le_bytes([s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9]]);
+    };
     // HFT_EXP_DIAG diagnostics (never in CI): per-pass poll accounting.
     let diag = std::env::var("HFT_EXP_DIAG").is_ok();
     let mut diag_polls = 0u64;
@@ -455,6 +523,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                 // entries; the RX thread owns the transport and blob.
                 let sess = unsafe { *mb.reset_session.get() };
                 inner.reset(sess);
+                refresh_tmpl(&sess, &mut sess_lo_tmpl, &mut sess_hi_tmpl);
                 // R8 phase-3b: a full synchronous re-bake invalidates the
                 // prepatch cursor — restart it for the fresh pass.
                 pp_idx = 0;
@@ -516,6 +585,11 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
         // is a fraction of the scan's), so the accumulation never bubbles.
         let mut acc = 0usize;
         let mut eos = false;
+        // R12: the sidecar ok-bit accumulator (one register; words flush to
+        // the buffer as they fill — see the entry-build loop below).
+        let mut ok_acc: u64 = 0;
+        let mut ok_filled: usize = 0;
+        let mut ok_word: usize = 0;
         let t_prod = std::time::Instant::now();
         while acc + 256 <= ENTRY_CAP {
             let tp0 = if diag {
@@ -546,6 +620,16 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
             // joined in Drop) and are never read after the consumer frees
             // the buffer (see EntryBuf's contract). The re-slice ends the
             // scratch borrow within this block.
+            //
+            // R12: the same loop fills the SoA sidecar (firsts/ns/lens/
+            // feeds + the ok bitmask) — every value is already in
+            // registers, so the sidecar costs four scalar stores and two
+            // compares per frame on the RX core (which runs ~27% idle at
+            // the R11 record), buying the consumer's eight-frame vector
+            // ladder on the SUBMITTING core (76% busy). The ok bits
+            // accumulate into a register and flush per word; the final
+            // partial word is flushed after the loop (its stale high bits
+            // are never read — see EntrySoA's contract).
             {
                 let buf = unsafe { &mut *mb.bufs[i].get() };
                 let tp = triples.as_ptr();
@@ -577,10 +661,40 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                         sess_lo: f.sess_lo,
                         sess_hi: f.sess_hi,
                     };
+                    // R12 SoA sidecar (same slot index as the entry).
+                    buf.firsts[acc + k] = f.first_seq;
+                    buf.ns[acc + k] = blk_count as u64;
+                    buf.lens[acc + k] = b.len() as u64;
+                    buf.feeds[acc + k] = f.feed;
+                    let ok = (blk_count != 0
+                        && valid == blk_count
+                        && f.sess_lo == sess_lo_tmpl
+                        && f.sess_hi == sess_hi_tmpl) as u64;
+                    ok_acc |= ok << ok_filled;
+                    ok_filled += 1;
+                    if ok_filled == 64 {
+                        buf.ok8[ok_word] = ok_acc;
+                        ok_word += 1;
+                        ok_acc = 0;
+                        ok_filled = 0;
+                    }
                 }
                 buf.clock = inner.now_ns();
                 acc += n;
             }
+        }
+        // R12: flush the sidecar's final partial ok word (bits beyond the
+        // publication's length stay stale — never read, by contract). The
+        // accumulators re-initialize per publication above. The baked words
+        // snapshot the template the ok bits were keyed against for THIS
+        // publication.
+        {
+            let buf = unsafe { &mut *mb.bufs[i].get() };
+            if ok_filled != 0 {
+                buf.ok8[ok_word] = ok_acc;
+            }
+            buf.baked_lo = sess_lo_tmpl;
+            buf.baked_hi = sess_hi_tmpl;
         }
         // R9: the turn's events end at the transport's current cursor
         // (tombstones included — they advance the cursor without frames,
@@ -706,6 +820,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                 }
                 let next_pass = pass + 1;
                 let sess = sess_fn(next_pass);
+                refresh_tmpl(&sess, &mut sess_lo_tmpl, &mut sess_hi_tmpl);
                 // R8 phase-3b (kill-switched): only the un-prepatched tail
                 // bakes synchronously; with the prepatch disabled that is
                 // the full blob (the pre-prepatch behavior).
@@ -752,6 +867,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                     CMD_RESET => {
                         let sess = unsafe { *mb.reset_session.get() };
                         inner.reset(sess);
+                        refresh_tmpl(&sess, &mut sess_lo_tmpl, &mut sess_hi_tmpl);
                         pp_idx = 0;
                         served_resets += 1;
                         mb.rx_stats.resets.fetch_add(1, Ordering::Relaxed);
@@ -890,7 +1006,7 @@ impl PipelinedReplayTransport {
             .spawn({
                 #[allow(clippy::disallowed_types)]
                 let mb: Arc<Mailbox> = Arc::clone(&mb);
-                move || rx_thread(inner, mb, rx_cpu)
+                move || rx_thread(inner, mb, rx_cpu, session)
             })
             .expect("r8 rx thread spawn");
         Self {
@@ -1121,6 +1237,31 @@ impl PipelinedReplayTransport {
             let buf = &*self.mb.bufs[(t & NBUF_MASK) as usize].get();
             let n = buf.len as usize;
             &buf.entries[..n]
+        }
+    }
+
+    /// R12: the current batch's SoA sidecar (valid exactly as long as
+    /// `entries()` — same turn, same buffer). Slices are truncated to the
+    /// publication's entry count (`ok8` to the covering words) so any
+    /// out-of-bounds sidecar indexing panics instead of reading stale
+    /// slots; the vector ladder's two-word ok window is proven in-bounds
+    /// for every group fully below `len` (see the EntrySoA contract).
+    #[inline]
+    pub fn soa(&self) -> nf_protocol::packet::EntrySoA<'_> {
+        let t = self.cur.expect("r8 pipeline: no current batch");
+        // SAFETY: same ownership + publication ordering as `entries`.
+        unsafe {
+            let buf = &*self.mb.bufs[(t & NBUF_MASK) as usize].get();
+            let n = buf.len as usize;
+            nf_protocol::packet::EntrySoA {
+                firsts: &buf.firsts[..n],
+                ns: &buf.ns[..n],
+                lens: &buf.lens[..n],
+                feeds: &buf.feeds[..n],
+                ok8: &buf.ok8[..n.div_ceil(8)],
+                baked_lo: buf.baked_lo,
+                baked_hi: buf.baked_hi,
+            }
         }
     }
 

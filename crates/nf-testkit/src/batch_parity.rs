@@ -32,7 +32,6 @@ pub fn classic_pass(
     let mut seq = Sequencer::new();
     let mut sink = SpanConformanceSink::new();
     let mut batch = FrameBatch::new();
-    let mut events = 0u64;
     while transport.poll(&mut batch) > 0 {
         let now = transport.now_ns();
         for (pos, frame) in batch.frames().iter().enumerate() {
@@ -45,14 +44,17 @@ pub fn classic_pass(
                 transport.batch_memo(pos),
             );
         }
-        events += sink.session_boundaries + sink.gap_opens + sink.reanchors;
     }
+    // R12 fix: the FINAL sink counters (the pre-R12 form added the
+    // cumulative counters once per poll, inflating the count by the poll
+    // granularity — invisible while every leg polled at the same
+    // granularity, false-divergent against the pipeline's big batches).
     (
         seq.counters(),
         seq.watermark(),
         sink.count,
         sink.hash,
-        events,
+        sink.session_boundaries + sink.gap_opens + sink.reanchors,
     )
 }
 
@@ -65,18 +67,16 @@ pub fn batch_pass(
     let mut seq = Sequencer::new();
     let mut sink = SpanConformanceSink::new();
     let mut batch = FrameBatch::new();
-    let mut events = 0u64;
     while transport.poll(&mut batch) > 0 {
         let now = transport.now_ns();
         seq.ingest_batch(transport.batch_entries(&batch), now, &mut sink);
-        events += sink.session_boundaries + sink.gap_opens + sink.reanchors;
     }
     (
         seq.counters(),
         seq.watermark(),
         sink.count,
         sink.hash,
-        events,
+        sink.session_boundaries + sink.gap_opens + sink.reanchors,
     )
 }
 
@@ -208,6 +208,186 @@ fn t_r8_batch_parity_per_message_sink() {
     let c = run(false);
     let b = run(true);
     assert_eq!(c, b, "per-message sink diverged between classic and batch");
+}
+
+// ─── R12: the SoA vectorized-ladder parity (docs/25) ─────────────────────
+//
+// The 8-entry vectorized watermark ladder must be observationally
+// identical to the scalar steady ladder AND to the classic per-frame
+// ladder, on the RX-pipelined transport that publishes the SoA sidecar.
+// Three legs per schedule: classic (per-frame, single-threaded),
+// pipelined-scalar (ingest_entries — the R8 path), pipelined-vector
+// (ingest_entries_soa + the best ladder for this silicon; on non-AVX-512
+// hosts the ladder is None and the leg degenerates to the scalar
+// semantics — the scalar fallback IS the same code).
+
+/// One pipelined pass with the caller's scan mode → the parity tuple.
+fn soa_pass(
+    transport: &mut nf_transport::pipeline::PipelinedReplayTransport,
+    sess: [u8; 10],
+    ladder: Option<nf_protocol::packet::SoaLadder8>,
+) -> (nf_arbitrator::Counters, u64, u64, u64, u64) {
+    transport.reset(sess);
+    let mut seq = Sequencer::new();
+    let mut sink = SpanConformanceSink::new();
+    while transport.next_batch() {
+        let now = transport.now_ns();
+        if ladder.is_some() {
+            seq.ingest_entries_soa(transport.entries(), &transport.soa(), now, &mut sink, ladder);
+        } else {
+            seq.ingest_entries(transport.entries(), now, &mut sink);
+        }
+    }
+    (
+        seq.counters(),
+        seq.watermark(),
+        sink.count,
+        sink.hash,
+        sink.session_boundaries + sink.gap_opens + sink.reanchors,
+    )
+}
+
+/// The 3-way differential: classic vs pipelined-scalar vs pipelined-vector.
+pub fn assert_soa_parity(label: &str, cfg: &ReplayConfig, gt: &[u8]) {
+    let sched = build_schedule(gt, cfg);
+    let sess = *b"SOAPAR0001";
+    let mut t_classic = ReplayTransport::new(gt, sched.clone(), sess);
+    let mut t_pl_scalar =
+        nf_transport::pipeline::PipelinedReplayTransport::with_coalesce(&gt, sched.clone(), sess, 128);
+    let mut t_pl_vec =
+        nf_transport::pipeline::PipelinedReplayTransport::with_coalesce(&gt, sched, sess, 128);
+    let c = classic_pass(&mut t_classic, sess);
+    let s = soa_pass(&mut t_pl_scalar, sess, None);
+    let ladder = crate::soa::ladder8_best();
+    let v = soa_pass(&mut t_pl_vec, sess, ladder);
+    assert_eq!(
+        c, s,
+        "{label}: pipelined-scalar diverged from classic\nclassic={c:#?}\nscalar ={s:#?}"
+    );
+    assert_eq!(
+        c, v,
+        "{label}: pipelined-VECTOR diverged from classic\nclassic={c:#?}\nvector  ={v:#?}"
+    );
+}
+
+/// Clean dual-feed MtuBound — the canonical bench workload; on AVX-512
+/// silicon the vector ladder takes ~every steady group (strict emit/dup
+/// alternation).
+#[test]
+fn t_r12_soa_parity_default_schedule() {
+    let gt = mini_gt(4000);
+    assert_soa_parity("soa-default", &default_cfg(), &gt);
+}
+
+/// Lossy dual-feed: gaps open and close — the vector path must fall back
+/// at every break and resume exactly where the scalar ladder would.
+#[test]
+fn t_r12_soa_parity_lossy_schedule() {
+    let gt = mini_gt(4000);
+    let cfg = ReplayConfig {
+        msgs_per_packet: Packetize::MtuBound(1400),
+        loss: [LossModel::Bernoulli { p_pm: 120 }, LossModel::Bernoulli { p_pm: 180 }],
+        guarantee_coverage: true,
+        ..Default::default()
+    };
+    assert_soa_parity("soa-lossy", &cfg, &gt);
+}
+
+/// Delayed/reordered dual-feed: partial-dup overlaps (first < w <= last)
+/// must be rejected by the ladder's pair/dup-le relations and take the
+/// classic skip-prefix path.
+#[test]
+fn t_r12_soa_parity_reorder_schedule() {
+    let gt = mini_gt(4000);
+    let cfg = ReplayConfig {
+        msgs_per_packet: Packetize::MtuBound(1400),
+        delay: [
+            DelayModel::None,
+            DelayModel::GaussianApprox { mean_ns: 300_000, sigma_ns: 150_000 },
+        ],
+        guarantee_coverage: true,
+        ..Default::default()
+    };
+    assert_soa_parity("soa-reorder", &cfg, &gt);
+}
+
+/// Session split mid-stream: the boundary frame's sidecar ok bit (session
+/// compare against the baked template) routes it cold — the dispatch
+/// ladder must run exactly as the classic path would.
+#[test]
+fn t_r12_soa_parity_session_split() {
+    let gt = mini_gt(4000);
+    let cfg = ReplayConfig {
+        msgs_per_packet: Packetize::MtuBound(1400),
+        session_change_at_msg: Some(1500),
+        guarantee_coverage: true,
+        ..Default::default()
+    };
+    assert_soa_parity("soa-session-split", &cfg, &gt);
+}
+
+/// Single-feed + SeededRange: NO dups at all — every group fails pair-eq
+/// and the whole pass runs the scalar fallback through the SoA entry
+/// point (the None-ladder equivalence plus the rejected-group path).
+#[test]
+fn t_r12_soa_parity_single_feed_seeded() {
+    let gt = mini_gt(4000);
+    let cfg = ReplayConfig {
+        msgs_per_packet: Packetize::SeededRange { min: 3, max: 40 },
+        feeds_enabled: 1,
+        guarantee_coverage: true,
+        ..Default::default()
+    };
+    assert_soa_parity("soa-single-feed", &cfg, &gt);
+}
+
+/// Multi-pass with fresh sessions through the SoA path (the sustained
+/// arm's shape): each pass re-bakes, the sidecar's ok bits re-key on the
+/// new template, and the per-pass tuples must match the classic legs.
+#[test]
+fn t_r12_soa_parity_multi_pass_resets() {
+    let gt = mini_gt(3000);
+    let sched = build_schedule(&gt, &default_cfg());
+    let sess = *b"SOAPAR0002";
+    let mut t_classic = ReplayTransport::new(&gt, sched.clone(), sess);
+    let mut t_pl =
+        nf_transport::pipeline::PipelinedReplayTransport::with_coalesce(&gt, sched, sess, 128);
+    let ladder = crate::soa::ladder8_best();
+    for pass in 0..3u64 {
+        let mut s2 = *b"SOAPAR0002";
+        s2[7..10].copy_from_slice(&(200 + pass).to_be_bytes()[5..8]);
+        let c = {
+            t_classic.reset(s2);
+            let mut seq = Sequencer::new();
+            let mut sink = SpanConformanceSink::new();
+            let mut batch = FrameBatch::new();
+            while t_classic.poll(&mut batch) > 0 {
+                let now = t_classic.now_ns();
+                for (pos, frame) in batch.frames().iter().enumerate() {
+                    seq.ingest_auto(
+                        frame.bytes(),
+                        frame.feed,
+                        now,
+                        &mut sink,
+                        t_classic.batch_blocks(pos),
+                        t_classic.batch_memo(pos),
+                    );
+                }
+            }
+            (seq.counters(), seq.watermark(), sink.count, sink.hash)
+        };
+        let v = {
+            let t = &mut t_pl;
+            t.reset(s2);
+            let mut seq = Sequencer::new();
+            let mut sink = SpanConformanceSink::new();
+            while t.next_batch() {
+                seq.ingest_entries_soa(t.entries(), &t.soa(), t.now_ns(), &mut sink, ladder);
+            }
+            (seq.counters(), seq.watermark(), sink.count, sink.hash)
+        };
+        assert_eq!(c, v, "soa multi-pass {pass} diverged");
+    }
 }
 
 /// Fast (CRC32C) conformance sink variant.

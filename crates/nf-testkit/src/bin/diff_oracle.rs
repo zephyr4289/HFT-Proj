@@ -681,10 +681,13 @@ fn test_d12_batch_and_pipeline_equivalence(gt: &[u8]) {
     let b = (seq_b.counters(), seq_b.watermark(), sink_b.count, sink_b.hash);
     assert_eq!(c, b, "D12: batched apply diverged from classic");
 
-    // RX-pipelined transport + slice apply (ingest_entries).
+    // RX-pipelined transport + the R12 SoA slice scan (the production
+    // path: vectorized ladder when the silicon has avx512f, scalar
+    // fallback otherwise — both pinned to classic here every CI run).
     let mut t_p = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce(
         gt, sched, sess, 128,
     );
+    let ladder = nf_testkit::soa::ladder8_best();
     let run_pipe = |t: &mut nf_transport::pipeline::PipelinedReplayTransport,
                     s: [u8; 10]|
      -> (nf_arbitrator::Counters, u64, u64, u64) {
@@ -692,7 +695,7 @@ fn test_d12_batch_and_pipeline_equivalence(gt: &[u8]) {
         let mut seq = Sequencer::new();
         let mut sink = SpanConformanceSink::new();
         while t.next_batch() {
-            seq.ingest_entries(t.entries(), t.now_ns(), &mut sink);
+            seq.ingest_entries_soa(t.entries(), &t.soa(), t.now_ns(), &mut sink, ladder);
         }
         (seq.counters(), seq.watermark(), sink.count, sink.hash)
     };

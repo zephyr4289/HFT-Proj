@@ -940,6 +940,68 @@ impl Sequencer {
         }
     }
 
+    /// R12: the SoA slice scan — [`Self::ingest_entries`] with the RX
+    /// sidecar and the 8-entry vectorized watermark ladder. `ladder` is
+    /// the best available kernel for this silicon (`None` reduces this to
+    /// the exact scalar `ingest_entries` semantics — `HFT_VEC_LADDER=0`
+    /// is the rollback). Observables are bit-identical to `ingest_auto`
+    /// per frame: a proven group applies exactly what the scalar ladder
+    /// would apply for those eight entries (see `SoaLadder8`'s derivation),
+    /// an unproven group runs the scalar ladder, and cold frames run the
+    /// classic path. Pinned by the SoA 3-way parity suite
+    /// (scalar-pipeline vs vector-pipeline vs classic).
+    ///
+    /// CONTRACT: `soa`'s arrays cover `entries` (the pipeline truncates
+    /// both to the same publication length); a violation panics on the
+    /// sidecar's bounds checks — fail-stop, never a silent wrong answer.
+    #[inline(always)]
+    pub fn ingest_entries_soa<'a, S: Sink>(
+        &mut self,
+        entries: &'a [packet::FrameEntry<'a>],
+        soa: &packet::EntrySoA<'a>,
+        now_ns: u64,
+        sink: &mut S,
+        ladder: Option<packet::SoaLadder8>,
+    ) {
+        let wants_spans = sink.wants_spans();
+        let mut pos = 0usize;
+        loop {
+            if self.steady_ready() {
+                let mut w = self.w;
+                let (progressed, cold) = steady_scan_soa(
+                    &mut self.counters,
+                    sink,
+                    entries,
+                    soa,
+                    &mut pos,
+                    &mut w,
+                    self.session_lo,
+                    self.session_hi,
+                    self.gen,
+                    wants_spans,
+                    ladder,
+                );
+                self.w = w;
+                if progressed {
+                    self.progress_vt = now_ns;
+                }
+                match cold {
+                    Some(idx) => {
+                        cold_apply(self, &entries[idx], now_ns, sink);
+                        pos = idx + 1;
+                        continue;
+                    }
+                    None => break,
+                }
+            }
+            if pos >= entries.len() {
+                break;
+            }
+            cold_apply(self, &entries[pos], now_ns, sink);
+            pos += 1;
+        }
+    }
+
     /// Seals the sequencer into permanent DEAD state.
     pub fn seal<S: Sink>(&mut self, reason: DeadReason, sink: &mut S) {
         session::seal(reason, self.w, &mut self.state, sink);
@@ -992,6 +1054,114 @@ impl Default for Sequencer {
     }
 }
 
+/// R12: the per-entry steady ladder — ONE source of truth shared verbatim
+/// by all three scan drivers (the by-value iterator scan, the by-reference
+/// slice scan, and the SoA vector scan's scalar fallback), pinned to the
+/// classic `ingest_auto` path by the batch/pipeline parity suites and to
+/// each other by the SoA 3-way parity suite. `#[inline(always)]` keeps the
+/// ladder fused into each driver's loop (the R9 DSB lesson).
+///
+/// The ladder (exact `ingest_indexed` steady semantics, hoisted to
+/// register locals): triple-count gate (HB/EOS/index-less frames are the
+/// classic path's business), fused session compare against the scan's
+/// template words, span/dup classify from the inline first/n, R2 memo
+/// gate, then counters + (span rec buffering | per-message emission) +
+/// the watermark advance.
+#[derive(Clone, Copy)]
+enum StepOutcome<'e, 'a> {
+    /// Contiguous frame applied (w advanced, emissions buffered).
+    Advanced,
+    /// Pure duplicate skipped (counters only).
+    DupSkipped,
+    /// The frame needs the classic ladder — the driver stops and hands it
+    /// back to its caller UNAPPLIED.
+    Cold(&'e packet::FrameEntry<'a>),
+}
+
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn steady_step<'e, 'a, S: Sink>(
+    entry: &'e packet::FrameEntry<'a>,
+    w: &mut u64,
+    pk: &mut [u64; 2],
+    byt: &mut [u64; 2],
+    dup: &mut [u64; 2],
+    dup_msgs: &mut u64,
+    emitted: &mut u64,
+    recs: &mut [crate::types::SpanRec<'a>; STEADY_RECS],
+    nrecs: &mut usize,
+    sink: &mut S,
+    proof: &LiveFeedProof,
+    wants_spans: bool,
+    sess_lo: u64,
+    sess_hi: u64,
+) -> StepOutcome<'e, 'a> {
+    let frame = entry.bytes;
+    let blocks = entry.blocks;
+    let n = blocks.len();
+    if n == 0 {
+        return StepOutcome::Cold(entry);
+    }
+    if entry.sess_lo != sess_lo || entry.sess_hi != sess_hi {
+        return StepOutcome::Cold(entry);
+    }
+    let first = entry.first_seq;
+    let last = first + n as u64 - 1;
+    if last < *w {
+        // Pure duplicate packet (HOT in dual-feed replay) — the exact
+        // classic counters (no progress_vt write, matching classic).
+        let fi = (entry.feed & 1) as usize;
+        pk[fi] += 1;
+        byt[fi] += frame.len() as u64;
+        dup[fi] += 1;
+        *dup_msgs += n as u64;
+        return StepOutcome::DupSkipped;
+    }
+    if first != *w {
+        // Partial overlap (first < w <= last: re-ordered dual-feed copy)
+        // or gap (first > w): the classic ladder's skip/stage logic.
+        return StepOutcome::Cold(entry);
+    }
+    // S5 contiguous apply at skip == 0. R2 memo gate — identical
+    // semantics. Body bounds are DERIVED: the tombstone rule forces the
+    // last block's end to the frame end and the first block to start at
+    // HEADER_LEN + 2, so body == frame[HEADER_LEN+2..len] exactly (the
+    // classic path's blocks[0].1..blocks[n-1].2 for skip == 0).
+    let all_valid = entry.memo.is_some_and(|m| m.valid_count as usize == n);
+    if !all_valid {
+        return StepOutcome::Cold(entry);
+    }
+    let fi = (entry.feed & 1) as usize;
+    pk[fi] += 1;
+    byt[fi] += frame.len() as u64;
+    if wants_spans {
+        let body = &frame[moldudp64::HEADER_LEN + 2..frame.len()];
+        recs[*nrecs] = crate::types::SpanRec {
+            first_seq: first,
+            count: n as u16,
+            body,
+            blocks,
+        };
+        *nrecs += 1;
+        if *nrecs == recs.len() {
+            sink.on_span_batch(proof, recs);
+            *nrecs = 0;
+        }
+    } else {
+        for &(seq, start, end) in blocks {
+            sink.on_msg(proof, seq, &frame[start as usize..end as usize]);
+        }
+    }
+    *emitted += n as u64;
+    *w = last + 1;
+    StepOutcome::Advanced
+}
+
+/// R8: the steady-scan span-rec buffer depth (32 covers a coalesced poll's
+/// emitting frames at k=8..32; overflow flushes mid-scan in order — see
+/// `steady_step`).
+const STEADY_RECS: usize = 32;
+
 /// R8: the by-REFERENCE steady scan — identical ladder to [`steady_scan`],
 /// iterating `&[FrameEntry]` with zero per-frame entry copies (the
 /// RX-pipelined transport's mailbox carries a ready-made array). The two
@@ -1023,65 +1193,242 @@ fn steady_scan_ref<'a, S: Sink>(
             body: &[],
             blocks: &[],
         };
-        32
+        STEADY_RECS
     ];
     let mut nrecs = 0usize;
     let proof = LiveFeedProof { gen };
     while let Some(entry) = entries.next() {
-        let frame = entry.bytes;
-        let blocks = entry.blocks;
-        let n = blocks.len();
-        if n == 0 {
-            cold = Some(entry);
-            break;
-        }
-        if entry.sess_lo != sess_lo || entry.sess_hi != sess_hi {
-            cold = Some(entry);
-            break;
-        }
-        let first = entry.first_seq;
-        let last = first + n as u64 - 1;
-        if last < *w {
-            let fi = (entry.feed & 1) as usize;
-            pk[fi] += 1;
-            byt[fi] += frame.len() as u64;
-            dup[fi] += 1;
-            dup_msgs += n as u64;
-            continue;
-        }
-        if first != *w {
-            cold = Some(entry);
-            break;
-        }
-        let all_valid = entry.memo.is_some_and(|m| m.valid_count as usize == n);
-        if !all_valid {
-            cold = Some(entry);
-            break;
-        }
-        let fi = (entry.feed & 1) as usize;
-        pk[fi] += 1;
-        byt[fi] += frame.len() as u64;
-        if wants_spans {
-            let body = &frame[moldudp64::HEADER_LEN + 2..frame.len()];
-            recs[nrecs] = crate::types::SpanRec {
-                first_seq: first,
-                count: n as u16,
-                body,
-                blocks,
-            };
-            nrecs += 1;
-            if nrecs == recs.len() {
-                sink.on_span_batch(&proof, &recs);
-                nrecs = 0;
+        match steady_step(
+            entry,
+            w,
+            &mut pk,
+            &mut byt,
+            &mut dup,
+            &mut dup_msgs,
+            &mut emitted,
+            &mut recs,
+            &mut nrecs,
+            sink,
+            &proof,
+            wants_spans,
+            sess_lo,
+            sess_hi,
+        ) {
+            StepOutcome::Cold(e) => {
+                cold = Some(e);
+                break;
             }
+            StepOutcome::Advanced => progressed = true,
+            StepOutcome::DupSkipped => {}
+        }
+    }
+    if nrecs != 0 {
+        sink.on_span_batch(&proof, &recs[..nrecs]);
+    }
+    counters.feed_a.packets += pk[0];
+    counters.feed_b.packets += pk[1];
+    counters.feed_a.bytes += byt[0];
+    counters.feed_b.bytes += byt[1];
+    counters.feed_a.dups += dup[0];
+    counters.feed_b.dups += dup[1];
+    counters.dup_msgs += dup_msgs;
+    counters.msgs_emitted += emitted;
+    (progressed, cold)
+}
+
+/// R12: the SoA steady scan — the RX-pipelined transport's slice scan with
+/// the 8-entry vectorized watermark ladder (see `nf_testkit::soa` and
+/// `nf_protocol::packet::EntrySoA`). For each 8-entry group fully below
+/// the batch length, one `SoaLadder8` call proves the group is exactly
+/// `[emit, dup] × 4` (anchor + pair-eq + dup-le + chain + wrap guard);
+/// a proven group advances `w` by `Σ ns[even]`, buffers the four even
+/// spans, and folds all eight entries' counter updates from the sidecar —
+/// observably identical to running [`steady_step`] over the same eight
+/// entries (the derivation is documented on `SoaLadder8`). Any unproven
+/// group falls back to the exact per-entry scalar ladder; any cold frame
+/// stops the scan and is returned unapplied.
+///
+/// The additional group gate beyond the ladder: every entry's `ok` bit
+/// (RX-computed steady eligibility) and feed-parity uniformity (all even
+/// entries on one feed, all odd on one — required for the group's
+/// per-feed counter folding; the default dual-feed schedule always has
+/// it, and a non-uniform group simply takes the scalar ladder).
+///
+/// `pos` is the scan's position in the batch (advanced past processed
+/// entries; a returned cold frame sits at `cold_pos` — the caller applies
+/// it and re-enters at `cold_pos + 1`).
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn steady_scan_soa<'a, S: Sink>(
+    counters: &mut Counters,
+    sink: &mut S,
+    entries: &'a [packet::FrameEntry<'a>],
+    soa: &packet::EntrySoA<'a>,
+    pos: &mut usize,
+    w: &mut u64,
+    sess_lo: u64,
+    sess_hi: u64,
+    gen: u64,
+    wants_spans: bool,
+    ladder: Option<packet::SoaLadder8>,
+) -> (bool, Option<usize>) {
+    let len = entries.len();
+    let mut pk = [0u64; 2];
+    let mut byt = [0u64; 2];
+    let mut dup = [0u64; 2];
+    let mut dup_msgs = 0u64;
+    let mut emitted = 0u64;
+    let mut progressed = false;
+    let mut cold: Option<usize> = None;
+    let mut recs = [
+        crate::types::SpanRec {
+            first_seq: 0,
+            count: 0,
+            body: &[],
+            blocks: &[],
+        };
+        STEADY_RECS
+    ];
+    let mut nrecs = 0usize;
+    let proof = LiveFeedProof { gen };
+    // R12: the vector path's session exactness gate — an ok bit's session
+    // component is keyed against the RX's BAKED template, which equals the
+    // consumer's live template only while the consumer sits in the baked
+    // session (mid-pass session flips — `session_change_at_msg` renders
+    // post-split frames with a different session — make the consumer's
+    // template diverge until the next boundary). While the templates
+    // differ, every group takes the scalar ladder, whose session compare
+    // is against the LIVE template — exact in every state. Defense-in-
+    // depth: current schedules cannot realize the hazard (post-split
+    // frames never alias pre-split regions — the alias key includes
+    // first_msg — and their renumbered space cannot chain onto a
+    // SPLITSESS2-anchored watermark), but the gate makes the vector
+    // path's session exactness unconditional rather than incidental.
+    // Two compares per scan.
+    let vec_ladder: Option<packet::SoaLadder8> =
+        if soa.baked_lo == sess_lo && soa.baked_hi == sess_hi {
+            ladder
         } else {
-            for &(seq, start, end) in blocks {
-                sink.on_msg(&proof, seq, &frame[start as usize..end as usize]);
+            None
+        };
+    while *pos < len {
+        // ── vector group fast path ─────────────────────────────────────
+        if let Some(ladder8) = vec_ladder {
+            let p = *pos;
+            if p + 8 <= len {
+                // ok window (two-word assembly across the 64-bit words;
+                // the +1 word is in-bounds for every s != 0 — proven by
+                // p + 8 <= len, see EntrySoA's contract).
+                let s = p & 7;
+                let wi = p >> 3;
+                let word = if s == 0 {
+                    soa.ok8[wi]
+                } else {
+                    (soa.ok8[wi] >> s) | (soa.ok8[wi + 1] << (64 - s))
+                };
+                if word & 0xFF == 0xFF {
+                    // Feed-parity uniformity: evens all one feed, odds all
+                    // one (the group's counters fold per feed).
+                    let f0 = soa.feeds[p];
+                    let f1 = soa.feeds[p + 1];
+                    let pair = (f0 as u64) | ((f1 as u64) << 8);
+                    let mut tmpl = pair;
+                    tmpl |= tmpl << 16;
+                    tmpl |= tmpl << 32;
+                    let fword =
+                        u64::from_le_bytes(soa.feeds[p..p + 8].try_into().expect("8 feeds"));
+                    if fword == tmpl
+                        && ladder8(
+                            // Safe pointer arithmetic (no deref here; the
+                            // ladder's 8-element read contract is proven by
+                            // p + 8 <= len above).
+                            soa.firsts.as_ptr().wrapping_add(p),
+                            soa.ns.as_ptr().wrapping_add(p),
+                            *w,
+                        )
+                    {
+                        // GROUP PROVEN: [emit, dup] × 4. Counters fold from
+                        // the sidecar (the same increments steady_step would
+                        // apply, batched); the four even entries' emissions
+                        // are buffered exactly as the scalar path would.
+                        let (n0, n2, n4, n6) =
+                            (soa.ns[p], soa.ns[p + 2], soa.ns[p + 4], soa.ns[p + 6]);
+                        let sum_e = n0 + n2 + n4 + n6;
+                        let fi_e = (f0 & 1) as usize;
+                        let fi_d = (f1 & 1) as usize;
+                        pk[fi_e] += 4;
+                        pk[fi_d] += 4;
+                        byt[fi_e] += soa.lens[p] + soa.lens[p + 2] + soa.lens[p + 4]
+                            + soa.lens[p + 6];
+                        byt[fi_d] += soa.lens[p + 1] + soa.lens[p + 3] + soa.lens[p + 5]
+                            + soa.lens[p + 7];
+                        dup[fi_d] += 4;
+                        dup_msgs += soa.ns[p + 1] + soa.ns[p + 3] + soa.ns[p + 5]
+                            + soa.ns[p + 7];
+                        emitted += sum_e;
+                        if wants_spans {
+                            for k in [0usize, 2, 4, 6] {
+                                let entry = &entries[p + k];
+                                let frame = entry.bytes;
+                                let body = &frame[moldudp64::HEADER_LEN + 2..frame.len()];
+                                recs[nrecs] = crate::types::SpanRec {
+                                    first_seq: soa.firsts[p + k],
+                                    count: soa.ns[p + k] as u16,
+                                    body,
+                                    blocks: entry.blocks,
+                                };
+                                nrecs += 1;
+                                if nrecs == recs.len() {
+                                    sink.on_span_batch(&proof, &recs);
+                                    nrecs = 0;
+                                }
+                            }
+                        } else {
+                            for k in [0usize, 2, 4, 6] {
+                                let entry = &entries[p + k];
+                                let frame = entry.bytes;
+                                for &(seq, start, end) in entry.blocks {
+                                    sink.on_msg(&proof, seq, &frame[start as usize..end as usize]);
+                                }
+                            }
+                        }
+                        // The ladder's wrap guard proved firsts[p] + sum_e
+                        // does not overflow, and the anchor proved
+                        // firsts[p] == *w — the advance is wrap-free.
+                        *w += sum_e;
+                        progressed = true;
+                        *pos = p + 8;
+                        continue;
+                    }
+                }
             }
         }
-        emitted += n as u64;
-        *w = last + 1;
-        progressed = true;
+        // ── exact scalar ladder (the shared steady_step) ───────────────
+        let step_pos = *pos;
+        *pos += 1;
+        match steady_step(
+            &entries[step_pos],
+            w,
+            &mut pk,
+            &mut byt,
+            &mut dup,
+            &mut dup_msgs,
+            &mut emitted,
+            &mut recs,
+            &mut nrecs,
+            sink,
+            &proof,
+            wants_spans,
+            sess_lo,
+            sess_hi,
+        ) {
+            StepOutcome::Cold(_) => {
+                cold = Some(step_pos);
+                break;
+            }
+            StepOutcome::Advanced => progressed = true,
+            StepOutcome::DupSkipped => {}
+        }
     }
     if nrecs != 0 {
         sink.on_span_batch(&proof, &recs[..nrecs]);
@@ -1166,87 +1513,36 @@ where
             body: &[],
             blocks: &[],
         };
-        32
+        STEADY_RECS
     ];
     let mut nrecs = 0usize;
     let proof = LiveFeedProof { gen };
     while let Some(entry) = entries.next() {
-        let frame = entry.bytes;
-        let blocks = entry.blocks;
-        let n = blocks.len();
-        // R8: HB/EOS frames carry no triples (blk_count == 0), so this one
-        // gate subsumes the classic kind-classify for the steady scan: any
-        // triple-less frame (control frame, index-less live frame, empty
-        // data packet) is the classic ladder's business.
-        if n == 0 {
-            cold = Some(entry);
-            break;
-        }
-        // S0/S1 fused session compare — from the entry's inline words (the
-        // publisher computed them from the frame bytes it held locally;
-        // single-threaded mode gets them from the same poll-side read).
-        // The steady scan touches NO frame bytes at all.
-        if entry.sess_lo != sess_lo || entry.sess_hi != sess_hi {
-            // Adoption or boundary: the full dispatch ladder.
-            cold = Some(entry);
-            break;
-        }
-        // S3: span from the slot's inline first_seq — NO triple loads (for
-        // triple-carrying rendered frames first == blocks[0].0 and
-        // n == hdr_count by the tombstone rule; the parity suite pins it).
-        let first = entry.first_seq;
-        let last = first + n as u64 - 1;
-        if last < *w {
-            // Pure duplicate packet (HOT in dual-feed replay) — the exact
-            // classic counters (blk_count == hdr_count here; no progress_vt
-            // write, matching classic).
-            let fi = (entry.feed & 1) as usize;
-            pk[fi] += 1;
-            byt[fi] += frame.len() as u64;
-            dup[fi] += 1;
-            dup_msgs += n as u64;
-            continue;
-        }
-        if first != *w {
-            // Partial overlap (first < w <= last: re-ordered dual-feed copy)
-            // or gap (first > w): the classic ladder's skip/stage logic.
-            cold = Some(entry);
-            break;
-        }
-        // S5 contiguous apply at skip == 0. R2 memo gate — identical
-        // semantics. Body bounds are DERIVED: the tombstone rule forces the
-        // last block's end to the frame end and the first block to start at
-        // HEADER_LEN + 2, so body == frame[HEADER_LEN+2..len] exactly (the
-        // classic path's blocks[0].1..blocks[n-1].2 for skip == 0).
-        let all_valid = entry.memo.is_some_and(|m| m.valid_count as usize == n);
-        if !all_valid {
-            cold = Some(entry);
-            break;
-        }
-        let fi = (entry.feed & 1) as usize;
-        pk[fi] += 1;
-        byt[fi] += frame.len() as u64;
-        if wants_spans {
-            let body = &frame[moldudp64::HEADER_LEN + 2..frame.len()];
-            recs[nrecs] = crate::types::SpanRec {
-                first_seq: first,
-                count: n as u16,
-                body,
-                blocks,
-            };
-            nrecs += 1;
-            if nrecs == recs.len() {
-                sink.on_span_batch(&proof, &recs);
-                nrecs = 0;
+        // R12: the shared per-entry ladder (one source of truth for all
+        // three scan drivers — the iterator, slice, and SoA vector paths).
+        match steady_step(
+            &entry,
+            w,
+            &mut pk,
+            &mut byt,
+            &mut dup,
+            &mut dup_msgs,
+            &mut emitted,
+            &mut recs,
+            &mut nrecs,
+            sink,
+            &proof,
+            wants_spans,
+            sess_lo,
+            sess_hi,
+        ) {
+            StepOutcome::Cold(e) => {
+                cold = Some(*e);
+                break;
             }
-        } else {
-            for &(seq, start, end) in blocks {
-                sink.on_msg(&proof, seq, &frame[start as usize..end as usize]);
-            }
+            StepOutcome::Advanced => progressed = true,
+            StepOutcome::DupSkipped => {}
         }
-        emitted += n as u64;
-        *w = last + 1;
-        progressed = true;
     }
     // Flush any buffered span emissions (BEFORE the caller applies the cold
     // frame, preserving emission order).

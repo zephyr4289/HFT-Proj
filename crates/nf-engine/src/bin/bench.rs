@@ -341,13 +341,16 @@ fn run_hydra_burst(
         (sink.count, sink.hash, sink.msg_hash)
     };
 
+    // R12: the vectorized watermark ladder (startup detection — outside
+    // every measurement window; HFT_VEC_LADDER=0 is the rollback).
+    let ladder = nf_testkit::soa::ladder8_best();
     // Layer 2: untimed hydra reference pass pins the expected values.
     let ref_pass = |transport: &mut nf_transport::pipeline::PipelinedReplayTransport| -> (u64, u64, u64) {
         transport.reset(sess);
         let mut seq = Sequencer::new();
         let mut sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
         while transport.next_batch() {
-            seq.ingest_entries(transport.entries(), transport.now_ns(), &mut sink);
+            seq.ingest_entries_soa(transport.entries(), &transport.soa(), transport.now_ns(), &mut sink, ladder);
             // Fold drain every batch (the rings stay shallow and the fold
             // close behind submission).
             sink.drain_ready();
@@ -382,7 +385,7 @@ fn run_hydra_burst(
         let t0 = read_monotonic_raw_ns();
 
         while transport.next_batch() {
-            seq.ingest_entries(transport.entries(), transport.now_ns(), &mut sink);
+            seq.ingest_entries_soa(transport.entries(), &transport.soa(), transport.now_ns(), &mut sink, ladder);
             sink.drain_ready();
         }
         sink.finish();
@@ -525,6 +528,10 @@ fn run_hydra_sustained_5s(
     let mut seq = Sequencer::new();
     let mut sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
 
+    // R12: the vectorized watermark ladder (startup detection — outside
+    // every measurement window; HFT_VEC_LADDER=0 is the rollback).
+    let ladder = nf_testkit::soa::ladder8_best();
+
     // Untimed reference pass pins the per-pass tuple (identical bytes every
     // pass; only the session id changes, which cannot affect the tuple).
     // Auto-advance pass accounting: construction = 0, this ref pass = 1,
@@ -534,7 +541,7 @@ fn run_hydra_sustained_5s(
         *seq = Sequencer::new_unboxed();
         let mut ref_sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
         while transport.next_batch() {
-            seq.ingest_entries(transport.entries(), transport.now_ns(), &mut ref_sink);
+            seq.ingest_entries_soa(transport.entries(), &transport.soa(), transport.now_ns(), &mut ref_sink, ladder);
             ref_sink.drain_ready();
         }
         ref_sink.finish();
@@ -605,7 +612,7 @@ fn run_hydra_sustained_5s(
             }
             d_wait_ns += std::time::Instant::now().duration_since(t_w).as_nanos() as u64;
             let t_b = std::time::Instant::now();
-            seq.ingest_entries(transport.entries(), transport.now_ns(), &mut sink);
+            seq.ingest_entries_soa(transport.entries(), &transport.soa(), transport.now_ns(), &mut sink, ladder);
             let t_i = std::time::Instant::now();
             sink.drain_ready();
             d_work_ns += t_i.duration_since(t_b).as_nanos() as u64;

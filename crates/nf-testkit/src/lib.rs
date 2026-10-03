@@ -11,6 +11,7 @@ pub mod hydra;
 pub mod reference;
 pub mod sched;
 pub mod sink;
+pub mod soa;
 
 #[cfg(test)]
 mod tests {
