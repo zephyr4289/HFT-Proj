@@ -460,6 +460,13 @@ fn lane_worker(
     // the per-span ending overhead hidden under the next span's clmul
     // chains). Read once at worker start, outside every window.
     let pipe = std::env::var("HFT_WORKER_PIPE").as_deref() == Ok("1");
+    // R11: the tri-stream fold knob — single spans evaluate through
+    // `kernel.eval_tri` (three interleaved state pairs over one load
+    // stream; six independent clmul chains instead of two). The kbench
+    // `fold512_tri` row prices the kernel-level effect; this sweep prices
+    // it on the real span mix through the full worker loop. Read once at
+    // worker start, outside every window.
+    let tri = std::env::var("HFT_WORKER_TRI").as_deref() == Ok("1");
     let pf = PfCfg::detect(kernel);
     let mut tail: u64 = 0; // desc cursor (worker-owned)
     let mut rhead: u64 = 0; // result cursor (worker-owned)
@@ -613,6 +620,13 @@ fn lane_worker(
                         // Diagnostic: constant work, no body read, wrong value (by
                         // design — see null_mode doc).
                         (d.len as u64) | ((d.span_id as u64) << 32)
+                    } else if tri {
+                        // R11: the tri-stream fold — same value as eval
+                        // (D11-pinned), different ILP structure.
+                        let body =
+                            unsafe { std::slice::from_raw_parts(d.ptr, d.len as usize) };
+                        // SAFETY: feature contract verified at spawn.
+                        unsafe { kernel.eval_tri(body) }
                     } else {
                         let body =
                             unsafe { std::slice::from_raw_parts(d.ptr, d.len as usize) };

@@ -54,6 +54,20 @@ use crate::sink::span_crc32c_8lane;
 pub const KP192: u64 = 0x6503ea99;
 /// y^128 mod P — fold constant for the state's low qword.
 pub const KP128: u64 = 0x18571d18;
+/// y^448 mod P — R11 tri-stream fold constant for the state's high qword:
+/// one tri-stream step advances a stream by THREE real units (384 bits of
+/// degree), so its old state folds by y^384 (hi half sits 64 bits higher:
+/// y^448). Derived by the same carry-less power-mod as KP192/KP128 and
+/// re-derived at test time by `t_tri_constants_derivation`.
+pub const KP448: u64 = 0xaa5eec4a;
+/// y^384 mod P — R11 tri-stream fold constant for the state's low qword.
+pub const KP384: u64 = 0xe6957b4d;
+/// y^320 mod P — R11 tri-stream merge multiplier: a stream whose state
+/// must be re-offset by TWO units (256 bits) multiplies hi by y^(256+64).
+pub const KP320: u64 = 0x7bba6798;
+/// y^256 mod P — R11 tri-stream merge multiplier for the two-unit offset's
+/// low half. (The ONE-unit offset reuses KP192/KP128.)
+pub const KP256: u64 = 0x59a3508a;
 
 /// Bodies shorter than this many bytes evaluate on the scalar kernel.
 pub const FOLD_MIN_LEN: usize = 192;
@@ -156,6 +170,30 @@ impl CrcKernel {
             Self::Fold512 => imp::span_fold_eval_pair(a, b),
         }
     }
+
+    /// R11: evaluate one span through the TRI-STREAM fold — the body's
+    /// block-pair units split mod-3 across three independent (even, odd)
+    /// state pairs (six independent clmul chains over ONE sequential load
+    /// stream), then merged with the fixed power-of-y constants back into
+    /// the exact single-stream state before the endings. Same value as
+    /// [`Self::eval`] by construction (the fold congruence is linear; the
+    /// differential suite pins it). The point is latency: the two-stream
+    /// kernel's per-register chain is one `clmul -> xor -> clmul -> xor`
+    /// dependency per 128 body bytes, and measured fold512 rates sit at
+    /// ~9 cycles per step — right where that chain binds. Three chains
+    /// give the out-of-order engine 50% more slack per step at the same
+    /// issue cost per byte; whether the kernel is chain-bound or
+    /// port-bound is exactly what the kbench `fold512_tri` row decides.
+    ///
+    /// # Safety
+    /// Same feature contract as [`Self::eval`].
+    #[inline(always)]
+    pub unsafe fn eval_tri(&self, body: &[u8]) -> u64 {
+        match self {
+            Self::Scalar => span_crc32c_8lane(body),
+            Self::Fold512 => imp::span_fold_eval_tri(body),
+        }
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -164,7 +202,7 @@ impl CrcKernel {
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod imp {
-    use super::{KP128, KP192, FOLD_MIN_LEN};
+    use super::{KP128, KP192, FOLD_MIN_LEN, KP256, KP320, KP384, KP448};
     use crate::sink::span_crc32c_8lane;
     use std::arch::x86_64::*;
 
@@ -313,6 +351,191 @@ pub(crate) mod imp {
     #[inline(always)]
     unsafe fn crc_u64(c: u32, v: u64) -> u32 {
         _mm_crc32_u64(c as u64, v) as u32
+    }
+
+    /// R11: one TRI-STREAM fold step — identical structure to [`fold_step`]
+    /// but the state advances by THREE real units per step (its stream's
+    /// next unit is 3 block-pairs ahead), so the fold multiplies by
+    /// y^384 (hi: y^448), not y^128. Same R10 CODEGEN LAW: `inline(always)`
+    /// is load-bearing (a second caller without the feature attribute
+    /// outlines into memory-passed wrapper calls — the 10x cliff).
+    #[inline(always)]
+    unsafe fn fold_step3(
+        st: &mut FoldStates,
+        u_even: __m512i,
+        u_odd: __m512i,
+        k448: __m512i,
+        k384: __m512i,
+    ) {
+        let t = _mm512_xor_si512(
+            _mm512_clmulepi64_epi128(st.even, k448, 0x01),
+            _mm512_clmulepi64_epi128(st.even, k384, 0x00),
+        );
+        st.even = _mm512_xor_si512(t, u_even);
+        let t = _mm512_xor_si512(
+            _mm512_clmulepi64_epi128(st.odd, k448, 0x01),
+            _mm512_clmulepi64_epi128(st.odd, k384, 0x00),
+        );
+        st.odd = _mm512_xor_si512(t, u_odd);
+        st.units += 1;
+    }
+
+    /// R11: merge one stream register into the accumulator with the offset
+    /// constant pair (k_hi = y^(C+64), k_lo = y^C): acc ^ (v_hi⊗k_hi) ^
+    /// (v_lo⊗k_lo). Always two clmuls — callers pick constants per the
+    /// offset table.
+    #[inline(always)]
+    unsafe fn merge_stream(acc: __m512i, v: __m512i, k_hi: __m512i, k_lo: __m512i) -> __m512i {
+        _mm512_xor_si512(
+            acc,
+            _mm512_xor_si512(
+                _mm512_clmulepi64_epi128(v, k_hi, 0x01),
+                _mm512_clmulepi64_epi128(v, k_lo, 0x00),
+            ),
+        )
+    }
+
+    /// R11: the TRI-STREAM block-pair loop — one span's word-pair units
+    /// split mod-3 across three independent (even, odd) state pairs.
+    ///
+    /// # The math
+    ///
+    /// Stream m folds block-pairs {m, m+3, m+6, ...}; between its
+    /// consecutive units sit TWO units of the other streams, so its fold
+    /// constant is y^384 (KP384/KP448), and after T_m units its state is
+    /// `V_m = sum_t U_{m+3t} * y^(384*(T_m-1-t))`. The full single-stream
+    /// state is `V = sum_m V_m * y^(C_m)` with the offset table (derived
+    /// by `t_tri_constants_derivation` and pinned by the differential
+    /// sweeps; C depends only on `wp mod 3`):
+    ///
+    /// | wp % 3 | C_0 | C_1 | C_2 |
+    /// |--------|-----|-----|-----|
+    /// | 0      | 256 | 128 | 0   |
+    /// | 1      | 0   | 256 | 128 |
+    /// | 2      | 128 | 0   | 256 |
+    ///
+    /// (C = 0 → identity; 128 → KP192/KP128; 256 → KP320/KP256.) Degenerate
+    /// spans (wp < 3) leave streams empty — a zero state merges to zero
+    /// under any constant, so the table holds for EVERY wp ≥ 0.
+    ///
+    /// Six independent clmul chains run over ONE sequential load stream
+    /// (unlike eval2's two spans = two streams): each chain gets 3× the
+    /// steps between dependencies at unchanged per-byte issue cost.
+    ///
+    /// SAFETY: `p` must hold >= 128*wp bytes; requires the AVX-512 +
+    /// VPCLMULQDQ + GFNI feature contract (callers gate it).
+    #[inline(always)]
+    unsafe fn fold_word_triples(p: *const u8, wp: usize) -> FoldStates {
+        let k448 = _mm512_set1_epi64(KP448 as i64);
+        let k384 = _mm512_set1_epi64(KP384 as i64);
+        let bswap = _mm512_loadu_si512(BSWAP_QW.as_ptr() as *const _);
+        if wp == 0 {
+            return FoldStates {
+                even: _mm512_setzero_si512(),
+                odd: _mm512_setzero_si512(),
+                units: 0,
+            };
+        }
+        // Seed stream m with pair m (streams beyond wp stay zero).
+        let mut st = [
+            FoldStates {
+                even: _mm512_setzero_si512(),
+                odd: _mm512_setzero_si512(),
+                units: 0,
+            },
+            FoldStates {
+                even: _mm512_setzero_si512(),
+                odd: _mm512_setzero_si512(),
+                units: 0,
+            },
+            FoldStates {
+                even: _mm512_setzero_si512(),
+                odd: _mm512_setzero_si512(),
+                units: 0,
+            },
+        ];
+        for m in 0..3usize {
+            if m < wp {
+                // SAFETY: 128*(m+1) <= 128*wp bytes are in bounds.
+                let n0 = prep_block(p.add(128 * m));
+                let n1 = prep_block(p.add(128 * m + 64));
+                let (ue, uo) = units_pair(n0, n1, bswap);
+                st[m] = FoldStates {
+                    even: ue,
+                    odd: uo,
+                    units: 1,
+                };
+            }
+        }
+        // Steps: pair q = 3, 4, 5, 6, ... feeds stream (q-3) % 3 — an
+        // unrolled 3-iteration loop keeps the mapping division-free.
+        let mut q = 3usize;
+        while q + 2 < wp {
+            // SAFETY: 128*(q+3) <= 128*wp bytes are in bounds.
+            let (ue, uo) = units_pair(
+                prep_block(p.add(128 * q)),
+                prep_block(p.add(128 * q + 64)),
+                bswap,
+            );
+            fold_step3(&mut st[0], ue, uo, k448, k384);
+            let (ue, uo) = units_pair(
+                prep_block(p.add(128 * (q + 1))),
+                prep_block(p.add(128 * (q + 1) + 64)),
+                bswap,
+            );
+            fold_step3(&mut st[1], ue, uo, k448, k384);
+            let (ue, uo) = units_pair(
+                prep_block(p.add(128 * (q + 2))),
+                prep_block(p.add(128 * (q + 2) + 64)),
+                bswap,
+            );
+            fold_step3(&mut st[2], ue, uo, k448, k384);
+            q += 3;
+        }
+        // Tail pairs (0..=2 of them): stream m takes pair q iff q < wp.
+        while q < wp {
+            let m = q % 3;
+            // SAFETY: 128*(q+1) <= 128*wp bytes are in bounds.
+            let (ue, uo) = units_pair(
+                prep_block(p.add(128 * q)),
+                prep_block(p.add(128 * q + 64)),
+                bswap,
+            );
+            fold_step3(&mut st[m], ue, uo, k448, k384);
+            q += 1;
+        }
+        // Merge: per wp mod 3, the offset table permutes the stream ROLES
+        // (base: offset 0; mid: offset 128 → KP192/KP128; far: offset 256
+        // → KP320/KP256):
+        //   wp%3==0: (C_0,C_1,C_2) = (256,128,0) → far=0, mid=1, base=2
+        //   wp%3==1: (0,256,128)              → base=0, far=1, mid=2
+        //   wp%3==2: (128,0,256)              → mid=0, base=1, far=2
+        let (far, mid, base) = match wp % 3 {
+            0 => (0usize, 1usize, 2usize),
+            1 => (1, 2, 0),
+            _ => (2, 0, 1),
+        };
+        let k320 = _mm512_set1_epi64(KP320 as i64);
+        let k256 = _mm512_set1_epi64(KP256 as i64);
+        let k192 = _mm512_set1_epi64(KP192 as i64);
+        let k128 = _mm512_set1_epi64(KP128 as i64);
+        let even = merge_stream(
+            merge_stream(st[base].even, st[far].even, k320, k256),
+            st[mid].even,
+            k192,
+            k128,
+        );
+        let odd = merge_stream(
+            merge_stream(st[base].odd, st[far].odd, k320, k256),
+            st[mid].odd,
+            k192,
+            k128,
+        );
+        FoldStates {
+            even,
+            odd,
+            units: st[0].units + st[1].units + st[2].units,
+        }
     }
 
     /// Chain the byte range `[from, to)` of `body` into `c` (whole region
@@ -656,6 +879,23 @@ pub(crate) mod imp {
         let vb = finish_span(b, stb);
         (va, vb)
     }
+
+    /// R11: the tri-stream fold (single span) — same value as
+    /// [`span_fold_eval`], three interleaved state pairs instead of one.
+    /// See [`fold_word_triples`] for the interleave math and merge table.
+    ///
+    /// # Safety
+    /// Requires AVX-512F/BW, VPCLMULQDQ, GFNI, SSE4.2.
+    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
+    pub unsafe fn span_fold_eval_tri(body: &[u8]) -> u64 {
+        if body.len() < FOLD_MIN_LEN {
+            return span_crc32c_8lane(body);
+        }
+        let wp = body.len() / 64 / 2;
+        // SAFETY: 128*wp <= len (feature contract + caller bounds).
+        let st = fold_word_triples(body.as_ptr(), wp);
+        finish_span(body, st)
+    }
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -675,6 +915,11 @@ pub(crate) mod imp {
     #[inline(always)]
     pub unsafe fn span_fold_eval_pair(a: &[u8], b: &[u8]) -> (u64, u64) {
         (span_crc32c_8lane(a), span_crc32c_8lane(b))
+    }
+
+    #[inline(always)]
+    pub unsafe fn span_fold_eval_tri(body: &[u8]) -> u64 {
+        span_crc32c_8lane(body)
     }
 }
 
@@ -810,6 +1055,8 @@ mod tests {
             let (g2a, g2b) = unsafe { imp::span_fold_eval2(body, body) };
             assert_eq!(want, g2a, "eval2 primary diverged at len={}", body.len());
             assert_eq!(want, g2b, "eval2 mirror diverged at len={}", body.len());
+            let g3 = unsafe { imp::span_fold_eval_tri(body) };
+            assert_eq!(want, g3, "tri diverged at len={}", body.len());
         };
         // exhaustive small lengths x patterns
         for len in 0..=600usize {
@@ -857,5 +1104,57 @@ mod tests {
             assert_eq!(want_a, ga, "eval2 pair A diverged ({} x {})", la, lb);
             assert_eq!(want_b, gb, "eval2 pair B diverged ({} x {})", la, lb);
         }
+    }
+
+    /// R11: re-derive the tri-stream constants at test time — carry-less
+    /// y^k mod P in GF(2)[y] (P = 0x11EDC6F41, the normal-form CRC32C
+    /// polynomial). Pins KP448/KP384 (the three-unit fold) and
+    /// KP320/KP256 (the two-unit merge) against the same algebra that
+    /// produced the shipped KP192/KP128, so a transcription typo in the
+    /// new constants cannot survive the suite.
+    #[test]
+    fn t_tri_constants_derivation() {
+        const P: u64 = 0x11ED_C6F4_1; // 33-bit modulus
+        fn clmul(a: u64, b: u64) -> u128 {
+            let mut r = 0u128;
+            let mut a = a as u128;
+            let mut b = b;
+            while b != 0 {
+                if b & 1 != 0 {
+                    r ^= a;
+                }
+                a <<= 1;
+                b >>= 1;
+            }
+            r
+        }
+        fn clmod(mut v: u128) -> u64 {
+            const PL: u32 = 33; // P's bit length
+            loop {
+                let t = 128 - v.leading_zeros();
+                if t < PL {
+                    return v as u64;
+                }
+                v ^= (P as u128) << (t - PL);
+            }
+        }
+        fn ypow(mut k: u32) -> u64 {
+            let mut result = 1u64;
+            let mut base = clmod(2);
+            while k != 0 {
+                if k & 1 != 0 {
+                    result = clmod(clmul(result, base));
+                }
+                base = clmod(clmul(base, base));
+                k >>= 1;
+            }
+            result
+        }
+        assert_eq!(ypow(128), KP128, "KP128 re-derivation");
+        assert_eq!(ypow(192), KP192, "KP192 re-derivation");
+        assert_eq!(ypow(256), KP256, "KP256 re-derivation");
+        assert_eq!(ypow(320), KP320, "KP320 re-derivation");
+        assert_eq!(ypow(384), KP384, "KP384 re-derivation");
+        assert_eq!(ypow(448), KP448, "KP448 re-derivation");
     }
 }

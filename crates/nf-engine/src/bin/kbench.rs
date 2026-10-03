@@ -88,6 +88,7 @@ fn main() {
         bench_1t("fold512", c0, mode_fold512);
         bench_1t("fold512_eval2", c0, mode_fold512_eval2);
         bench_1t("fold512_pair", c0, mode_fold512_pair);
+        bench_1t("fold512_tri", c0, mode_fold512_tri);
         bench_1t("fold512_pclmul_mix", c0, mode_fold512_pclmul_mix);
     }
 
@@ -96,12 +97,14 @@ fn main() {
         bench_2t("scalar8lane", "2cpu_distinct", a, b, mode_scalar);
         if fold512_available() {
             bench_2t("fold512", "2cpu_distinct", a, b, mode_fold512);
+            bench_2t("fold512_tri", "2cpu_distinct", a, b, mode_fold512_tri);
         }
     }
     if let Some((a, b)) = smt_pair {
         bench_2t("scalar8lane", "2cpu_smt", a, b, mode_scalar);
         if fold512_available() {
             bench_2t("fold512", "2cpu_smt", a, b, mode_fold512);
+            bench_2t("fold512_tri", "2cpu_smt", a, b, mode_fold512_tri);
         }
     }
     println!("KBENCH done");
@@ -315,6 +318,25 @@ fn mode_fold512_pair(buf: &[u8], sink: &mut u64) -> usize {
             unsafe { kernel.eval_pair(&buf[off..off + SPAN], &buf[off + SPAN..off + 2 * SPAN]) };
         acc ^= a ^ b;
         off += 2 * SPAN;
+    }
+    *sink = acc;
+    off
+}
+
+/// R11: the tri-stream fold on the same packed-SPAN corpus — the kernel-
+/// level attribution of the three-way interleave (chain slack vs issue
+/// cost). fold512_tri vs fold512 on the SAME runner is the clean
+/// experiment: if the kernel is dependency-bound the row jumps; if it is
+/// port-issue-bound it sits at parity (and the merge's fixed ~8 clmuls
+/// per span price it slightly below on short spans).
+fn mode_fold512_tri(buf: &[u8], sink: &mut u64) -> usize {
+    let kernel = CrcKernel::Fold512;
+    let mut off = 0usize;
+    let mut acc = 0u64;
+    while off + SPAN <= buf.len() {
+        // SAFETY: main() only dispatches here when fold512_available().
+        acc ^= unsafe { kernel.eval_tri(&buf[off..off + SPAN]) };
+        off += SPAN;
     }
     *sink = acc;
     off
