@@ -200,6 +200,34 @@ HFT_WORKER_PIPE=1 cargo run --release -p nf-engine --bin bench -- --hydra-only |
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_pipe.txt
 grep -q "allocs=0" /tmp/bench_pipe.txt
 
+echo "=== 11k. R11: Distinct-Core Worker Placement Sweep (the SMT ceiling unlock) ==="
+# THE PLACEMENT CEILING: on the 2-physical-core SMT draws the default
+# (siblings) strategy stacks BOTH workers on one physical core's two
+# hyperthreads — their combined fold is capped at the kbench 2cpu_smt
+# ceiling (32.83 GB/s on the 1.109B draw) while 2cpu_distinct sat unused
+# at 61.74 GB/s. HFT_FABRIC_PLACE=distinct gives each worker a physical
+# core and demotes main+rx to the SMT siblings (each steals issue slots
+# from exactly one worker). The worker DIAG lines echo the new pins;
+# kbench's fold512 2cpu_distinct row prices the ceiling it chases.
+# Diagnostics only — bit-exactness asserted by the arm's per-pass checks.
+HFT_FABRIC_PLACE=distinct cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_place_distinct.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_place_distinct.txt
+grep -q "allocs=0" /tmp/bench_place_distinct.txt
+
+echo "=== 11l. R11: Tri-Stream Fold Sweep (3-way interleave ILP) ==="
+# The fold kernel's two state chains run one clmul->xor->clmul->xor
+# dependency per 128 body bytes; measured fold512 sits at ~9 cyc/step —
+# near that chain's length. The tri-stream split (mod-3 block pairs,
+# y^384 stream fold, fixed-power merge) gives the OoO engine six chains
+# over ONE load stream at unchanged per-byte issue cost. kbench's
+# fold512_tri vs fold512 rows (1t / 2cpu_distinct / 2cpu_smt) attribute
+# the kernel effect; this sweep prices it through the worker loop on the
+# real span mix. Diagnostics only — D11 + the crcfold differential sweep
+# pin the values bit-exact.
+HFT_WORKER_TRI=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_tri.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_tri.txt
+grep -q "allocs=0" /tmp/bench_tri.txt
+
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)
