@@ -376,21 +376,18 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
     // ReplayTransport::patch_range's safety contract); the synchronous
     // patch at the advance point shrinks to the unconsumed tail.
     //
-    // R9d — DEFAULT OFF, refuted by measurement. The R9c flip (default
-    // on) was reversed by the first Intel draw's data: post-R9-aliasing
-    // the synchronous bake is only ~99us/pass on the 8573C and the RX
-    // absorbs it at the advance idle; spreading the same RFOs onto the
-    // RX's RENDER path (the prepatch's incremental steps) delayed every
-    // publication — the armed run's main-side batch-wait tripled
-    // (322 -> 813ms) and end-to-end fell 1.7% (955.4M -> 938.7M). The
-    // same ordering held on Zen3 and 9V74 draws. The mechanism stays
-    // (event-indexed frontier, last-event gates, R9c budget pacing) and
-    // the armed soak keeps running on every CI push as the evidence
-    // step — a future runner class with real RX idle time may still win
-    // with it. HFT_PREPATCH=1 arms; per-pass tuple asserts stay armed
-    // either way.
+    // R11 — DEFAULT ON, re-flipped by the R10-stack evidence ledger. The
+    // R9d reversal was measured on the PRE-R10 equilibrium (INLINE_SLOTS=4,
+    // no deep ring): post-R10 the ordering flipped on every silicon class —
+    // Zen3 5/5 draws armed-wins (+1.6% mean), 8573C +0.66%
+    // (1,116.4M vs 1,109.1M, the gate-break draw), 8370C +3.2%
+    // (930.5M vs 901.6M). The deep assist ring changed the mechanism the
+    // R9d refutation priced: main's spin budget converts to inline CRC, so
+    // the reset handshake's synchronous bake now sits on the critical path
+    // the prepatch removes. HFT_PREPATCH=0 disarms (the rollback); the
+    // per-pass tuple asserts stay armed either way.
     let prepatch_enabled =
-        std::env::var("HFT_PREPATCH").as_deref() == Ok("1");
+        std::env::var("HFT_PREPATCH").as_deref() != Ok("0");
     // R9: the per-turn EVENT-INDEX ring — turn_evt_end[t] is the exclusive
     // end event index of turn t's publication (usize::MAX for EOS-marker
     // turns: the whole pass is consumed). The prepatch maps a freed turn
