@@ -139,6 +139,7 @@ impl EntryBuf {
                 first_seq: 0,
                 sess_lo: 0,
                 sess_hi: 0,
+                elig: 0,
             })),
             len: 0,
             clock: 0,
@@ -371,10 +372,44 @@ fn pin_cpu(cpu: usize) -> bool {
 /// tracked here and refreshed at every bake point (reset serve, EOS-park
 /// reset serve, auto-advance).
 #[allow(clippy::disallowed_types)]
-fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<usize>) {
+fn rx_thread(
+    mut inner: ReplayTransport,
+    mb: Arc<Mailbox>,
+    pin_cpu_id: Option<usize>,
+    init_session: [u8; 10],
+) {
     if let Some(cpu) = pin_cpu_id {
         let _ = pin_cpu(cpu);
     }
+    // R12c: the baked-session compare template for the entries' elig
+    // bytes (bit 7). The consumer proves the bit exact for a group by
+    // matching the group's first entry against its OWN live template
+    // (see FrameEntry::elig) — the values here key the bit at publish
+    // time. Refreshed at every bake point below.
+    let mut sess_lo_tmpl = u64::from_le_bytes([
+        init_session[0],
+        init_session[1],
+        init_session[2],
+        init_session[3],
+        init_session[4],
+        init_session[5],
+        init_session[6],
+        init_session[7],
+    ]);
+    let mut sess_hi_tmpl = u64::from_le_bytes([
+        init_session[2],
+        init_session[3],
+        init_session[4],
+        init_session[5],
+        init_session[6],
+        init_session[7],
+        init_session[8],
+        init_session[9],
+    ]);
+    let refresh_tmpl = |s: &[u8; 10], lo: &mut u64, hi: &mut u64| {
+        *lo = u64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]);
+        *hi = u64::from_le_bytes([s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9]]);
+    };
     // HFT_EXP_DIAG diagnostics (never in CI): per-pass poll accounting.
     let diag = std::env::var("HFT_EXP_DIAG").is_ok();
     let mut diag_polls = 0u64;
@@ -467,6 +502,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                 // entries; the RX thread owns the transport and blob.
                 let sess = unsafe { *mb.reset_session.get() };
                 inner.reset(sess);
+                refresh_tmpl(&sess, &mut sess_lo_tmpl, &mut sess_hi_tmpl);
                 // R8 phase-3b: a full synchronous re-bake invalidates the
                 // prepatch cursor — restart it for the fresh pass.
                 pp_idx = 0;
@@ -589,6 +625,16 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                             )
                         }
                     };
+                    // R12c: the elig byte — the steady-eligibility facts
+                    // packed into the entry's own padding line (+~4 µops,
+                    // zero added line traffic). Bit 7: session == baked
+                    // template AND memo proves every block valid AND a
+                    // non-empty block index; bits 0..1: the feed.
+                    let elig_ok = (blk_count != 0
+                        && valid == blk_count
+                        && f.sess_lo == sess_lo_tmpl
+                        && f.sess_hi == sess_hi_tmpl)
+                        as u8;
                     buf.entries[acc + k] = FrameEntry {
                         bytes,
                         feed: f.feed,
@@ -598,6 +644,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                         first_seq: f.first_seq,
                         sess_lo: f.sess_lo,
                         sess_hi: f.sess_hi,
+                        elig: (f.feed & 3) | (elig_ok << 7),
                     };
                 }
                 buf.clock = inner.now_ns();
@@ -728,6 +775,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                 }
                 let next_pass = pass + 1;
                 let sess = sess_fn(next_pass);
+                refresh_tmpl(&sess, &mut sess_lo_tmpl, &mut sess_hi_tmpl);
                 // R8 phase-3b (kill-switched): only the un-prepatched tail
                 // bakes synchronously; with the prepatch disabled that is
                 // the full blob (the pre-prepatch behavior).
@@ -774,6 +822,7 @@ fn rx_thread(mut inner: ReplayTransport, mb: Arc<Mailbox>, pin_cpu_id: Option<us
                     CMD_RESET => {
                         let sess = unsafe { *mb.reset_session.get() };
                         inner.reset(sess);
+                        refresh_tmpl(&sess, &mut sess_lo_tmpl, &mut sess_hi_tmpl);
                         pp_idx = 0;
                         served_resets += 1;
                         mb.rx_stats.resets.fetch_add(1, Ordering::Relaxed);
@@ -912,7 +961,7 @@ impl PipelinedReplayTransport {
             .spawn({
                 #[allow(clippy::disallowed_types)]
                 let mb: Arc<Mailbox> = Arc::clone(&mb);
-                move || rx_thread(inner, mb, rx_cpu)
+                move || rx_thread(inner, mb, rx_cpu, session)
             })
             .expect("r8 rx thread spawn");
         Self {

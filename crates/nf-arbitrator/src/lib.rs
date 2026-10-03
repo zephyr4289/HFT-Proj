@@ -1230,15 +1230,16 @@ fn steady_scan_ref<'a, S: Sink>(
     (progressed, cold)
 }
 
-/// R12b: the vectorized-ladder steady scan — the slice scan with the
+/// R12c: the vectorized-ladder steady scan — the slice scan with the
 /// 8-entry group fast path. For each group of 8 entries fully below the
 /// batch length, the scan GATHERS `firsts`/`ns` from the (L1-hot) entry
 /// array and calls the [`SoaLadder8`] kernel (anchor + pair-eq + dup-le +
 /// chain + wrap guard); on a relations-pass it verifies the group's
-/// steady eligibility DIRECTLY against its own live session template,
-/// the R2 memos, non-empty block counts, and feed-parity uniformity —
-/// every condition the scalar ladder would check, evaluated per group
-/// instead of per entry. A fully-verified group advances `w` by
+/// steady eligibility from the publisher-packed [`FrameEntry::elig`]
+/// bytes (session/memo/non-empty precomputed at publish; feed parity) —
+/// the R12b gather design re-ran those ~90 scalar µops per group
+/// consumer-side and measured them eating the entire vector win on the
+/// 8573C (11m-vs-11b attribution: −3.6%). A fully-verified group advances `w` by
 /// `Σ ns[even]`, buffers the four even spans, and folds all eight
 /// entries' counter updates — observably identical to running
 /// [`steady_step`] over the same eight entries.
@@ -1300,29 +1301,37 @@ fn steady_scan_ladder<'a, S: Sink>(
                 }
                 if ladder8(firsts.as_ptr(), ns.as_ptr(), *w) {
                     // Relations proven — verify the group's eligibility
-                    // (the same conditions the scalar ladder checks per
-                    // entry, evaluated here per group). Any failure routes
-                    // the group through the scalar ladder.
-                    let f0 = entries[p].feed;
-                    let f1 = entries[p + 1].feed;
-                    let mut elig = true;
-                    let mut k = 0usize;
-                    while k < 8 {
-                        let e = &entries[p + k];
-                        let n = ns[k] as usize;
-                        let want_feed = if k & 1 == 0 { f0 } else { f1 };
-                        if n == 0
-                            || e.feed != want_feed
-                            || e.sess_lo != sess_lo
-                            || e.sess_hi != sess_hi
-                            || !e.memo.is_some_and(|m| m.valid_count as usize == n)
-                        {
-                            elig = false;
-                            break;
+                    // from the publisher-packed elig bytes (the same
+                    // conditions the scalar ladder checks per entry,
+                    // precomputed at publish time: session == baked,
+                    // memo full-validity, non-empty index; plus the feed
+                    // for the parity uniformity the counter folding
+                    // needs). The session component's exactness: the
+                    // group's FIRST entry must match the scan's LIVE
+                    // template — every published frame carries the baked
+                    // session, so that match proves baked == live for all
+                    // eight (see FrameEntry::elig).
+                    let e0 = &entries[p];
+                    if e0.sess_lo == sess_lo
+                        && e0.sess_hi == sess_hi
+                        && e0.elig & packet::FRAME_ELIG_OK != 0
+                    {
+                        let f0 = packet::elig_feed(e0.elig);
+                        let f1 = packet::elig_feed(entries[p + 1].elig);
+                        let mut elig = true;
+                        let mut k = 0usize;
+                        while k < 8 {
+                            let e = &entries[p + k];
+                            let want_feed = if k & 1 == 0 { f0 } else { f1 };
+                            if e.elig & packet::FRAME_ELIG_OK == 0
+                                || packet::elig_feed(e.elig) != want_feed
+                            {
+                                elig = false;
+                                break;
+                            }
+                            k += 1;
                         }
-                        k += 1;
-                    }
-                    if elig {
+                        if elig {
                         // GROUP VERIFIED: [emit, dup] × 4. Counters fold
                         // exactly as the scalar ladder would (batched);
                         // the four even entries' emissions are buffered
@@ -1376,6 +1385,7 @@ fn steady_scan_ladder<'a, S: Sink>(
                         progressed = true;
                         *pos = p + 8;
                         continue;
+                    }
                     }
                 }
             }

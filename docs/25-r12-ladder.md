@@ -202,6 +202,31 @@ evidence ledger stays open: if the flake recurs across draws/arms, the
 prepatch frontier gets hardened; a single occurrence is recorded as the
 known class.
 
+### 5.2 R12c — the elig byte (the third design)
+
+The first green 8573C draw (run 37124397253) priced the R12b gather
+design with a clean same-run attribution: **11m (ladder off) 1,004.8M vs
+11b (ladder on) 968.9M — the gather ladder is a −3.6% net loss on the
+8573C's sustained scan.** Front A: 2.794B (0.823 cyc/msg; the draw's
+kbench fold512 1t = 30.20 GB/s marks it an ~8.4%-weak instance, so
+draw-adjusted ≈ 3.05B vs the R11 record's 3.624B). The full-verify gate
+HELD (bit-exact, all 10,467 per-pass tuples, allocs=0) — correctness is
+solid; the speed is not. The mechanism: the R12b group path re-ran the
+eligibility checks (session ×2, memo, count, feed — ~90 scalar µops per
+group) consumer-side, eating the entire vector win.
+
+**R12c resolves the sidecar-vs-gather trade**: a 1-byte `elig` field in
+`FrameEntry`'s existing padding — bit 7 = (session == the publisher's
+baked template) AND (memo proves every block valid) AND (non-empty
+index); bits 0..1 = the feed. The publisher computes it from
+register-hot values (+~4 µops/frame); the byte rides the entry's OWN
+cache line (zero added line traffic — the RX's R11 store profile is
+preserved). The consumer's group check becomes: the ladder's relations +
+8 elig-byte tests + a session gate on the group's first entry (its own
+sess words prove baked == live for the whole group — every published
+frame carries the baked session). Model: ~110 µops per 8-entry group ≈
+0.32 cyc/msg consumer. Local A/B: +5.4% (1.553B vs 1.474B).
+
 The remaining open question for the CI draws: the gather design's
 consumer-side win vs the RX's own ceiling — R11's Front A on the 8573C
 (3.624B) had the RX at ≤0.635 cyc/msg as the co-wall, so the ladder's

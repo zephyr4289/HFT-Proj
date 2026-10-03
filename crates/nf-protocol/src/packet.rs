@@ -97,6 +97,28 @@ pub struct FrameEntry<'a> {
     /// without touching the frame lines (cross-core in pipelined mode).
     pub sess_lo: u64,
     pub sess_hi: u64,
+    /// R12c: steady-eligibility byte — packs the per-frame checks the
+    /// scalar ladder would run, computed by the publisher from values
+    /// already in registers (+~4 µops; the byte rides the entry's OWN
+    /// cache line in what was padding — ZERO added line traffic):
+    /// bit 7 = (session == the publisher's baked template) AND (R2 memo
+    /// proves every block valid) AND (block count > 0); bits 0..1 = the
+    /// feed (& 3). The vectorized ladder verifies a group's 8 elig bytes
+    /// instead of re-running ~90 scalar compare µops. The session
+    /// component's exactness: the consumer additionally requires the
+    /// group's first entry to match ITS OWN live template (2 compares) —
+    /// since every published frame carries the baked session, that entry
+    /// match proves baked == live, making the bit exact for all 8.
+    pub elig: u8,
+}
+
+/// The elig byte's steady-ok bit (session + memo + non-empty).
+pub const FRAME_ELIG_OK: u8 = 0x80;
+
+/// Extract the feed (& 3) from an elig byte.
+#[inline(always)]
+pub fn elig_feed(elig: u8) -> u8 {
+    elig & 3
 }
 
 /// Single-pass fused framing + per-block callback walk for the ingest hot path

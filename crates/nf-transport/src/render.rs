@@ -1091,6 +1091,11 @@ impl ReplayTransport {
                 first_seq: f.first_seq,
                 sess_lo: f.sess_lo,
                 sess_hi: f.sess_hi,
+                // R12c: the single-threaded path feeds the SCALAR steady
+                // scan (no vector ladder), which ignores elig; the ok bit
+                // stays cleared so a hypothetical ladder consumer would
+                // safely fall back to the scalar ladder.
+                elig: f.feed & 3,
             }
         })
     }
