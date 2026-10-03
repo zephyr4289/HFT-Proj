@@ -232,3 +232,30 @@ consumer-side win vs the RX's own ceiling — R11's Front A on the 8573C
 (3.624B) had the RX at ≤0.635 cyc/msg as the co-wall, so the ladder's
 consumer gain may be capped by the transport itself on that class (the
 next lever, if so: the RX's per-frame entry build).
+
+## 7. The verdict (three green target-silicon draws + one flake)
+
+| draw | silicon | kbench 1t | Front A | 11b sustained | 11m (scalar) | ladder Δ | desc8 Δ |
+|---|---|---|---|---|---|---|---|
+| 37124397253 (R12b) | 8573C | 30.20 | 2.794B / 0.823 | 968.9M | 1,004.8M | **−3.6%** | +0.4% |
+| 37126929243 (R12c) | 8370C | 24.71 | 2.655B / 1.052 | 912.5M | 932.2M | −2.1% | −0.9% |
+| 37128464987 (R12c+DSB) | 8370C | 26.15 | 2.506B / 1.115 | 908.3M | 899.3M | **+1.0%** | **+4.1%** |
+| 37129908288 (R12c+DSB) | 8573C | 30.36 | **3.160B / 0.728** | 968.5M | 1,022.6M | **−5.3%** | **+2.1%** |
+
+* **The ladder is REFUTED as a sustained-rate lever on the record
+  class** (−5.3% on the 8573C; the 8370C disagrees at +1.0% — per the
+  R9c→R9d law, disagreeing classes mean no default). Default OFF;
+  `HFT_VEC_LADDER=1` arms the experiment (CI 11m = the armed soak, the
+  eval2/tri precedent). Front A recovers to ~R11 parity with it armed
+  (draw-adjusted ≈ 3.43B vs the record's 3.624B) — the RX is Front A's
+  co-wall on this class, exactly as the sidecar refutation found.
+* **Desc8 SHIPS (default ON)**: +2.1% (8573C) / +4.1% (8370C) — the
+  compact descriptors and the anchor-derived span ids are a consistent
+  net win, at zero correctness cost (both formats bit-exact everywhere).
+* The full-verify gate held on every draw (bit-exact, per-pass tuples,
+  allocs=0); one count-divergence flake in the 11j arm (the documented
+  prepatch race class — §5.1) remains the open item.
+* Target 1's 5-6B is **not reachable on this transport**: R11's Front A
+  was already RX-co-bound at ≤0.635 cyc/msg, and the RX's per-frame entry
+  build is now the ceiling — the next Front A lever is the RX itself
+  (R13 candidate).

@@ -158,9 +158,21 @@ fn ladder8_avx512_safe(firsts: *const u64, ns: *const u64, w: u64) -> bool {
 }
 
 /// The best available ladder for THIS silicon, or None (scalar ladder).
-/// `HFT_VEC_LADDER=0` disarms (the rollback / CI sweep arm 11m).
+///
+/// R12 VERDICT — default OFF (the refutation, per the R9c→R9d law): the
+/// CI attribution measured the ladder at **−5.3% on the 8573C sustained
+/// scan** (11b 968.5M vs 11m 1,022.6M, run 37129908288) and +1.0% on the
+/// 8370C — the classes disagree, and the record class refutes. Front A
+/// recovers to ~R11 parity with it on (3.160B / 0.728 cyc on a weak
+/// instance, draw-adj ≈ 3.43B) but the sustained arm — the record gate —
+/// pays the group path's remaining overhead without conversion (the
+/// Target-3 premise "every freed ingest cycle converts to assist CRC"
+/// measured FALSE: the submitting core's surplus at the weak-instance
+/// equilibrium is not scan-bound). `HFT_VEC_LADDER=1` arms it (the
+/// experiment knob — CI arm 11m runs the armed soak, the eval2/tri
+/// precedent).
 pub fn ladder8_best() -> Option<SoaLadder8> {
-    if std::env::var("HFT_VEC_LADDER").as_deref() == Ok("0") {
+    if std::env::var("HFT_VEC_LADDER").as_deref() != Ok("1") {
         return None;
     }
     #[cfg(target_arch = "x86_64")]

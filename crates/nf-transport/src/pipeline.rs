@@ -410,6 +410,11 @@ fn rx_thread(
         *lo = u64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]);
         *hi = u64::from_le_bytes([s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9]]);
     };
+    // R12 verdict: the ladder is default OFF (the 8573C refutation — see
+    // nf_testkit::soa::ladder8_best); the elig byte's session/memo compute
+    // is only worth its µops when the consumer can use it. Read once at
+    // thread start, outside every window.
+    let compute_elig = std::env::var("HFT_VEC_LADDER").as_deref() == Ok("1");
     // HFT_EXP_DIAG diagnostics (never in CI): per-pass poll accounting.
     let diag = std::env::var("HFT_EXP_DIAG").is_ok();
     let mut diag_polls = 0u64;
@@ -630,7 +635,8 @@ fn rx_thread(
                     // zero added line traffic). Bit 7: session == baked
                     // template AND memo proves every block valid AND a
                     // non-empty block index; bits 0..1: the feed.
-                    let elig_ok = (blk_count != 0
+                    let elig_ok = (compute_elig
+                        && blk_count != 0
                         && valid == blk_count
                         && f.sess_lo == sess_lo_tmpl
                         && f.sess_hi == sess_hi_tmpl)

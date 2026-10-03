@@ -227,17 +227,16 @@ HFT_WORKER_TRI=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | 
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_tri.txt
 grep -q "allocs=0" /tmp/bench_tri.txt
 
-echo "=== 11m. R12: Vectorized Watermark Ladder OFF (rollback attribution) ==="
-# The R12 8-entry AVX-512 pair-ladder: one instruction group proves 8
-# steady frames ([emit, dup] x 4 — anchor + pair-eq + dup-le + chain +
-# wrap guard) against the RX-published SoA sidecar, advancing the
-# watermark by the even-lane n-sum in one shot. 11b runs it ON (avx512f
-# silicon only — the Zen3 scalar class keeps the scalar ladder); this
-# arm runs the R11-equivalent scalar scan for per-draw attribution.
-# Bit-exact by the SoA 3-way parity suite + D12's pipeline leg either way.
-HFT_VEC_LADDER=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_vecladder_off.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_vecladder_off.txt
-grep -q "allocs=0" /tmp/bench_vecladder_off.txt
+echo "=== 11m. R12: Vectorized Watermark Ladder ARMED Soak (the refuted experiment) ==="
+# R12 verdict (the R9c->R9d law): the CI attribution measured the ladder
+# at -5.3% sustained on the 8573C (11b 968.5M vs scalar 1,022.6M) and
+# +1.0% on the 8370C — the classes disagree and the record class
+# refutes, so the default is OFF and this arm runs the ARMED soak for
+# the evidence ledger (the eval2/tri precedent). Front A recovers to
+# ~R11 parity with it on; the sustained record gate is what it costs.
+HFT_VEC_LADDER=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_vecladder_on.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_vecladder_on.txt
+grep -q "allocs=0" /tmp/bench_vecladder_on.txt
 
 echo "=== 11n. R12: Compact 8-Byte Span Descriptors OFF (rollback attribution) ==="
 # The R12 Desc8 format: {offset:u32 | len:u16 | flags:u16} — 8 descs per
