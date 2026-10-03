@@ -191,13 +191,13 @@ fn wall_pass_pipelined<S: Sink>(
     while transport.next_batch() {
         if diag {
             let tb = read_monotonic_raw_ns();
-            seq.ingest_entries_soa(transport.entries(), &transport.soa(), transport.now_ns(), &mut sink, ladder);
+            seq.ingest_entries_ladder(transport.entries(), transport.now_ns(), &mut sink, ladder);
             let db = read_monotonic_raw_ns().saturating_sub(tb) as u128;
             if db > max_batch_ns {
                 max_batch_ns = db;
             }
         } else {
-            seq.ingest_entries_soa(transport.entries(), &transport.soa(), transport.now_ns(), &mut sink, ladder);
+            seq.ingest_entries_ladder(transport.entries(), transport.now_ns(), &mut sink, ladder);
         }
         nb += 1;
     }

@@ -131,7 +131,41 @@ semantics.
   17/17 matrix (golden `0xF6EF154EFDE905D8`), `HYDRA_BITPARITY`
   (`0x881639cead506f25`), and `ALLOC_DELTA=0` all green on the final tree.
 
-## 5. Expectations (honest, pre-CI)
+## 5. R12b — the sidecar refuted, the gather design (the first 8370C draw)
+
+The first target-silicon draw (8370C, run 37119029890) refuted the
+RX-published sidecar:
+
+* **Front A collapsed 41%** (2.574B → 1.509B, 1.085 → 1.85 cyc/msg),
+  breaking the 2B pure-ingest gate on that class. The sustained arm
+  attributed: 11b (both on) 835M vs 11m (ladder off) 858M vs the R11
+  8370C baseline 902M — and the RX telemetry showed `prod_ms` 4300/5000
+  (86% busy): **the RX is the co-bottleneck on both Intel classes**, and
+  the sidecar added ~25-30 µops and +38% store-line traffic per frame to
+  exactly the wrong core. The consumer's ladder gain was being paid for
+  by the transport that feeds it.
+* The same draw also fired the Desc8 fold-order assert (drift 32/112 =
+  the assist-diverted span count) — the anchor rule keyed on grid
+  alignment, but a mid-grid pass-boundary continuation that takes the
+  lane path writes no anchor while its interleaved spans went inline.
+  **Fix: every lane chunk-open anchors** (the derivation never
+  extrapolates across any chunk boundary).
+
+**The redesign (R12b)**: the ladder gathers consumer-side — `firsts`/`ns`
+collected from the (L1-hot) AoS entry array per group, the kernel checks
+the relations, and on a relations-pass the scan verifies the group's
+eligibility DIRECTLY (live session template, R2 memos, non-empty counts,
+feed parity) before folding. The RX is byte-for-byte the R11 shape —
+zero transport-side cost on every silicon class — and the live-template
+compare makes the session exactness unconditional (the sidecar design
+needed the baked-words gate for mid-pass session flips; that entire
+hazard class is gone).
+
+Local A/B after the redesign (shared 2-vCPU SPR sandbox): Front A
+**+7.3%** (1.730B vs 1.611B, same binary, `HFT_VEC_LADDER=0` baseline) —
+the first clean positive signal of the campaign.
+
+## 6. Expectations (honest, pre-CI)
 
 * **Front A**: the ladder's check cost drops ~30 → ~2.5 µops/frame; with
   the irreducible `SpanRec` build + sink-side submit, the model puts the
@@ -148,7 +182,8 @@ semantics.
   per silicon class — the evidence ledger records whatever the silicon
   says, including refutations.
 
-Local sandbox signal (2-vCPU shared SPR, ±15% run-to-run noise): the
-ladder won 3 of 4 A/B runs (best pair +17%: 965M vs 824M, matching
-per-pass DIAG times) — directionally positive, unresolvable locally. The
-dedicated CI runners are the judge.
+The remaining open question for the CI draws: the gather design's
+consumer-side win vs the RX's own ceiling — R11's Front A on the 8573C
+(3.624B) had the RX at ≤0.635 cyc/msg as the co-wall, so the ladder's
+consumer gain may be capped by the transport itself on that class (the
+next lever, if so: the RX's per-frame entry build).

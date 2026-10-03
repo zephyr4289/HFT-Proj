@@ -695,7 +695,7 @@ fn test_d12_batch_and_pipeline_equivalence(gt: &[u8]) {
         let mut seq = Sequencer::new();
         let mut sink = SpanConformanceSink::new();
         while t.next_batch() {
-            seq.ingest_entries_soa(t.entries(), &t.soa(), t.now_ns(), &mut sink, ladder);
+            seq.ingest_entries_ladder(t.entries(), t.now_ns(), &mut sink, ladder);
         }
         (seq.counters(), seq.watermark(), sink.count, sink.hash)
     };

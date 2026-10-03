@@ -2434,7 +2434,7 @@ mod tests {
             let mut seq = Sequencer::new();
             sink.begin_pass();
             while t.next_batch() {
-                seq.ingest_entries_soa(t.entries(), &t.soa(), t.now_ns(), &mut sink, ladder);
+                seq.ingest_entries_ladder(t.entries(), t.now_ns(), &mut sink, ladder);
                 sink.drain_ready();
             }
             sink.end_pass();

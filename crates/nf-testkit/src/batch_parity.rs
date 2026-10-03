@@ -217,7 +217,7 @@ fn t_r8_batch_parity_per_message_sink() {
 // ladder, on the RX-pipelined transport that publishes the SoA sidecar.
 // Three legs per schedule: classic (per-frame, single-threaded),
 // pipelined-scalar (ingest_entries — the R8 path), pipelined-vector
-// (ingest_entries_soa + the best ladder for this silicon; on non-AVX-512
+// (ingest_entries_ladder + the best ladder for this silicon; on non-AVX-512
 // hosts the ladder is None and the leg degenerates to the scalar
 // semantics — the scalar fallback IS the same code).
 
@@ -233,7 +233,7 @@ fn soa_pass(
     while transport.next_batch() {
         let now = transport.now_ns();
         if ladder.is_some() {
-            seq.ingest_entries_soa(transport.entries(), &transport.soa(), now, &mut sink, ladder);
+            seq.ingest_entries_ladder(transport.entries(), now, &mut sink, ladder);
         } else {
             seq.ingest_entries(transport.entries(), now, &mut sink);
         }
@@ -382,7 +382,7 @@ fn t_r12_soa_parity_multi_pass_resets() {
             let mut seq = Sequencer::new();
             let mut sink = SpanConformanceSink::new();
             while t.next_batch() {
-                seq.ingest_entries_soa(t.entries(), &t.soa(), t.now_ns(), &mut sink, ladder);
+                seq.ingest_entries_ladder(t.entries(), t.now_ns(), &mut sink, ladder);
             }
             (seq.counters(), seq.watermark(), sink.count, sink.hash)
         };
