@@ -1230,6 +1230,113 @@ fn steady_scan_ref<'a, S: Sink>(
     (progressed, cold)
 }
 
+/// R12c: the 8-entry group fast path, out-of-line (the R8/R9 DSB lesson —
+/// inlined, the group body's code size bloated the scan loop past the
+/// µop-cache and the sustained arm measured the decode tax at −2-3.6%;
+/// one call per 8 entries amortizes at ~0.6 cycles/group). Returns true
+/// when the group was applied; false routes it through the scalar ladder.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn ladder_group_apply<'a, S: Sink>(
+    entries: &'a [packet::FrameEntry<'a>],
+    p: usize,
+    ladder8: packet::SoaLadder8,
+    w: &mut u64,
+    pk: &mut [u64; 2],
+    byt: &mut [u64; 2],
+    dup: &mut [u64; 2],
+    dup_msgs: &mut u64,
+    emitted: &mut u64,
+    recs: &mut [crate::types::SpanRec<'a>; STEADY_RECS],
+    nrecs: &mut usize,
+    sink: &mut S,
+    proof: &LiveFeedProof,
+    wants_spans: bool,
+    sess_lo: u64,
+    sess_hi: u64,
+    firsts: &mut [u64; 8],
+    ns: &mut [u64; 8],
+) -> bool {
+    // Gather the group's sequence facts (AoS loads — L1-hot in the scan).
+    for k in 0..8 {
+        firsts[k] = entries[p + k].first_seq;
+        ns[k] = entries[p + k].blocks.len() as u64;
+    }
+    // The ladder's relations: anchor + pair-eq + dup-le + chain + wrap.
+    if !ladder8(firsts.as_ptr(), ns.as_ptr(), *w) {
+        return false;
+    }
+    // Session gate + the first entry's elig: every published frame carries
+    // the baked session, so the first entry matching the scan's LIVE
+    // template proves baked == live for the whole group (exactness).
+    let e0 = &entries[p];
+    if e0.sess_lo != sess_lo
+        || e0.sess_hi != sess_hi
+        || e0.elig & packet::FRAME_ELIG_OK == 0
+    {
+        return false;
+    }
+    // The 8 elig bytes: steady-ok bits + feed-parity uniformity.
+    let f0 = packet::elig_feed(e0.elig);
+    let f1 = packet::elig_feed(entries[p + 1].elig);
+    for k in 0..8 {
+        let e = &entries[p + k];
+        let want_feed = if k & 1 == 0 { f0 } else { f1 };
+        if e.elig & packet::FRAME_ELIG_OK == 0 || packet::elig_feed(e.elig) != want_feed {
+            return false;
+        }
+    }
+    // GROUP VERIFIED: [emit, dup] × 4. Counters fold exactly as the
+    // scalar ladder would (batched); the four even entries' emissions
+    // are buffered exactly as the scalar path would.
+    let sum_e = ns[0] + ns[2] + ns[4] + ns[6];
+    let fi_e = (f0 & 1) as usize;
+    let fi_d = (f1 & 1) as usize;
+    pk[fi_e] += 4;
+    pk[fi_d] += 4;
+    byt[fi_e] += entries[p].bytes.len() as u64
+        + entries[p + 2].bytes.len() as u64
+        + entries[p + 4].bytes.len() as u64
+        + entries[p + 6].bytes.len() as u64;
+    byt[fi_d] += entries[p + 1].bytes.len() as u64
+        + entries[p + 3].bytes.len() as u64
+        + entries[p + 5].bytes.len() as u64
+        + entries[p + 7].bytes.len() as u64;
+    dup[fi_d] += 4;
+    *dup_msgs += ns[1] + ns[3] + ns[5] + ns[7];
+    *emitted += sum_e;
+    if wants_spans {
+        for k in [0usize, 2, 4, 6] {
+            let entry = &entries[p + k];
+            let frame = entry.bytes;
+            let body = &frame[moldudp64::HEADER_LEN + 2..frame.len()];
+            recs[*nrecs] = crate::types::SpanRec {
+                first_seq: firsts[k],
+                count: ns[k] as u16,
+                body,
+                blocks: entry.blocks,
+            };
+            *nrecs += 1;
+            if *nrecs == recs.len() {
+                sink.on_span_batch(proof, recs);
+                *nrecs = 0;
+            }
+        }
+    } else {
+        for k in [0usize, 2, 4, 6] {
+            let entry = &entries[p + k];
+            let frame = entry.bytes;
+            for &(seq, start, end) in entry.blocks {
+                sink.on_msg(proof, seq, &frame[start as usize..end as usize]);
+            }
+        }
+    }
+    // The ladder's wrap guard proved firsts[0] + sum_e does not overflow,
+    // and the anchor proved firsts[0] == *w — the advance is wrap-free.
+    *w += sum_e;
+    true
+}
+
 /// R12c: the vectorized-ladder steady scan — the slice scan with the
 /// 8-entry group fast path. For each group of 8 entries fully below the
 /// batch length, the scan GATHERS `firsts`/`ns` from the (L1-hot) entry
@@ -1291,103 +1398,34 @@ fn steady_scan_ladder<'a, S: Sink>(
     let mut firsts = [0u64; 8];
     let mut ns = [0u64; 8];
     while *pos < len {
-        // ── vector group fast path ─────────────────────────────────────
+        // ── vector group fast path (out-of-line: the DSB lesson) ────────
         if let Some(ladder8) = ladder {
             let p = *pos;
-            if p + 8 <= len {
-                for k in 0..8 {
-                    firsts[k] = entries[p + k].first_seq;
-                    ns[k] = entries[p + k].blocks.len() as u64;
-                }
-                if ladder8(firsts.as_ptr(), ns.as_ptr(), *w) {
-                    // Relations proven — verify the group's eligibility
-                    // from the publisher-packed elig bytes (the same
-                    // conditions the scalar ladder checks per entry,
-                    // precomputed at publish time: session == baked,
-                    // memo full-validity, non-empty index; plus the feed
-                    // for the parity uniformity the counter folding
-                    // needs). The session component's exactness: the
-                    // group's FIRST entry must match the scan's LIVE
-                    // template — every published frame carries the baked
-                    // session, so that match proves baked == live for all
-                    // eight (see FrameEntry::elig).
-                    let e0 = &entries[p];
-                    if e0.sess_lo == sess_lo
-                        && e0.sess_hi == sess_hi
-                        && e0.elig & packet::FRAME_ELIG_OK != 0
-                    {
-                        let f0 = packet::elig_feed(e0.elig);
-                        let f1 = packet::elig_feed(entries[p + 1].elig);
-                        let mut elig = true;
-                        let mut k = 0usize;
-                        while k < 8 {
-                            let e = &entries[p + k];
-                            let want_feed = if k & 1 == 0 { f0 } else { f1 };
-                            if e.elig & packet::FRAME_ELIG_OK == 0
-                                || packet::elig_feed(e.elig) != want_feed
-                            {
-                                elig = false;
-                                break;
-                            }
-                            k += 1;
-                        }
-                        if elig {
-                        // GROUP VERIFIED: [emit, dup] × 4. Counters fold
-                        // exactly as the scalar ladder would (batched);
-                        // the four even entries' emissions are buffered
-                        // exactly as the scalar path would.
-                        let sum_e = ns[0] + ns[2] + ns[4] + ns[6];
-                        let fi_e = (f0 & 1) as usize;
-                        let fi_d = (f1 & 1) as usize;
-                        pk[fi_e] += 4;
-                        pk[fi_d] += 4;
-                        byt[fi_e] += entries[p].bytes.len() as u64
-                            + entries[p + 2].bytes.len() as u64
-                            + entries[p + 4].bytes.len() as u64
-                            + entries[p + 6].bytes.len() as u64;
-                        byt[fi_d] += entries[p + 1].bytes.len() as u64
-                            + entries[p + 3].bytes.len() as u64
-                            + entries[p + 5].bytes.len() as u64
-                            + entries[p + 7].bytes.len() as u64;
-                        dup[fi_d] += 4;
-                        dup_msgs += ns[1] + ns[3] + ns[5] + ns[7];
-                        emitted += sum_e;
-                        if wants_spans {
-                            for k in [0usize, 2, 4, 6] {
-                                let entry = &entries[p + k];
-                                let frame = entry.bytes;
-                                let body = &frame[moldudp64::HEADER_LEN + 2..frame.len()];
-                                recs[nrecs] = crate::types::SpanRec {
-                                    first_seq: firsts[k],
-                                    count: ns[k] as u16,
-                                    body,
-                                    blocks: entry.blocks,
-                                };
-                                nrecs += 1;
-                                if nrecs == recs.len() {
-                                    sink.on_span_batch(&proof, &recs);
-                                    nrecs = 0;
-                                }
-                            }
-                        } else {
-                            for k in [0usize, 2, 4, 6] {
-                                let entry = &entries[p + k];
-                                let frame = entry.bytes;
-                                for &(seq, start, end) in entry.blocks {
-                                    sink.on_msg(&proof, seq, &frame[start as usize..end as usize]);
-                                }
-                            }
-                        }
-                        // The ladder's wrap guard proved firsts[0] + sum_e
-                        // does not overflow, and the anchor proved
-                        // firsts[0] == *w — the advance is wrap-free.
-                        *w += sum_e;
-                        progressed = true;
-                        *pos = p + 8;
-                        continue;
-                    }
-                    }
-                }
+            if p + 8 <= len
+                && ladder_group_apply(
+                    entries,
+                    p,
+                    ladder8,
+                    w,
+                    &mut pk,
+                    &mut byt,
+                    &mut dup,
+                    &mut dup_msgs,
+                    &mut emitted,
+                    &mut recs,
+                    &mut nrecs,
+                    sink,
+                    &proof,
+                    wants_spans,
+                    sess_lo,
+                    sess_hi,
+                    &mut firsts,
+                    &mut ns,
+                )
+            {
+                progressed = true;
+                *pos = p + 8;
+                continue;
             }
         }
         // ── exact scalar ladder (the shared steady_step) ───────────────
