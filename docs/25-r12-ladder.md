@@ -182,6 +182,26 @@ the first clean positive signal of the campaign.
   per silicon class — the evidence ledger records whatever the silicon
   says, including refutations.
 
+### 5.1 The second 8573C draw: a count-divergence flake in the 11j (pipe) arm
+
+The second 8573C draw (run 37122364077) passed 11b completely —
+**1,058,821,060 msg/s sustained full verification, every per-pass tuple
+bit-exact, 10,467 passes** (the R12b stack holding the full-verify gate
+on the record silicon) — and then the 11j sweep arm (`HFT_WORKER_PIPE=1`)
+failed with a per-pass count divergence (458,552 vs 505,849, one pass
+short ~1,100 spans).
+
+Attribution so far: the count is submission-side (workers cannot affect
+it), the scan is deterministic given the frames, and 11b ran the
+identical submission path green for the whole 5-second window on the
+same draw — which points at a TRANSPORT-level delivery flake, i.e. the
+documented prepatch/auto-advance race class (the R9 "+39-count flake"),
+aggravated by R12's shifted consumer/worker timing on the fastest
+silicon. Not reproducible locally (the sandbox is 5x slower). The
+evidence ledger stays open: if the flake recurs across draws/arms, the
+prepatch frontier gets hardened; a single occurrence is recorded as the
+known class.
+
 The remaining open question for the CI draws: the gather design's
 consumer-side win vs the RX's own ceiling — R11's Front A on the 8573C
 (3.624B) had the RX at ≤0.635 cyc/msg as the co-wall, so the ladder's
