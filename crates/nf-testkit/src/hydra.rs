@@ -93,7 +93,7 @@
 
 use crate::crcfold::CrcKernel;
 use crate::sink::span_crc32c_8lane;
-use nf_arbitrator::types::{Event, LiveFeedProof, Sink};
+use nf_arbitrator::types::{Event, LiveFeedProof, Sink, SpanRec};
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -113,13 +113,62 @@ const DESC_CAP: u64 = 2048;
 const RES_MASK: u64 = (RES_CAP as u64) - 1;
 const DESC_MASK: u64 = DESC_CAP - 1;
 
-/// Main → worker work item: the span body to verify. 16 bytes.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Desc {
-    ptr: *const u8,
-    len: u32,
-    span_id: u32,
+/// Main → worker work item: the span body to verify.
+///
+/// R12 — DUAL FORMAT over one word array (`[u64; DESC_CAP * 2]`, 32 KB per
+/// lane — the same total bytes as the R8 `[Desc; 2048]` ring):
+///
+/// * **legacy (16 B/desc)** — desc `i` occupies words `[(i & 2047)*2,
+///   +1]`: `lo = body_ptr`, `hi = len | (span_id << 32)`. Full 2048-desc
+///   capacity; the `HFT_DESC8=0` rollback arm (CI 11n) runs it.
+/// * **compact Desc8 (8 B/desc)** — desc `i` occupies word `i & 2047`:
+///   `offset:u32 | len:u16 | flags:u16` — the body's offset from the
+///   lane's cached blob base (u32 covers the ~15 MB replay blob with
+///   room to spare), the body length (u16 — every bench config's span
+///   body is MTU-bounded ≤ 1378 B; the debug assert pins the contract),
+///   and flag bit 0 = *block start* (the desc opens a 64-span chunk-grid
+///   block). 8 descs per 64 B L1 line (vs 4) — the descriptor stream's
+///   line traffic between the sequencer and the worker lanes halves, and
+///   the ring's touched footprint halves (16 KB). The span id is DERIVED
+///   worker-side from the block-start flag + the lane's block counter
+///   (lane `l`'s `b`-th block is global chunk `b*W + l`, covering spans
+///   `(b*W + l)*CHUNK .. +CHUNK`), and the fold's exact-match assert
+///   pins the derivation with identical fail-stop semantics.
+///
+/// The blob base: the sink caches the first submitted body's pointer and
+/// stores it into each lane's `base` word at chunk-open (before the
+/// publish; ordered by the ring's Release/Acquire). All span bodies of a
+/// run live in one contiguous THP-backed blob, so `base + offset` is
+/// exact and offsets are non-negative and u32-ranged. The grid epoch:
+/// `reset()` (fully drained, by assert) bumps every lane's `epoch`; the
+/// worker resets its block counter on an epoch change, re-anchoring the
+/// derivation at the fresh sink's chunk 0.
+/// Desc8 flag bit: this word is an ANCHOR, not a span desc — the offset
+/// field carries the chunk's FIRST SPAN ID (u32), len is 0, and the worker
+/// re-anchors its derivation (`cur_span = anchor`) and consumes the slot
+/// without evaluating or emitting. One anchor per grid-aligned chunk-open
+/// (1 slot per 65): the derivation is robust to ANY chunk diversion — the
+/// assist path taking chunks inline, pass-boundary splits — because it
+/// never extrapolates across an anchor.
+const DESC8_ANCHOR: u64 = 1;
+
+#[inline(always)]
+fn desc8_pack_span(offset: u32, len: u16) -> u64 {
+    offset as u64 | ((len as u64) << 32)
+}
+
+#[inline(always)]
+fn desc8_pack_anchor(first_span: u32) -> u64 {
+    first_span as u64 | (DESC8_ANCHOR << 48)
+}
+
+#[inline(always)]
+fn desc8_unpack(w: u64) -> (u32, u16, bool) {
+    (
+        (w & 0xFFFF_FFFF) as u32,
+        ((w >> 32) & 0xFFFF) as u16,
+        (w >> 48) & DESC8_ANCHOR != 0,
+    )
 }
 
 /// Worker → main result: the exact `span_crc32c_8lane` value of that body.
@@ -183,10 +232,16 @@ impl std::ops::Deref for Pad {
 /// are consumed before the owning pass ends (transport reset/drop). Workers
 /// only dereference the pointer between submit and the matching fold drain.
 pub struct HydraLane {
-    /// Descriptor slots. `UnsafeCell`: slot ownership is transferred
-    /// producer→consumer by the ring atomics (the current slot OWNER is the
-    /// only accessor — never true aliasing).
-    desc: UnsafeCell<Box<[Desc; DESC_CAP as usize]>>,
+    /// Descriptor slots as a raw word array (see the Desc doc for the two
+    /// formats: legacy 16 B/desc at words [(i & 2047)*2, +1], compact
+    /// Desc8 8 B/desc at word i & 2047). `UnsafeCell`: slot ownership is
+    /// transferred producer→consumer by the ring atomics (the current slot
+    /// OWNER is the only accessor — never true aliasing).
+    desc: UnsafeCell<Box<[u64; DESC_CAP as usize * 2]>>,
+    /// R12 Desc8: this lane's blob base (the sink's first submitted body
+    /// pointer; 0 = unset). Written before the chunk's publish; read by the
+    /// worker after its desc_head Acquire.
+    base: Pad,
     /// Written by main (Release) after storing a whole chunk; read by worker
     /// (Acquire) to observe new work. Always advances in multiples of CHUNK.
     desc_head: Pad,
@@ -212,13 +267,8 @@ unsafe impl Sync for HydraLane {}
 impl HydraLane {
     fn new() -> Box<Self> {
         Box::new(Self {
-            desc: UnsafeCell::new(Box::new(
-                [Desc {
-                    ptr: std::ptr::null(),
-                    len: 0,
-                    span_id: 0,
-                }; DESC_CAP as usize],
-            )),
+            desc: UnsafeCell::new(Box::new([0u64; DESC_CAP as usize * 2])),
+            base: Pad(AtomicU64::new(0)),
             desc_head: Pad::zeroed(),
             desc_tail: Pad::zeroed(),
             res: UnsafeCell::new(Box::new(
@@ -233,12 +283,20 @@ impl HydraLane {
         })
     }
 
-    /// Consumer-side descriptor slots (worker thread only).
+    /// Consumer-side descriptor words (worker thread only).
     #[inline(always)]
-    fn desc_slots_read(&self) -> &[Desc; DESC_CAP as usize] {
+    fn desc_words_read(&self) -> &[u64; DESC_CAP as usize * 2] {
         // SAFETY: slots below the Acquire-loaded head cursor are published and
         // immutable to the consumer until it releases the tail.
         unsafe { &*self.desc.get() }
+    }
+
+    /// Producer-side descriptor words (main thread only).
+    #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
+    fn desc_words(&self) -> &mut [u64; DESC_CAP as usize * 2] {
+        // SAFETY: SPSC protocol — producer-owned until the head Release.
+        unsafe { &mut *self.desc.get() }
     }
 
     /// Producer-side result slots (worker thread only).
@@ -258,23 +316,106 @@ impl HydraLane {
     }
 }
 
-/// Producer-side raw pointer to a descriptor ring slot (Lever 2: the
-/// submitting sink writes descriptors in place via a single unaligned
-/// 128-bit store).
-///
-/// SAFETY: the caller must own the slot (space checked at chunk start for
-/// the whole chunk) and publish it afterwards with the head Release store.
+/// Legacy-format desc load: desc `pos` → (ptr, len, span_id).
 #[inline(always)]
-fn lane_slot_ptr(lane: &HydraLane, pos: u64) -> *mut Desc {
-    // SAFETY: SPSC protocol — see HydraLane::desc_slots; per-slot masking
-    // handles the ring wrap.
-    unsafe { (&mut *lane.desc.get()).as_mut_ptr().add((pos & DESC_MASK) as usize) }
+fn desc_legacy_at(words: &[u64; DESC_CAP as usize * 2], pos: u64) -> (u64, u32, u32) {
+    let i = ((pos & DESC_MASK) as usize) * 2;
+    let lo = words[i];
+    let hi = words[i + 1];
+    (lo, (hi & 0xFFFF_FFFF) as u32, (hi >> 32) as u32)
 }
 
-/// Prefetch the first lines of a span body (T0) — gives the hardware
-/// streamer a head start on the worker's upcoming CRC pass.
+/// R12 Desc8: worker-side span-id derivation state — the running span id,
+/// re-anchored by every anchor desc (see DESC8_ANCHOR).
+#[derive(Clone, Copy)]
+struct Deriv {
+    cur_span: u64,
+}
+
+/// Read one SPAN desc in the run's format, advancing the derivation (EVAL
+/// ORDER ONLY — never call ahead of the CRC cursor; the prefetch path uses
+/// the pure `desc_ptr_len`). Anchors are handled by the eval loop (they
+/// re-anchor and skip); this reads a real span desc.
+#[inline(always)]
+fn desc_read(
+    words: &[u64; DESC_CAP as usize * 2],
+    pos: u64,
+    desc8: bool,
+    base: u64,
+    deriv: &mut Deriv,
+) -> (u64, u32, u32) {
+    if desc8 {
+        let w = words[(pos & DESC_MASK) as usize];
+        let (off, len, _) = desc8_unpack(w);
+        let sid = deriv.cur_span;
+        deriv.cur_span += 1;
+        (base.wrapping_add(off as u64), len as u32, sid as u32)
+    } else {
+        desc_legacy_at(words, pos)
+    }
+}
+
+/// Read one desc's kind: None for a span desc (ptr, len), Some(first_span)
+/// for an anchor. Legacy descs are always span descs.
+#[inline(always)]
+fn desc_peek(
+    words: &[u64; DESC_CAP as usize * 2],
+    pos: u64,
+    desc8: bool,
+    base: u64,
+) -> Desc8Word {
+    if desc8 {
+        let w = words[(pos & DESC_MASK) as usize];
+        let (off, len, anchor) = desc8_unpack(w);
+        if anchor {
+            let _ = off;
+            Desc8Word::Anchor
+        } else {
+            Desc8Word::Span {
+                ptr: base.wrapping_add(off as u64),
+                len: len as u32,
+            }
+        }
+    } else {
+        let (p, l, _) = desc_legacy_at(words, pos);
+        Desc8Word::Span { ptr: p, len: l }
+    }
+}
+
+enum Desc8Word {
+    Span { ptr: u64, len: u32 },
+    Anchor,
+}
+
+/// True when the desc at `pos` is an anchor (the pair-eval lookahead — a
+/// pair must not consume an anchor as its second span).
+#[inline(always)]
+fn desc8_anchor_ahead(words: &[u64; DESC_CAP as usize * 2], pos: u64, desc8: bool) -> bool {
+    desc8 && (words[(pos & DESC_MASK) as usize] >> 48) & DESC8_ANCHOR != 0
+}
+
+/// Pure (ptr, len) read for the prefetch spray — anchors prefetch nothing
+/// (len 0); no derivation advance.
+#[inline(always)]
+fn desc_ptr_len(
+    words: &[u64; DESC_CAP as usize * 2],
+    pos: u64,
+    desc8: bool,
+    base: u64,
+) -> (u64, u32) {
+    match desc_peek(words, pos, desc8, base) {
+        Desc8Word::Span { ptr, len } => (ptr, len),
+        Desc8Word::Anchor => (0, 0),
+    }
+}
+
+/// Prefetch the first lines of a span body (T0) — legacy helper for the
+/// pre-phase-4 2-line lookahead (kept for the non-x86 build symmetry
+/// contract; the worker loop now uses the line-indexed full-span spray
+/// below).
 #[inline(always)]
 #[cfg(target_arch = "x86_64")]
+#[allow(dead_code)]
 fn prefetch_body(ptr: *const u8) {
     unsafe {
         std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
@@ -284,6 +425,23 @@ fn prefetch_body(ptr: *const u8) {
         );
     }
 }
+
+/// R8 phase-4: line-indexed prefetch — the worker's full-span spray walks
+/// bodies one cache line at a time (see PfCfg).
+#[inline(always)]
+#[cfg(target_arch = "x86_64")]
+fn prefetch_line(ptr: *const u8, line: usize) {
+    unsafe {
+        std::arch::x86_64::_mm_prefetch(
+            (ptr as usize + line * 64) as *const i8,
+            std::arch::x86_64::_MM_HINT_T0,
+        );
+    }
+}
+
+#[inline(always)]
+#[cfg(not(target_arch = "x86_64"))]
+fn prefetch_line(_ptr: *const u8, _line: usize) {}
 
 #[inline(always)]
 #[cfg(not(target_arch = "x86_64"))]
@@ -304,23 +462,157 @@ fn null_mode() -> bool {
     std::env::var("HFT_HYDRA_NULL").as_deref() == Ok("1")
 }
 
+/// R8 phase-4: the worker prefetch pipeline's shape (parsed once per
+/// worker spawn, outside every window; sweepable from CI without
+/// recompiles).
+///
+/// * `HFT_PF_AHEAD` — spans of lead the prefetch cursor maintains over
+///   the CRC cursor (default 2).
+/// * `HFT_PF_LINES` — max cache lines prefetched per span (default 22;
+///   span bodies average ~20 lines).
+/// * `HFT_PF_BURST` — max prefetches issued per evaluated span (default
+///   24). MUST exceed the per-span line demand (~20 lines for the ~1.3KB
+///   bodies): the first Zen3 run with the rewrite shipped burst=12 and the
+///   cursor's lead decayed to zero — the prefetch rate was capped below
+///   the consumption rate and the workers fell back to stall-bound demand
+///   loads (8.5 GB/s per core against the 24 GB/s measured ceiling).
+///
+/// WHY the rewrite: the pre-deep-mailbox shape (2 lines x 4 spans) dated
+/// from an architecture where the consumer idled 66% of the wall and the
+/// workers' L3 latency was hidden behind submission gaps. With the
+/// consumer now ingesting continuously (CI run 36960041885), the workers'
+/// demand loads stall on raw L3 latency and the fabric measured ~5 GB/s
+/// per core-busy-second against the 24 GB/s measured kernel ceiling —
+/// the bodies' ~20 lines per span arrive at MLP-limited rate (~10 lines
+/// in flight per core) instead of prefetch-overlapped rate. The fix:
+/// prefetch ENTIRE spans ahead with a persistent cursor, issuing a small
+/// burst per evaluated span so the request stream stays smooth.
+#[derive(Clone, Copy)]
+struct PfCfg {
+    ahead: u64,
+    lines: usize,
+    burst: usize,
+}
+
+impl PfCfg {
+    /// Kernel-aware defaults. R9 flipped the fold512 default from no-spray
+    /// to the SAME full-span spray as the scalar kernel: the no-spray
+    /// decision rested on "the hardware streamer tracks fold512's sequential
+    /// access pattern perfectly" — a conclusion drawn from kbench, whose
+    /// buffer is PACKED and gap-free. The real blob (pre-R9) interleaved
+    /// byte-identical duplicate-feed frames between the emitted ones, so
+    /// the workers' real pattern was read-1.4KB/skip-1.4KB — untrackable
+    /// by any streamer (fbench stage P vs K: 335 vs 517 cyc/span, a 35%
+    /// layout penalty). R9's blob aliasing removes the dup gaps, but the
+    /// ~20B frame headers between span bodies plus the L3-resident blob
+    /// still leave latency exposure the spray hides: measured locally,
+    /// aliasing-only 255M vs aliasing+spray(2,22,24) 348M sustained (+36%).
+    /// Env overrides still win for CI sweeps.
+    fn detect(kernel: CrcKernel) -> Self {
+        let parse = |k: &str, d: u64| -> u64 {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.trim().parse::<u64>().ok())
+                .unwrap_or(d)
+                .clamp(0, 64)
+        };
+        let (d_ahead, d_lines, d_burst) = match kernel {
+            CrcKernel::Scalar => (2, 22, 24),
+            CrcKernel::Fold512 => (2, 22, 24),
+        };
+        Self {
+            ahead: parse("HFT_PF_AHEAD", d_ahead),
+            lines: parse("HFT_PF_LINES", d_lines) as usize,
+            burst: parse("HFT_PF_BURST", d_burst) as usize,
+        }
+    }
+}
+
+/// R8 phase-2 diagnostics: per-worker telemetry (Relaxed atomics, one
+/// padded line per worker — written by the worker, read once per run by
+/// the harness; never in a span-granular inner loop).
+#[repr(align(64))]
+pub struct WorkerStats {
+    /// Worker batches consumed (≤ WORKER_BATCH descriptor groups).
+    pub batches: AtomicU64,
+    /// Spans evaluated (CRC kernel invocations).
+    pub spans: AtomicU64,
+    /// Nanoseconds inside the evaluate+emit loop (CRC work).
+    pub eval_ns: AtomicU64,
+    /// Idle spin iterations waiting for descriptors (polite_spin laps).
+    pub idle_iters: AtomicU64,
+    /// Result-space defensive waits taken.
+    pub res_waits: AtomicU64,
+    /// This worker's pinned cpu (usize::MAX when unpinned).
+    pub cpu: AtomicU64,
+}
+
+impl WorkerStats {
+    fn new() -> Self {
+        Self {
+            batches: AtomicU64::new(0),
+            spans: AtomicU64::new(0),
+            eval_ns: AtomicU64::new(0),
+            idle_iters: AtomicU64::new(0),
+            res_waits: AtomicU64::new(0),
+            cpu: AtomicU64::new(u64::MAX),
+        }
+    }
+}
+
 /// Worker main loop: pure function evaluation + chunk-granular SPSC ring
 /// mechanics. Never allocates, never blocks on locks, exits only on shutdown
 /// with an empty queue.
 ///
-/// PREFETCH PIPELINE (H5): span bodies are ~21 cache lines separated by
-/// inter-frame gaps in the transport blob, so the hardware streamer restarts
-/// at every body and the first 2-3 lines of each body stall on L3 latency.
-/// The worker therefore software-prefetches the body starts of the NEXT
-/// FOUR queued spans while CRC-ing the current one — the ~200c per-span CRC
-/// pass gives the prefetches ample lead time, converting body-start latency
-/// stalls into overlapped L3 bandwidth.
-fn lane_worker(lane: Arc<HydraLane>, shutdown: Arc<AtomicBool>, kernel: CrcKernel) {
+/// PREFETCH PIPELINE (H5, rewritten in R8 phase-4): span bodies are ~20
+/// cache lines in the shared blob, and the consumer's continuous ingest
+/// (post-deep-mailbox) leaves the workers exposed to raw L3 latency — the
+/// measured ~5 GB/s per core-busy-second against the 24 GB/s kernel
+/// ceiling was MLP-bound, ~10 lines in flight per core. The worker now
+/// sprays ENTIRE spans ahead of the CRC cursor with a persistent
+/// line-granular cursor (see PfCfg for the tunables and their defaults):
+/// a small burst of prefetches per evaluated span keeps the request
+/// stream smooth (the R8 3.5x flooding regression came from bursting 24
+/// requests at batch entry), and the cursor caps at the published head —
+/// producer-owned slots are never read.
+fn lane_worker(
+    lane: Arc<HydraLane>,
+    shutdown: Arc<AtomicBool>,
+    kernel: CrcKernel,
+    stats: Arc<WorkerStats>,
+    desc8: bool,
+) {
+    stats
+        .cpu
+        .store(crate::affinity::current_cpu() as u64, Ordering::Relaxed);
     let null = null_mode();
+    // R9: the eval2 interleave experiment knob (read once at worker
+    // start — outside every measurement window; see the loop's doc).
+    let eval2 = std::env::var("HFT_WORKER_EVAL2").as_deref() == Ok("1");
+    // R10: the software-pipelined tail experiment knob — consecutive span
+    // pairs evaluate through `kernel.eval_pair` (A's vector fold, B's
+    // vector fold, A's endings, B's endings — one sequential load stream,
+    // the per-span ending overhead hidden under the next span's clmul
+    // chains). Read once at worker start, outside every window.
+    let pipe = std::env::var("HFT_WORKER_PIPE").as_deref() == Ok("1");
+    // R11: the tri-stream fold knob — single spans evaluate through
+    // `kernel.eval_tri` (three interleaved state pairs over one load
+    // stream; six independent clmul chains instead of two). The kbench
+    // `fold512_tri` row prices the kernel-level effect; this sweep prices
+    // it on the real span mix through the full worker loop. Read once at
+    // worker start, outside every window.
+    let tri = std::env::var("HFT_WORKER_TRI").as_deref() == Ok("1");
+    let pf = PfCfg::detect(kernel);
     let mut tail: u64 = 0; // desc cursor (worker-owned)
     let mut rhead: u64 = 0; // result cursor (worker-owned)
-    /// How many spans ahead to prefetch body starts (1 line each).
-    const LOOKAHEAD: u64 = 4;
+    // Prefetch cursor (GLOBAL desc positions; masked on access). Sprays
+    // whole spans ahead of the CRC cursor; caps at `head` — slots beyond
+    // the published head are producer-owned and must not be read.
+    let mut pf_span: u64 = 0;
+    let mut pf_line: usize = 0;
+    // R12 Desc8: the running span-id derivation, re-anchored by anchor
+    // descs (one per grid-aligned chunk-open; robust to assist diversions).
+    let mut deriv = Deriv { cur_span: 0 };
     // H4: idle-spin backoff (see the worker loop doc). A busy-waiting worker
     // reloads `desc_head` in a tight PAUSE loop, ping-ponging the head line
     // against the main thread and burning shared execution resources on
@@ -334,23 +626,35 @@ fn lane_worker(lane: Arc<HydraLane>, shutdown: Arc<AtomicBool>, kernel: CrcKerne
             if shutdown.load(Ordering::Acquire) {
                 return;
             }
-            let spins = 1u32 << backoff.min(5); // 1..32 pauses
-            for _ in 0..spins {
-                std::hint::spin_loop();
-            }
-            backoff += 1;
+            // R8: SMT-polite (a raw pause-loop starves the sibling worker
+            // on Zen3 — mutual spin-starvation collapsed the fabric).
+            stats.idle_iters.fetch_add(1, Ordering::Relaxed);
+            crate::affinity::polite_spin(&mut backoff);
             continue;
         }
         backoff = 0;
-        let n = (head - tail).min(WORKER_BATCH); // ≤ 64 descs (partial tails allowed)
+        let n = (head - tail).min(WORKER_BATCH); // ≤ 128 descs (partial tails allowed)
+        stats.spans.fetch_add(n, Ordering::Relaxed);
+        stats.batches.fetch_add(1, Ordering::Relaxed);
+        let t_eval = std::time::Instant::now();
         // SAFETY: slots in [tail, head) are published (Acquire above).
-        let slots = lane.desc_slots_read();
-        // Warm the lookahead window at batch entry.
-        for k in 0..LOOKAHEAD.min(n) {
-            prefetch_body(slots[((tail + k) & DESC_MASK) as usize].ptr);
+        let slots = lane.desc_words_read();
+        // R12 Desc8: the lane's write-once blob base (read per batch;
+        // cache-hot — the word sits in the lane the worker already owns).
+        let lane_base = if desc8 {
+            lane.base.load(Ordering::Relaxed)
+        } else {
+            0
+        };
+        // Re-anchor the prefetch cursor if it fell behind this batch
+        // (stalled at a previous head, or a fresh worker start).
+        if pf_span < tail {
+            pf_span = tail;
+            pf_line = 0;
         }
         // Result-space check: once per batch (invariant guarantees space;
         // defensive spin keeps drop-safety if the invariant were violated).
+        let mut rb = 0u32;
         loop {
             let rt = lane.res_tail.load(Ordering::Acquire);
             if rhead.saturating_sub(rt) + n <= (RES_CAP as u64) - CHUNK {
@@ -359,7 +663,8 @@ fn lane_worker(lane: Arc<HydraLane>, shutdown: Arc<AtomicBool>, kernel: CrcKerne
             if shutdown.load(Ordering::Acquire) {
                 return;
             }
-            std::hint::spin_loop();
+            stats.res_waits.fetch_add(1, Ordering::Relaxed);
+            crate::affinity::polite_spin(&mut rb);
         }
         // Evaluate + buffer the batch's results locally, then publish with
         // ONE Release store. Slot writes stay unpublished until the store,
@@ -372,55 +677,138 @@ fn lane_worker(lane: Arc<HydraLane>, shutdown: Arc<AtomicBool>, kernel: CrcKerne
         // dependency latency).
         // SAFETY: res slots in [rhead, rhead+n) are owned by this worker.
         let res_slots = lane.res_slots();
+        // R12: results emitted this batch (anchors emit none) — res_head
+        // advances by THIS count.
+        let mut nres: u64 = 0;
         let mut i = 0u64;
         while i < n {
-            // Keep the lookahead window warm while the current span's CRC
-            // pass covers the prefetch lead time.
-            if i + LOOKAHEAD < n {
-                prefetch_body(slots[((tail + i + LOOKAHEAD) & DESC_MASK) as usize].ptr);
+            // Advance the prefetch pipeline: spray up to `burst` lines per
+            // evaluated span until the cursor covers `pf.ahead` spans beyond
+            // the CRC position (or exhausts the published batch).
+            if pf.lines > 0 && pf.burst > 0 {
+                let target = tail + i + pf.ahead + 1;
+                let mut issued = 0usize;
+                while pf_span < target && pf_span < head && issued < pf.burst {
+                    let (dptr, dlen) = desc_ptr_len(slots, pf_span, desc8, lane_base);
+                    let span_lines = (((dlen as usize) + 63) >> 6).min(pf.lines);
+                    let end = span_lines.min(pf_line + (pf.burst - issued));
+                    // SAFETY: prefetch never faults and never dereferences;
+                    // the slot is published (below head, above tail).
+                    for l in pf_line..end {
+                        prefetch_line(dptr as *const u8, l);
+                    }
+                    issued += end - pf_line;
+                    if end >= span_lines {
+                        pf_span += 1;
+                        pf_line = 0;
+                    } else {
+                        pf_line = end;
+                    }
+                }
             }
-            let emit = |res_slots: &mut [Res], i: u64, span_id: u32, value: u64| {
-                res_slots[((rhead + i) & RES_MASK) as usize] = Res {
+            // R12: results are indexed by RESULT count, not desc count —
+            // anchor descs consume ring slots without emitting.
+            let emit = |res_slots: &mut [Res], nres: &mut u64, span_id: u32, value: u64| {
+                res_slots[((rhead + *nres) & RES_MASK) as usize] = Res {
                     span_id,
                     _pad: 0,
                     value,
                 };
+                *nres += 1;
             };
-            if !null && i + 1 < n && kernel == CrcKernel::Fold512 {
-                // SAFETY: published descriptor slots (Acquire above); body
-                // slices per the HydraLane contract — immutable bytes, valid
-                // until the owning pass's finish() drain.
-                let da = slots[((tail + i) & DESC_MASK) as usize];
-                let db = slots[((tail + i + 1) & DESC_MASK) as usize];
-                let ba = unsafe { std::slice::from_raw_parts(da.ptr, da.len as usize) };
-                let bb = unsafe { std::slice::from_raw_parts(db.ptr, db.len as usize) };
-                // SAFETY: feature contract verified at spawn (CrcKernel::detect).
-                let (va, vb) = unsafe { kernel.eval2(ba, bb) };
-                emit(res_slots, i, da.span_id, va);
-                emit(res_slots, i + 1, db.span_id, vb);
-                i += 2;
-            } else {
-                // SAFETY: published descriptor slot (see above).
-                let d = slots[((tail + i) & DESC_MASK) as usize];
-                // SAFETY: body slice per the HydraLane contract — immutable
-                // bytes, valid until the owning pass's finish() drain.
-                let value = if null {
-                    // Diagnostic: constant work, no body read, wrong value (by
-                    // design — see null_mode doc).
-                    (d.len as u64) | ((d.span_id as u64) << 32)
-                } else {
-                    let body =
-                        unsafe { std::slice::from_raw_parts(d.ptr, d.len as usize) };
-                    // SAFETY: feature contract verified at spawn.
-                    unsafe { kernel.eval(body) }
-                };
-                emit(res_slots, i, d.span_id, value);
-                i += 1;
+            // R8 phase-6: single-span eval for BOTH kernels. The eval2
+            // interleave (two concurrent body streams per worker) was
+            // designed to hide clmul latency on early AVX-512 silicon, but
+            // the measured ceilings (kbench: eval 34.22 vs eval2 33.13 on
+            // the 8573C) show the single-span path at parity or better —
+            // and ONE sequential stream per worker is exactly the access
+            // pattern those ceilings were measured with. Bit-exact by D11
+            // either way.
+            // R9: HFT_WORKER_EVAL2=1 re-enables the interleave as a
+            // per-draw experiment — the kbench parity was measured on
+            // PACKED buffers; the post-aliasing real layout is L3-latency
+            // bound, where two concurrent span streams double the loads
+            // in flight. The CI sweep decides per runner class.
+            // SAFETY: published descriptor slot (Acquire above); body slice
+            // per the HydraLane contract — immutable bytes, valid until the
+            // owning pass's finish() drain.
+            {
+                // R12: anchors re-anchor the derivation and consume their
+                // slot without evaluating or emitting (they carry no body).
+                while i < n {
+                    if desc8 {
+                        let w = slots[((tail + i) & DESC_MASK) as usize];
+                        if (w >> 48) & DESC8_ANCHOR != 0 {
+                            deriv.cur_span = (w & 0xFFFF_FFFF) as u64;
+                            i += 1;
+                            continue;
+                        }
+                    }
+                    if pipe && !null && i + 1 < n && !desc8_anchor_ahead(slots, tail + i + 1, desc8) {
+                        // R10: the pipelined pair — same two descriptors, same
+                        // values, same emission order as two single-span evals;
+                        // only the instruction schedule differs (A's endings
+                        // issue behind B's vector fold).
+                        let (p0, l0, s0) =
+                            desc_read(slots, tail + i, desc8, lane_base, &mut deriv);
+                        let (p1, l1, s1) =
+                            desc_read(slots, tail + i + 1, desc8, lane_base, &mut deriv);
+                        // SAFETY: published descriptor slots (Acquire above);
+                        // body slices per the HydraLane contract.
+                        let b0 = unsafe { std::slice::from_raw_parts(p0 as *const u8, l0 as usize) };
+                        let b1 = unsafe { std::slice::from_raw_parts(p1 as *const u8, l1 as usize) };
+                        // SAFETY: feature contract verified at spawn.
+                        let (v0, v1) = unsafe { kernel.eval_pair(b0, b1) };
+                        emit(res_slots, &mut nres, s0, v0);
+                        emit(res_slots, &mut nres, s1, v1);
+                        i += 2;
+                    } else if eval2 && !null && i + 1 < n && !desc8_anchor_ahead(slots, tail + i + 1, desc8) {
+                        let (p0, l0, s0) =
+                            desc_read(slots, tail + i, desc8, lane_base, &mut deriv);
+                        let (p1, l1, s1) =
+                            desc_read(slots, tail + i + 1, desc8, lane_base, &mut deriv);
+                        // SAFETY: as the single-span path, twice.
+                        let b0 = unsafe { std::slice::from_raw_parts(p0 as *const u8, l0 as usize) };
+                        let b1 = unsafe { std::slice::from_raw_parts(p1 as *const u8, l1 as usize) };
+                        // SAFETY: feature contract verified at spawn.
+                        let (v0, v1) = unsafe { kernel.eval2(b0, b1) };
+                        emit(res_slots, &mut nres, s0, v0);
+                        emit(res_slots, &mut nres, s1, v1);
+                        i += 2;
+                    } else {
+                        let (dptr, dlen, dsid) =
+                            desc_read(slots, tail + i, desc8, lane_base, &mut deriv);
+                        let value = if null {
+                            // Diagnostic: constant work, no body read, wrong value (by
+                            // design — see null_mode doc).
+                            (dlen as u64) | ((dsid as u64) << 32)
+                        } else if tri {
+                            // R11: the tri-stream fold — same value as eval
+                            // (D11-pinned), different ILP structure.
+                            let body =
+                                unsafe { std::slice::from_raw_parts(dptr as *const u8, dlen as usize) };
+                            // SAFETY: feature contract verified at spawn.
+                            unsafe { kernel.eval_tri(body) }
+                        } else {
+                            let body =
+                                unsafe { std::slice::from_raw_parts(dptr as *const u8, dlen as usize) };
+                            // SAFETY: feature contract verified at spawn.
+                            unsafe { kernel.eval(body) }
+                        };
+                        emit(res_slots, &mut nres, dsid, value);
+                        i += 1;
+                    }
+                }
             }
         }
         std::hint::black_box(&res_slots[(rhead & RES_MASK) as usize]);
-        lane.res_head.store(rhead + n, Ordering::Release);
-        rhead += n;
+        stats
+            .eval_ns
+            .fetch_add(t_eval.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        // R12: res_head advances by RESULTS emitted (anchors emit none) —
+        // the fold reads exactly the published spans.
+        lane.res_head.store(rhead + nres, Ordering::Release);
+        rhead += nres;
         // Free the consumed descriptor slots — one Release store per batch.
         lane.desc_tail.store(tail + n, Ordering::Release);
         tail += n;
@@ -434,11 +822,20 @@ pub struct HydraFabric {
     lanes: Vec<Arc<HydraLane>>,
     shutdown: Arc<AtomicBool>,
     handles: Vec<JoinHandle<()>>,
+    /// R8 phase-2: per-worker telemetry (parallel to lanes).
+    wstats: Vec<Arc<WorkerStats>>,
+    /// Worker cpu assignments (diagnostics).
+    worker_cpus: Vec<usize>,
     pub workers: usize,
     /// GIGAHFT Lever 1: the span-CRC kernel the workers evaluate (detected
     /// ONCE here — outside every measurement window; values are bit-exact
     /// across kernels by D11, so this choice affects speed only).
     pub kernel: CrcKernel,
+    /// R12: the descriptor format for this fabric's life — compact 8-byte
+    /// Desc8 (default; `HFT_DESC8=0` is the rollback, CI arm 11n). The
+    /// submitting sink and every worker read THIS flag, so one run never
+    /// mixes formats.
+    pub desc8: bool,
 }
 
 impl HydraFabric {
@@ -447,22 +844,53 @@ impl HydraFabric {
     /// code path). All allocation and thread spawn happens here — outside
     /// every measurement window.
     pub fn spawn(workers: usize) -> Box<Self> {
+        Self::spawn_pinned(workers, &[])
+    }
+
+    /// R8: `spawn` + worker affinity — worker `i` pins itself to the
+    /// ABSOLUTE cpu `worker_cpus[i % len]`. The caller captures the
+    /// topology order BEFORE pinning its own thread (threads inherit the
+    /// creator's restricted mask). Failures leave the thread unpinned,
+    /// gracefully. The doc-21 "worker core affinity" lever: unpinned
+    /// workers migrate and stack on SMT siblings on shared cloud runners.
+    pub fn spawn_pinned(workers: usize, worker_cpus: &[usize]) -> Box<Self> {
+        // R12: the descriptor format is a per-RUN constant (the sink and the
+        // workers must agree; the env is read once, here, outside every
+        // window). Default: compact Desc8 ON.
+        let desc8 = std::env::var("HFT_DESC8").as_deref() != Ok("0");
+        Self::spawn_pinned_desc8(workers, worker_cpus, desc8)
+    }
+
+    /// R12: `spawn_pinned` with an explicit descriptor format (the
+    /// in-process form serves the both-format parity tests; the env form
+    /// serves CI sweeps).
+    pub fn spawn_pinned_desc8(workers: usize, worker_cpus: &[usize], desc8: bool) -> Box<Self> {
         let kernel = CrcKernel::detect();
         let shutdown = Arc::new(AtomicBool::new(false));
         let mut handles = Vec::with_capacity(workers);
         let mut lanes: Vec<Arc<HydraLane>> = Vec::with_capacity(workers);
+        let mut wstats: Vec<Arc<WorkerStats>> = Vec::with_capacity(workers);
         for _ in 0..workers {
             // Box→Arc: single heap object, ownership moved (leak-free).
             lanes.push(Arc::from(HydraLane::new()));
+            wstats.push(Arc::new(WorkerStats::new()));
         }
-        for lane in lanes.iter() {
-            let lane = lane.clone();
+        for i in 0..lanes.len() {
+            let lane = lanes[i].clone();
             let sd = shutdown.clone();
             let kern = kernel;
+            let stats = wstats[i].clone();
+            let cpu = worker_cpus.get(i % worker_cpus.len().max(1)).copied();
+            let fmt8 = desc8;
             let h = std::thread::Builder::new()
                 .stack_size(512 * 1024)
                 .name("hydra-worker".to_string())
-                .spawn(move || lane_worker(lane, sd, kern))
+                .spawn(move || {
+                    if let Some(c) = cpu {
+                        let _ = crate::affinity::pin_current_to(c);
+                    }
+                    lane_worker(lane, sd, kern, stats, fmt8)
+                })
                 .expect("hydra worker spawn");
             handles.push(h);
         }
@@ -470,9 +898,42 @@ impl HydraFabric {
             lanes,
             shutdown,
             handles,
+            wstats,
+            worker_cpus: worker_cpus.to_vec(),
             workers,
             kernel,
+            desc8,
         })
+    }
+
+    /// R8 phase-2 diagnostics: one always-on telemetry line per run covering
+    /// the fabric's life (worker utilization, CRC time, idle spins, pins).
+    /// Read-only, post-run — never inside a measurement window's decision
+    /// path.
+    pub fn diag_summary(&self, label: &str) {
+        for (i, ws) in self.wstats.iter().enumerate() {
+            let cpu = ws.cpu.load(Ordering::Relaxed);
+            let cpu_disp = if cpu == u64::MAX {
+                "?".to_string()
+            } else {
+                cpu.to_string()
+            };
+            let want = self.worker_cpus.get(i).copied();
+            let pin = match want {
+                Some(w) if w as u64 == cpu => format!("cpu{cpu_disp}(pinned)"),
+                Some(w) => format!("cpu{cpu_disp}(WANTED {w})"),
+                None => format!("cpu{cpu_disp}(unpinned)"),
+            };
+            let placement = &self.worker_cpus;
+            eprintln!(
+                "DIAG worker[{i}] {label}: {pin} placement={placement:?} batches={} spans={} eval_ms={:.1} idle_iters={} res_waits={}",
+                ws.batches.load(Ordering::Relaxed),
+                ws.spans.load(Ordering::Relaxed),
+                ws.eval_ns.load(Ordering::Relaxed) as f64 / 1e6,
+                ws.idle_iters.load(Ordering::Relaxed),
+                ws.res_waits.load(Ordering::Relaxed),
+            );
+        }
     }
 
     /// Default worker count: every core except the one the main thread runs
@@ -520,6 +981,65 @@ impl Drop for HydraFabric {
 /// * **inline** (`new_inline()`) — synchronous evaluation + immediate fold,
 ///   bit-identical semantics with zero threads (the differential-testing
 ///   baseline and single-core fallback).
+///
+/// R8 phase-5 adds the main-core WORK-ASSIST to fabric mode: when the
+/// lane rings are full (workers saturated), the submitting core evaluates
+/// the chunk's spans itself instead of spinning (see InlineChunk).
+
+/// One inline-assist chunk buffer (see the sink doc above). R10: the span
+/// ids are implicit (`first_span + i`) — the ids array's store/load traffic
+/// left the assist path with it.
+#[derive(Clone, Copy)]
+struct InlineChunk {
+    /// First span id of the chunk (u64::MAX = free slot).
+    first_span: u64,
+    /// Span count in this (possibly pass-tail partial) chunk.
+    len: u32,
+    /// Sealed by flush_pending — an INCOMPLETE chunk's first_span is
+    /// already set while its spans are still arriving, so the ordered fold
+    /// must never match it (the mid-chunk drain_ready race that produced
+    /// the original fold-order violation: the fold applied a partial len,
+    /// freed the slot, and the chunk's remaining spans were folded by
+    /// nobody).
+    sealed: bool,
+    /// Values, in emission order.
+    vals: [u64; CHUNK as usize],
+}
+
+impl InlineChunk {
+    const fn free() -> Self {
+        Self {
+            first_span: u64::MAX,
+            len: 0,
+            sealed: false,
+            vals: [0; CHUNK as usize],
+        }
+    }
+}
+
+/// R10 — the deep assist ring. The R8 assist buffered a mere 4 chunks:
+/// inline chunks sit at the SUBMIT point, far ahead of the fold cursor,
+/// and can only fold once every worker-owned chunk before them has
+/// returned — so a 4-deep ring clogs after ~256 assisted spans and the
+/// submitting core falls back to the backpressure spin, burning exactly
+/// the cycles the assist exists to convert. The measured equilibrium on
+/// the Zen3 draw (CI 37005861779): main's work_ms=86% against a ~20%
+/// pure-ingest duty — the difference was spin time behind saturated
+/// workers, with assist_chunks at 5.4% and the workers' SMT sibling (RX)
+/// starved 3x by the spin traffic. The deep ring (default 64 chunks =
+/// 4096 assisted spans of lead) lets the submitting core keep converting
+/// lane-full backpressure into in-window CRC for as long as the fold
+/// lags, and `HFT_ASSIST_SLOTS` sweeps the depth per runner class.
+const DEFAULT_ASSIST_SLOTS: usize = 64;
+
+fn assist_slots_from_env() -> usize {
+    std::env::var("HFT_ASSIST_SLOTS")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_ASSIST_SLOTS)
+        .clamp(4, 4096)
+}
+
 pub struct HydraSpanSink<'a> {
     fabric: Option<&'a HydraFabric>,
     // ── observable state: field-for-field identical to SpanConformanceSink ──
@@ -562,6 +1082,35 @@ pub struct HydraSpanSink<'a> {
     fold_lane: usize,
     /// Spans remaining in the fold-side chunk.
     fold_rem: u64,
+    // ── R8 phase-5: main-core work-assist ──
+    /// The kernel the inline evaluations run (the fabric's — bit-exact
+    /// across kernels by D11, so main and workers can mix freely).
+    kernel: CrcKernel,
+    /// R10: the deep assist ring — `inline_ring[i % assist_slots]` holds
+    /// inline chunk #i (claim order == submission order == fold order, so
+    /// the ring is indexed by two monotone counters and the fold's lookup
+    /// is O(1)).
+    inline_ring: Vec<InlineChunk>,
+    /// Assist ring depth (HFT_ASSIST_SLOTS; construction-time).
+    assist_slots: usize,
+    /// Inline chunks claimed so far (next claim's sequence number).
+    inline_seq: u64,
+    /// Inline chunks folded so far (oldest unfolded chunk's sequence).
+    inline_fold_seq: u64,
+    /// Ring slot of the chunk CURRENTLY being filled (None = lane mode).
+    cur_inline: Option<usize>,
+    /// Force every chunk inline (diagnostics + parity tests: a fully
+    /// deterministic inline-mode run must produce the identical tuple).
+    force_inline: bool,
+    /// Chunks taken through the assist path (telemetry).
+    assist_chunks: u64,
+    // ── R12: compact Desc8 state ──
+    /// The fabric's descriptor format (per-run constant).
+    desc8: bool,
+    /// This sink's blob base — the FIRST submitted body's pointer (0 =
+    /// unset). All span bodies of a run live in one contiguous blob, so
+    /// every later body's Desc8 offset is `ptr - blob_base` (u32-ranged).
+    blob_base: usize,
     // ── GIGAHFT Lever 4: cross-pass double buffering ──
     /// Span ids are GLOBAL across the sink's life; each pass records its
     /// boundary so the ordered fold snapshots the pass's hash exactly at
@@ -608,6 +1157,20 @@ impl<'a> HydraSpanSink<'a> {
             submit_rem: CHUNK,
             fold_lane: 0,
             fold_rem: CHUNK,
+            kernel: fabric.map(|f| f.kernel).unwrap_or(CrcKernel::Scalar),
+            // R10: the deep assist ring (env-sized at construction — sinks
+            // are built outside every measurement window).
+            assist_slots: assist_slots_from_env(),
+            inline_ring: (0..assist_slots_from_env())
+                .map(|_| InlineChunk::free())
+                .collect(),
+            inline_seq: 0,
+            inline_fold_seq: 0,
+            cur_inline: None,
+            assist_chunks: 0,
+            desc8: fabric.map(|f| f.desc8).unwrap_or(false),
+            blob_base: 0,
+            force_inline: std::env::var("HFT_INLINE_FORCE").as_deref() == Ok("1"),
             passes: [PassRec {
                 end_span: 0,
                 count: 0,
@@ -626,6 +1189,13 @@ impl<'a> HydraSpanSink<'a> {
         Self::blank(Some(fabric))
     }
 
+    /// R8 phase-5: force every chunk through the inline (main-core) path —
+    /// the deterministic assist-mode parity configuration (the env var
+    //  form serves CI diagnostics; this form serves in-process tests).
+    pub fn force_inline_mode(&mut self) {
+        self.force_inline = true;
+    }
+
     /// Sequential-equivalent mode: no fabric, no threads — evaluates and
     /// folds synchronously. Used for differential bit-parity testing and as
     /// the single-core fallback (`HFT_HYDRA_WORKERS=0`).
@@ -642,6 +1212,19 @@ impl<'a> HydraSpanSink<'a> {
             "hydra reset with undrained spans"
         );
         assert_eq!(self.pending_len, 0, "hydra reset with pending chunk");
+        // R8 phase-5: the inline ring must be fully folded (fold_pos ==
+        // next_span proves it); clear the window state defensively.
+        // R10: rebuild the deep ring's slots (depth is fixed at
+        // construction; only the contents reset).
+        self.inline_seq = 0;
+        self.inline_fold_seq = 0;
+        for c in self.inline_ring.iter_mut() {
+            *c = InlineChunk::free();
+        }
+        self.cur_inline = None;
+        // R12 Desc8: no reset handshake needed — the fresh sink's first
+        // grid-aligned chunk-open writes an ANCHOR desc (first span 0),
+        // re-anchoring every worker's derivation absolutely.
         self.hash = Self::SPAN_SEED;
         self.count = 0;
         self.last_gen = 0;
@@ -795,6 +1378,15 @@ impl<'a> HydraSpanSink<'a> {
         if n == 0 {
             return;
         }
+        // R8 phase-5: an inline chunk is already fully evaluated — its
+        // values sit in the inline ring awaiting the ordered fold. Sealing
+        // marks the chunk complete (the fold must never touch a chunk
+        // whose spans are still arriving).
+        if let Some(slot) = self.cur_inline.take() {
+            self.inline_ring[slot].sealed = true;
+            self.pending_len = 0;
+            return;
+        }
         let fabric = match self.fabric {
             Some(f) => f,
             None => unreachable!("flush_pending in inline mode"),
@@ -813,50 +1405,82 @@ impl<'a> HydraSpanSink<'a> {
     /// stays mapped in this core's L1). The chunk is published with ONE
     /// Release store when full. H6: lane tracking is incremental — no
     /// division in the hot path.
+    ///
+    /// R9 DSB discipline: the two cold paths — the chunk-open (once per
+    /// CHUNK spans: space check, assist decision, backpressure spin with
+    /// its fold_available call chain) and the assist evaluation (the
+    /// inline kernel dispatch) — live in #[inline(never)] helpers so the
+    /// steady loop's µop-cache footprint stays minimal. The R8 campaign
+    /// measured a 25% scan regression from exactly this class of bloat
+    /// (the cold_apply out-of-lining fixed the worst of it); the per-span
+    /// hot path (the 128-bit store + tracker advance) is all that stays
+    /// inlined.
     #[inline]
     fn submit_span(&mut self, body: &[u8]) {
         let fabric = match self.fabric {
             Some(f) => f,
             None => unreachable!("submit_span called in inline mode"),
         };
+        // R12 Desc8: the run's blob base — the first submitted body's
+        // pointer (write-once; every body lives in the same contiguous
+        // THP-backed blob, so later offsets are positive and u32-ranged).
+        if self.blob_base == 0 {
+            self.blob_base = body.as_ptr() as usize;
+        }
         if self.pending_len == 0 {
-            // Start a new chunk on the lane that owns this span id.
-            self.pending_lane = self.submit_lane;
+            self.open_chunk(fabric);
+        }
+        if let Some(slot) = self.cur_inline {
+            self.submit_inline_span(slot, body);
+        } else {
+            debug_assert_eq!(
+                ((self.next_span / CHUNK) % self.n_lanes as u64) as usize,
+                self.pending_lane,
+                "hydra pending buffer crossed a lane boundary"
+            );
+            let mut pos = self.pending_head + self.pending_len;
             let lane = &fabric.lanes[self.pending_lane];
-            let h0 = lane.desc_head.load(Ordering::Relaxed);
-            // Space check for the WHOLE chunk up front (the in-place writes
-            // below must never touch slots the worker still owns).
-            // Backpressure: fold what's ready (keeps result rings flowing),
-            // then re-check — deadlock-free by the lane-balance proof.
-            loop {
-                let t = lane.desc_tail.load(Ordering::Acquire);
-                if h0.saturating_sub(t) + CHUNK <= DESC_CAP {
-                    break;
+            if self.desc8 {
+                // Chunk-open (always): ONE anchor desc first — the chunk's
+                // absolute first span id; the space check reserved the +1
+                // slot. Every lane chunk re-anchors the worker's derivation
+                // (see open_chunk).
+                if self.pending_len == 0 {
+                    lane.desc_words()[(pos & DESC_MASK) as usize] =
+                        desc8_pack_anchor(self.next_span as u32);
+                    self.pending_len += 1;
+                    pos += 1;
                 }
-                self.pending_head = h0;
-                self.fold_available();
-                std::hint::spin_loop();
+                // Compact 8-byte span desc: offset | len. One aligned u64
+                // store — 8 descs per L1 line.
+                let off = (body.as_ptr() as usize).wrapping_sub(self.blob_base);
+                debug_assert!(off <= u32::MAX as usize, "Desc8 offset overflows u32");
+                debug_assert!(body.len() <= u16::MAX as usize, "Desc8 len overflows u16");
+                // The word at pos & DESC_MASK is producer-owned (space
+                // checked at chunk start) and unread by the worker until
+                // the Release publish below.
+                lane.desc_words()[(pos & DESC_MASK) as usize] =
+                    desc8_pack_span(off as u32, body.len() as u16);
+            } else {
+                // Legacy 16-byte desc at words [2i, 2i+1]: one unaligned
+                // 128-bit store (ptr | len<<64 | span_id<<96).
+                // SAFETY: the slot at pos & DESC_MASK is producer-owned
+                // (space checked at chunk start for the full chunk) and
+                // unread by the worker until the Release publish below.
+                let packed = (body.as_ptr() as u128)
+                    | ((body.len() as u128) << 64)
+                    | ((self.next_span as u32 as u128) << 96);
+                unsafe {
+                    let words = lane.desc_words();
+                    let base = words.as_mut_ptr();
+                    std::ptr::write_unaligned(
+                        base.add(((pos & DESC_MASK) * 2) as usize) as *mut u128,
+                        packed,
+                    );
+                }
             }
-            self.pending_head = h0;
+            self.pending_len += 1;
         }
-        debug_assert_eq!(
-            ((self.next_span / CHUNK) % self.n_lanes as u64) as usize,
-            self.pending_lane,
-            "hydra pending buffer crossed a lane boundary"
-        );
-        // In-place 128-bit store: (ptr | len<<64 | span_id<<96).
-        // SAFETY: the slot at (pending_head + pending_len) & DESC_MASK is
-        // producer-owned (space checked at chunk start for the full chunk)
-        // and unread by the worker until the Release publish below.
-        let slot =
-            lane_slot_ptr(&fabric.lanes[self.pending_lane], self.pending_head + self.pending_len);
-        let packed = (body.as_ptr() as u128)
-            | ((body.len() as u128) << 64)
-            | ((self.next_span as u32 as u128) << 96);
-        unsafe {
-            std::ptr::write_unaligned(slot as *mut u128, packed);
-        }
-        self.pending_len += 1;
         // Advance the division-free submit-chunk tracker (after-use: the
         // lane advances when the chunk it belongs to is complete).
         self.submit_rem -= 1;
@@ -879,6 +1503,131 @@ impl<'a> HydraSpanSink<'a> {
         }
     }
 
+    /// The chunk-open cold path (runs once per CHUNK spans): pick the lane,
+    /// check space, and decide the work-assist. #[inline(never)] keeps the
+    /// backpressure spin (and its fold_available call chain) out of the
+    /// steady scan's µop-cache window.
+    #[inline(never)]
+    fn open_chunk(&mut self, fabric: &HydraFabric) {
+        // Start a new chunk on the lane that owns this span id.
+        self.pending_lane = self.submit_lane;
+        let lane = &fabric.lanes[self.pending_lane];
+        // R12 Desc8: EVERY lane chunk-open writes an anchor as its first
+        // desc. Grid alignment is NOT sufficient: a mid-grid continuation
+        // (after an end_pass partial flush) can take the lane path while
+        // the interleaved spans went INLINE (assist) — the worker's running
+        // derivation would continue from its stale position and drift by
+        // exactly the diverted span count (the fold-order assert caught
+        // this on the first 8573C draw: drift 32/112 = inline-taken spans).
+        // An unconditional anchor means the worker NEVER extrapolates
+        // across any chunk boundary.
+        if self.desc8 && self.blob_base != 0 {
+            // Write-once-per-lane blob base (ordered before this chunk's
+            // publish; the worker reads it after its desc_head Acquire).
+            if lane.base.load(Ordering::Relaxed) == 0 {
+                lane.base.store(self.blob_base as u64, Ordering::Release);
+            }
+        }
+        let h0 = lane.desc_head.load(Ordering::Relaxed);
+        // R8 phase-5 / R10 — WORK-ASSIST on the deep ring: check space
+        // once; if the lane is saturated, claim an assist-ring slot and
+        // take the chunk inline (evaluate on THIS core when the workers
+        // cannot keep up — the cycles come out of the backpressure spin
+        // they would otherwise burn). The deep ring keeps the conversion
+        // sustainable for as long as the fold lags the submit point.
+        // Forced-inline mode (parity tests) takes this path
+        // unconditionally — and NEVER falls back to a lane (the ring
+        // drains by folding, so the wait is bounded and deadlock-free).
+        let t = lane.desc_tail.load(Ordering::Acquire);
+        // R12: the desc8 format reserves one extra slot per chunk-open
+        // (the anchor desc).
+        let chunk_need = CHUNK + if self.desc8 { 1 } else { 0 };
+        let lane_full = h0.saturating_sub(t) + chunk_need > DESC_CAP;
+        let take_inline = if self.force_inline {
+            let mut sb = 0u32;
+            while !self.try_claim_inline() {
+                self.fold_available();
+                crate::affinity::polite_spin(&mut sb);
+            }
+            true
+        } else {
+            lane_full && self.try_claim_inline()
+        };
+        if take_inline {
+            self.assist_chunks += 1;
+        } else {
+            // Space check for the WHOLE chunk up front (the in-place
+            // writes below must never touch slots the worker still
+            // owns). Backpressure: fold what's ready (keeps result
+            // rings flowing), then re-check — deadlock-free by the
+            // lane-balance proof.
+            let mut sb = 0u32;
+            loop {
+                let t = lane.desc_tail.load(Ordering::Acquire);
+                if h0.saturating_sub(t) + chunk_need <= DESC_CAP {
+                    break;
+                }
+                self.pending_head = h0;
+                self.fold_available();
+                // R8: SMT-polite backpressure spin.
+                crate::affinity::polite_spin(&mut sb);
+            }
+            self.pending_head = h0;
+        }
+    }
+
+    /// R10: claim the next assist-ring slot for the chunk starting at
+    /// `next_span` (O(1) — the ring is indexed by the claim counter).
+    /// Returns false when the ring is at capacity (in-flight chunks fill
+    /// all but one slot); the caller then falls back to the lane path or,
+    /// in force mode, folds until a slot frees.
+    #[inline]
+    fn try_claim_inline(&mut self) -> bool {
+        if self.inline_seq - self.inline_fold_seq < self.assist_slots as u64 - 1 {
+            let slot = (self.inline_seq % self.assist_slots as u64) as usize;
+            self.inline_seq += 1;
+            let c = &mut self.inline_ring[slot];
+            c.first_span = self.next_span;
+            c.len = 0;
+            c.sealed = false;
+            self.cur_inline = Some(slot);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The assist evaluation (the inline kernel dispatch + inline-ring
+    /// store). #[inline(never)] keeps the kernel-dispatch machinery out of
+    /// the steady scan's µop-cache window; the assist fires only when the
+    /// workers cannot keep up, so its per-span call overhead is paid from
+    /// the budget the spin was burning anyway.
+    #[inline(never)]
+    fn submit_inline_span(&mut self, slot: usize, body: &[u8]) {
+        // Inline path: evaluate NOW, buffer the value for the ordered
+        // fold. SAFETY: same feature contract as the workers (the
+        // fabric's detected kernel).
+        let value = unsafe { self.kernel.eval(body) };
+        let c = &mut self.inline_ring[slot];
+        c.vals[self.pending_len as usize] = value;
+        c.len = self.pending_len as u32 + 1;
+        self.pending_len += 1;
+    }
+
+    /// R10: the oldest unfolded inline chunk's ring slot (None when every
+    /// claimed chunk has folded). Inline chunks are claimed in submission
+    /// order and consumed by the ordered fold in the same order, so this
+    /// is the ONLY slot the fold ever needs to look at — the R8 linear
+    /// scan left with the deep ring.
+    #[inline]
+    fn oldest_inline_slot(&self) -> Option<usize> {
+        if self.inline_fold_seq < self.inline_seq {
+            Some((self.inline_fold_seq % self.assist_slots as u64) as usize)
+        } else {
+            None
+        }
+    }
+
     /// Fold every completed-but-unfolded result batch (non-blocking, in
     /// emission order). One cursor advance per batch.
     ///
@@ -894,6 +1643,42 @@ impl<'a> HydraSpanSink<'a> {
         };
         self.complete_boundaries();
         while self.fold_pos < self.next_span {
+            // R10 — WORK-ASSIST fold, O(1): inline chunks are claimed in
+            // submission order, so the oldest unfolded one is the ONLY
+            // candidate sitting at the fold cursor (the R8 4-slot scan
+            // generalized to the deep ring). An exact first_span match is
+            // unambiguous: inline chunks start at chunk-window starts.
+            if let Some(slot) = self.oldest_inline_slot() {
+                let (first_span, len, sealed) = {
+                    let c = &self.inline_ring[slot];
+                    (c.first_span, c.len, c.sealed)
+                };
+                if sealed && first_span == self.fold_pos {
+                    let n = len as u64;
+                    debug_assert!(n <= self.fold_rem, "inline chunk exceeds its window");
+                    // Fail-stop ordering discipline (same law as the lane
+                    // path): span ids are first_span + i by construction —
+                    // the claim-order invariant IS the order proof, and the
+                    // exact-match above is its guard.
+                    for i in 0..n as usize {
+                        let v = self.inline_ring[slot].vals[i];
+                        self.fold_value(v);
+                    }
+                    self.inline_fold_seq += 1;
+                    self.fold_pos += n;
+                    self.fold_rem -= n;
+                    if self.fold_rem == 0 {
+                        self.fold_rem = CHUNK;
+                        self.fold_lane = if self.fold_lane + 1 == self.n_lanes {
+                            0
+                        } else {
+                            self.fold_lane + 1
+                        };
+                    }
+                    self.complete_boundaries();
+                    continue;
+                }
+            }
             // H6: `fold_lane` tracks the chunk containing `fold_pos` — no
             // division in the hot path (advance after chunk completion).
             let lane = &fabric.lanes[self.fold_lane];
@@ -962,11 +1747,13 @@ impl<'a> HydraSpanSink<'a> {
     pub fn finish(&mut self) {
         if self.fabric.is_some() {
             self.flush_pending();
+            let mut fb = 0u32;
             while self.fold_pos < self.next_span {
                 if self.fold_available_once_or_spin() {
                     continue;
                 }
-                std::hint::spin_loop();
+                // R8: SMT-polite final drain.
+                crate::affinity::polite_spin(&mut fb);
             }
             self.complete_boundaries();
         } else {
@@ -989,6 +1776,12 @@ impl<'a> HydraSpanSink<'a> {
     #[inline]
     pub fn pending(&self) -> u64 {
         self.next_span - self.fold_pos
+    }
+
+    /// R8 phase-5 telemetry: chunks taken through the assist path.
+    #[inline]
+    pub fn assist_chunks(&self) -> u64 {
+        self.assist_chunks
     }
 }
 
@@ -1014,14 +1807,19 @@ impl<'a> Sink for HydraSpanSink<'a> {
             );
         }
         self.last_seq = seq;
-        self.msg_hash = crate::sink::fast_hash_bytes(self.msg_hash, &(msg.len() as u16).to_le_bytes());
+        self.msg_hash =
+            crate::sink::fast_hash_bytes(self.msg_hash, &(msg.len() as u16).to_le_bytes());
         self.msg_hash = crate::sink::fast_hash_bytes(self.msg_hash, msg);
         self.count += 1;
     }
 
     fn on_event(&mut self, ev: &Event) {
         match ev {
-            Event::GapOpened { from, ahead: _, gen } => {
+            Event::GapOpened {
+                from,
+                ahead: _,
+                gen,
+            } => {
                 assert!(*gen > self.last_gen);
                 self.last_gen = *gen;
                 assert!(self.gap_open_gen.is_none());
@@ -1038,7 +1836,11 @@ impl<'a> Sink for HydraSpanSink<'a> {
                 self.gap_open_from = None;
                 self.reanchors += 1;
             }
-            Event::SessionBoundary { prev: _, next: _, gen } => {
+            Event::SessionBoundary {
+                prev: _,
+                next: _,
+                gen,
+            } => {
                 assert!(*gen > self.last_gen);
                 self.last_gen = *gen;
                 self.gap_open_gen = None;
@@ -1109,6 +1911,55 @@ impl<'a> Sink for HydraSpanSink<'a> {
             }
         }
     }
+
+    /// R8: batched span emission — the G-INV assert runs once per batch (one
+    /// proof era for all recs), the continuity chain is checked head-to-tail
+    /// across the recs (exactly as strong as per-span: recs[0] must continue
+    /// the previous emission and each rec[i] must continue recs[i-1]), and
+    /// the per-span submit/evaluate work runs in one tight loop. Values,
+    /// order and invariants are identical to the per-span path.
+    #[inline(always)]
+    fn on_span_batch(&mut self, proof: &LiveFeedProof, recs: &[SpanRec<'_>]) {
+        assert!(
+            proof.gen() >= self.last_gen,
+            "G-INV violation: proof gen {} is older than sink last_gen {}",
+            proof.gen(),
+            self.last_gen
+        );
+        let mut sum = 0u64;
+        for r in recs {
+            if self.last_seq != 0 {
+                assert_eq!(
+                    r.first_seq,
+                    self.last_seq + 1,
+                    "Non-monotonic span batch: expected {}, got {} (count={})",
+                    self.last_seq + 1,
+                    r.first_seq,
+                    r.count
+                );
+            }
+            self.last_seq = r.first_seq + r.count as u64 - 1;
+            sum += r.count as u64;
+        }
+        self.count += sum;
+        match self.fabric {
+            None => {
+                // Inline mode: evaluate + fold NOW — sequential-equivalent.
+                for r in recs {
+                    let v = span_crc32c_8lane(r.body);
+                    self.fold_value(v);
+                    self.next_span += 1;
+                    self.fold_pos += 1;
+                }
+            }
+            Some(_) => {
+                for r in recs {
+                    self.submit_span(r.body);
+                    self.next_span += 1;
+                }
+            }
+        }
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -1149,7 +2000,11 @@ mod tests {
     }
 
     /// HYDRA fabric pass: drain between polls, blocking finish at end.
-    fn hydra_pass(transport: &mut ReplayTransport, sess: [u8; 10], fabric: &HydraFabric) -> (u64, u64, u64) {
+    fn hydra_pass(
+        transport: &mut ReplayTransport,
+        sess: [u8; 10],
+        fabric: &HydraFabric,
+    ) -> (u64, u64, u64) {
         transport.reset(sess);
         let mut seq = Sequencer::new();
         let mut sink = HydraSpanSink::new(fabric);
@@ -1197,6 +2052,8 @@ mod tests {
 
     /// H3 bit-parity, default MtuBound dual-feed schedule, fabric with 2
     /// workers + inline mode, all vs the sequential SpanConformanceSink.
+    /// R12: both descriptor formats (compact Desc8 + legacy) must be
+    /// bit-exact — the fold-order assert pins the Desc8 derivation.
     #[test]
     fn t_hydra_bitparity_default_schedule() {
         let gt = load_mini();
@@ -1207,19 +2064,61 @@ mod tests {
         };
         let sched = build_schedule(&gt, &cfg);
         let sess = *b"HYDRATEST1";
-        let fabric = HydraFabric::spawn(2);
-        let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
-        let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
+        for fmt in [true, false] {
+            let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
+            let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
+            let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
 
-        let want = seq_pass(&mut t1, sess);
-        assert_eq!(want.0, 505_849);
-        let got_inline = inline_pass(&mut t1, sess);
-        assert_eq!(got_inline, want, "inline mode diverged");
-        let got_fabric = hydra_pass(&mut t2, sess, &fabric);
-        assert_eq!(got_fabric, want, "fabric mode diverged");
-        // Determinism across passes (different worker interleavings).
-        let got_fabric2 = hydra_pass(&mut t2, sess, &fabric);
-        assert_eq!(got_fabric2, want, "fabric determinism diverged");
+            let want = seq_pass(&mut t1, sess);
+            assert_eq!(want.0, 505_849);
+            let got_inline = inline_pass(&mut t1, sess);
+            assert_eq!(got_inline, want, "inline mode diverged");
+            let got_fabric = hydra_pass(&mut t2, sess, &fabric);
+            assert_eq!(got_fabric, want, "fabric mode diverged");
+            // Determinism across passes (different worker interleavings).
+            let got_fabric2 = hydra_pass(&mut t2, sess, &fabric);
+            assert_eq!(got_fabric2, want, "fabric determinism diverged");
+            // R8 phase-5: FORCED work-assist — every chunk evaluated on the
+            // submitting core through the inline ring, folded in strict span
+            // order. Must produce the identical tuple (the assist path is a
+            // scheduling decision, never a semantic one).
+            let got_assist = assist_pass(&mut t2, sess, &fabric);
+            assert_eq!(got_assist, want, "forced work-assist diverged");
+            // Mixed mode after a forced run (the ring resets cleanly).
+            let got_fabric3 = hydra_pass(&mut t2, sess, &fabric);
+            assert_eq!(got_fabric3, want, "fabric-after-assist diverged");
+        } // R12 both formats
+    }
+
+    /// R8 phase-5: a fabric pass with the work-assist FORCED on — every
+    /// chunk takes the inline path (deterministic; no dependence on
+    /// backpressure timing).
+    fn assist_pass(
+        transport: &mut ReplayTransport,
+        sess: [u8; 10],
+        fabric: &HydraFabric,
+    ) -> (u64, u64, u64) {
+        transport.reset(sess);
+        let mut seq = Sequencer::new();
+        let mut sink = HydraSpanSink::new(fabric);
+        sink.force_inline_mode();
+        let mut batch = FrameBatch::new();
+        while transport.poll(&mut batch) > 0 {
+            let now = transport.now_ns();
+            for (pos, frame) in batch.frames().iter().enumerate() {
+                seq.ingest_auto(
+                    frame.bytes(),
+                    frame.feed,
+                    now,
+                    &mut sink,
+                    transport.batch_blocks(pos),
+                    transport.batch_memo(pos),
+                );
+            }
+            sink.drain_ready();
+        }
+        sink.finish();
+        (sink.count, sink.hash, sink.msg_hash)
     }
 
     /// Bit-parity under chaos: loss, jitter, session change — exercises the
@@ -1236,8 +2135,14 @@ mod tests {
                 LossModel::Bernoulli { p_pm: 100 },
             ],
             delay: [
-                DelayModel::GaussianApprox { mean_ns: 30_000, sigma_ns: 8_000 },
-                DelayModel::GaussianApprox { mean_ns: 30_000, sigma_ns: 8_000 },
+                DelayModel::GaussianApprox {
+                    mean_ns: 30_000,
+                    sigma_ns: 8_000,
+                },
+                DelayModel::GaussianApprox {
+                    mean_ns: 30_000,
+                    sigma_ns: 8_000,
+                },
             ],
             guarantee_coverage: true,
             session_change_at_msg: Some(300_000),
@@ -1245,14 +2150,21 @@ mod tests {
         };
         let sched = build_schedule(&gt, &cfg);
         let sess = *b"CHAOSHYDRA";
-        let fabric = HydraFabric::spawn(2);
+        // R12: both descriptor formats (compact Desc8 + legacy) must be
+        // bit-exact — the fold-order assert pins the anchor-based derivation.
+        for fmt in [true, false] {
+        let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
         let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
         let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
 
         let want = seq_pass(&mut t1, sess);
-        assert_eq!(want.0, 505_849, "chaos must still cover the full population");
+        assert_eq!(
+            want.0, 505_849,
+            "chaos must still cover the full population"
+        );
         let got = hydra_pass(&mut t2, sess, &fabric);
         assert_eq!(got, want, "chaos fabric mode diverged");
+        } // R12 both formats
     }
 
     /// Bit-parity at extreme span granularity: one message per packet
@@ -1267,13 +2179,17 @@ mod tests {
         };
         let sched = build_schedule(&gt, &cfg);
         let sess = *b"FIXED1HYDR";
-        let fabric = HydraFabric::spawn(2);
+        // R12: both descriptor formats (compact Desc8 + legacy) must be
+        // bit-exact — the fold-order assert pins the anchor-based derivation.
+        for fmt in [true, false] {
+        let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
         let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
         let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
 
         let want = seq_pass(&mut t1, sess);
         let got = hydra_pass(&mut t2, sess, &fabric);
         assert_eq!(got, want, "fixed(1) fabric mode diverged");
+        } // R12 both formats
     }
 
     /// Bit-parity with random packet sizes (mixed span lengths).
@@ -1286,13 +2202,17 @@ mod tests {
         };
         let sched = build_schedule(&gt, &cfg);
         let sess = *b"RANGEHYDRA";
-        let fabric = HydraFabric::spawn(2);
+        // R12: both descriptor formats (compact Desc8 + legacy) must be
+        // bit-exact — the fold-order assert pins the anchor-based derivation.
+        for fmt in [true, false] {
+        let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
         let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
         let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
 
         let want = seq_pass(&mut t1, sess);
         let got = hydra_pass(&mut t2, sess, &fabric);
         assert_eq!(got, want, "seeded-range fabric mode diverged");
+        } // R12 both formats
     }
 
     /// Backpressure path: 1 worker with a deliberately tiny consumer is
@@ -1308,13 +2228,17 @@ mod tests {
         };
         let sched = build_schedule(&gt, &cfg);
         let sess = *b"WRAPHYDRA1";
-        let fabric = HydraFabric::spawn(1);
+        // R12: both descriptor formats (compact Desc8 + legacy) must be
+        // bit-exact — the fold-order assert pins the anchor-based derivation.
+        for fmt in [true, false] {
+        let fabric = HydraFabric::spawn_pinned_desc8(1, &[], fmt);
         let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
         let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
 
         let want = seq_pass(&mut t1, sess);
         let got = hydra_pass(&mut t2, sess, &fabric);
         assert_eq!(got, want, "wraparound fabric mode diverged");
+        } // R12 both formats
     }
 
     /// GIGAHFT Lever 4: cross-pass double-buffered overlap bit-parity.
@@ -1341,7 +2265,10 @@ mod tests {
 
         // Overlapped fabric passes on one sink. Pass N+1's submission
         // overlaps pass N's residual tail (the whole point of Lever 4).
-        let fabric = HydraFabric::spawn(2);
+        // R12: both descriptor formats (compact Desc8 + legacy) must be
+        // bit-exact — the fold-order assert pins the anchor-based derivation.
+        for fmt in [true, false] {
+        let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
         let mut t = ReplayTransport::new(&gt, sched.clone(), sessions[0]);
         let mut sink = HydraSpanSink::new(&fabric);
         let mut harvested = [(0u64, 0u64, 0u64); PASS_RING];
@@ -1418,6 +2345,7 @@ mod tests {
             got2.push(*rec);
         }
         assert_eq!(got2, want, "inline cross-pass diverged");
+        } // R12 both formats
     }
 
     /// Fabric mode == inline mode == sequential on the full mini sample
@@ -1435,10 +2363,92 @@ mod tests {
         let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
         let want = seq_pass(&mut t1, sess);
         for w in 1..=3usize {
-            let fabric = HydraFabric::spawn(w);
-            let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
-            let got = hydra_pass(&mut t2, sess, &fabric);
-            assert_eq!(got, want, "worker count {} diverged", w);
+            // R12: both descriptor formats at every worker count.
+            for fmt in [true, false] {
+                let fabric = HydraFabric::spawn_pinned_desc8(w, &[], fmt);
+                let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
+                let got = hydra_pass(&mut t2, sess, &fabric);
+                assert_eq!(got, want, "worker count {} fmt8={} diverged", w, fmt);
+            }
         }
+    }
+
+    /// R12: the RX-PIPELINED transport + the SoA vectorized scan + the
+    /// fabric — the exact sustained-arm stack (auto-advance program,
+    /// cross-pass double buffering) under CHAOS (loss + jitter + session
+    /// change), pinned bit-exactly against the sequential reference. This
+    /// is the end-to-end law for the 8-entry vector ladder: every group it
+    /// proves must observably equal the scalar ladder's eight steps.
+    #[test]
+    fn t_hydra_pipeline_soa_chaos_bitparity() {
+        let gt = load_mini();
+        let cfg = ReplayConfig {
+            seed_a: 0xCAFE_0000_1111_2222,
+            seed_b: 0xBEEF_3333_4444_5555,
+            msgs_per_packet: Packetize::MtuBound(1200),
+            loss: [
+                crate::sched::LossModel::Bernoulli { p_pm: 80 },
+                crate::sched::LossModel::Bernoulli { p_pm: 140 },
+            ],
+            delay: [
+                crate::sched::DelayModel::GaussianApprox {
+                    mean_ns: 20_000,
+                    sigma_ns: 6_000,
+                },
+                crate::sched::DelayModel::GaussianApprox {
+                    mean_ns: 45_000,
+                    sigma_ns: 18_000,
+                },
+            ],
+            guarantee_coverage: true,
+            session_change_at_msg: Some(200_000),
+            ..Default::default()
+        };
+        let sched = build_schedule(&gt, &cfg);
+        let sessions: [[u8; 10]; 3] =
+            [*b"PIPECHAOS1", *b"PIPECHAOS2", *b"PIPECHAOS3"];
+        let ladder = crate::soa::ladder8_best();
+
+        // Reference: one sequential pass per session.
+        let mut want = Vec::new();
+        for sess in sessions {
+            let mut t = ReplayTransport::new(&gt, sched.clone(), sess);
+            want.push(seq_pass(&mut t, sess));
+        }
+
+        // The fabric + pipelined + SoA stack, one pass per session — under
+        // BOTH descriptor formats.
+        for fmt in [true, false] {
+        let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
+        let mut t = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce(
+            &gt,
+            sched.clone(),
+            sessions[0],
+            128,
+        );
+        let mut sink = HydraSpanSink::new(&fabric);
+        let mut harvested = [(0u64, 0u64, 0u64); PASS_RING];
+        let mut got = Vec::new();
+        for sess in sessions {
+            t.reset(sess);
+            let mut seq = Sequencer::new();
+            sink.begin_pass();
+            while t.next_batch() {
+                seq.ingest_entries_ladder(t.entries(), t.now_ns(), &mut sink, ladder);
+                sink.drain_ready();
+            }
+            sink.end_pass();
+            let n = sink.harvest_completed(&mut harvested);
+            for rec in &harvested[..n] {
+                got.push(*rec);
+            }
+        }
+        sink.finish();
+        let n = sink.harvest_completed(&mut harvested);
+        for rec in &harvested[..n] {
+            got.push(*rec);
+        }
+        assert_eq!(got, want, "pipeline+soa chaos fabric diverged from sequential");
+        } // R12 both formats
     }
 }

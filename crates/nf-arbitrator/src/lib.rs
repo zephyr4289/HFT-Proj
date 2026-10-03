@@ -523,9 +523,9 @@ impl Sequencer {
         ]);
         let sess_match =
             self.session_live && frame_lo == self.session_lo && frame_hi == self.session_hi;
-        let hdr_seq = u64::from_be_bytes([
-            frame[10], frame[11], frame[12], frame[13], frame[14], frame[15], frame[16], frame[17],
-        ]);
+        // R8: hdr_seq is loaded only on the cold control paths (HB/EOS) —
+        // the hot Data path takes first/last from the block triples, so the
+        // 8B load + bswap left the hot loop.
         let hdr_count = u16::from_be_bytes([frame[18], frame[19]]);
         if !sess_match {
             // COLD: adoption or boundary — the full dispatch ladder
@@ -542,6 +542,10 @@ impl Sequencer {
         // S2: KIND CLASSIFY (identical to ingest; HB/EOS carry no triples)
         if hdr_count == moldudp64::HEARTBEAT_COUNT {
             std::hint::cold_path();
+            let hdr_seq = u64::from_be_bytes([
+                frame[10], frame[11], frame[12], frame[13], frame[14], frame[15], frame[16],
+                frame[17],
+            ]);
             session::handle_heartbeat(
                 hdr_seq,
                 feed,
@@ -565,6 +569,10 @@ impl Sequencer {
                 self.lens.fill(0);
                 self.staged_count = 0;
             }
+            let hdr_seq = u64::from_be_bytes([
+                frame[10], frame[11], frame[12], frame[13], frame[14], frame[15], frame[16],
+                frame[17],
+            ]);
             let mut eos_session = [0u8; 10];
             eos_session.copy_from_slice(&frame[0..10]);
             let hdr = moldudp64::Header {
@@ -812,6 +820,182 @@ impl Sequencer {
         )
     }
 
+    /// R8: steady-state precondition for the batched apply loop — the exact
+    /// set of sequencer conditions under which `ingest_indexed`'s per-frame
+    /// tail is provably inert (no staged window content to clear or drain,
+    /// no open gap to check-close, no pending recovery intent to retire,
+    /// live adopted session, Contig state). When this holds, a frame's
+    /// entire observable effect is: counters, optional emission, and
+    /// `w`'s advance.
+    #[inline(always)]
+    fn steady_ready(&self) -> bool {
+        self.session_live
+            && self.state == State::Contig
+            && self.staged_count == 0
+            && !self.gap_active
+            && self.pending_to.is_none()
+    }
+
+    /// R8: batch-level ingest — the doc-21 "main-core batching of the
+    /// sequencer apply" lever. Consumes a whole poll's frames (see
+    /// `ReplayTransport::batch_entries`), running maximal runs of steady
+    /// frames through [`steady_scan`] — a free function that touches ONLY
+    /// the counters, the sink, and register-resident scalars (w, session
+    /// template, proof era), so the hot loop keeps zero sequencer state in
+    /// memory. Any anomaly stops the scan; that frame is rerun through the
+    /// unmodified classic `ingest_auto`, and the scan resumes on the next
+    /// frame if the steady preconditions hold again.
+    ///
+    /// Observables are bit-identical to feeding the same frames through
+    /// `ingest_auto` one by one: emissions happen in frame order (the scan
+    /// emits eagerly; a cold frame's emissions always follow the scan's
+    /// flush), counters receive the same increments in the same order (the
+    /// scan defers them into locals and commits at scan exit, BEFORE the
+    /// cold frame's own updates), and `w`/`progress_vt` land on the same
+    /// final values (`now_ns` is constant for the whole batch, so deferring
+    /// the `progress_vt` store to the scan/cold boundaries cannot change
+    /// any reader's view).
+    #[inline(always)]
+    pub fn ingest_batch<'a, S: Sink, I>(&mut self, entries: I, now_ns: u64, sink: &mut S)
+    where
+        I: IntoIterator<Item = packet::FrameEntry<'a>>,
+    {
+        let wants_spans = sink.wants_spans();
+        let mut entries = entries.into_iter();
+        loop {
+            if self.steady_ready() {
+                let mut w = self.w;
+                let (progressed, cold) = steady_scan(
+                    &mut self.counters,
+                    sink,
+                    &mut entries,
+                    &mut w,
+                    self.session_lo,
+                    self.session_hi,
+                    self.gen,
+                    wants_spans,
+                );
+                self.w = w;
+                if progressed {
+                    self.progress_vt = now_ns;
+                }
+                match cold {
+                    Some(entry) => {
+                        cold_apply(self, &entry, now_ns, sink);
+                        continue; // re-check steady for the frames after the cold one
+                    }
+                    None => break, // iterator exhausted
+                }
+            }
+            // Not steady: classic per-frame ladder until steady again.
+            match entries.next() {
+                Some(entry) => cold_apply(self, &entry, now_ns, sink),
+                None => break,
+            }
+        }
+    }
+
+    /// R8: slice form of [`Self::ingest_batch`] — the RX-pipelined
+    /// transport's worker builds the `FrameEntry` array on its own core
+    /// (it holds the frame lines locally), so the consumer iterates a
+    /// ready-made slice with zero per-frame entry construction.
+    #[inline(always)]
+    pub fn ingest_entries<'a, S: Sink>(
+        &mut self,
+        entries: &'a [packet::FrameEntry<'a>],
+        now_ns: u64,
+        sink: &mut S,
+    ) {
+        let wants_spans = sink.wants_spans();
+        let mut it = entries.iter();
+        loop {
+            if self.steady_ready() {
+                let mut w = self.w;
+                let (progressed, cold) = steady_scan_ref(
+                    &mut self.counters,
+                    sink,
+                    &mut it,
+                    &mut w,
+                    self.session_lo,
+                    self.session_hi,
+                    self.gen,
+                    wants_spans,
+                );
+                self.w = w;
+                if progressed {
+                    self.progress_vt = now_ns;
+                }
+                match cold {
+                    Some(entry) => {
+                        cold_apply(self, entry, now_ns, sink);
+                        continue;
+                    }
+                    None => break,
+                }
+            }
+            match it.next() {
+                Some(entry) => cold_apply(self, entry, now_ns, sink),
+                None => break,
+            }
+        }
+    }
+
+    /// R12b: the vectorized-ladder slice scan — [`Self::ingest_entries`]
+    /// with the 8-entry group fast path (see [`steady_scan_ladder`]).
+    /// `ladder` is the best kernel for this silicon (`None` reduces to the
+    /// exact scalar `ingest_entries` semantics — `HFT_VEC_LADDER=0` is the
+    /// rollback). Observables are bit-identical to `ingest_auto` per
+    /// frame: a verified group applies exactly what the scalar ladder
+    /// would apply for those eight entries; an unverified group runs the
+    /// scalar ladder; cold frames run the classic path. Pinned by the
+    /// 3-way parity suite (scalar-pipeline vs ladder-pipeline vs classic)
+    /// and D12's pipeline leg.
+    #[inline(always)]
+    pub fn ingest_entries_ladder<'a, S: Sink>(
+        &mut self,
+        entries: &'a [packet::FrameEntry<'a>],
+        now_ns: u64,
+        sink: &mut S,
+        ladder: Option<packet::SoaLadder8>,
+    ) {
+        let wants_spans = sink.wants_spans();
+        let mut pos = 0usize;
+        loop {
+            if self.steady_ready() {
+                let mut w = self.w;
+                let (progressed, cold) = steady_scan_ladder(
+                    &mut self.counters,
+                    sink,
+                    entries,
+                    &mut pos,
+                    &mut w,
+                    self.session_lo,
+                    self.session_hi,
+                    self.gen,
+                    wants_spans,
+                    ladder,
+                );
+                self.w = w;
+                if progressed {
+                    self.progress_vt = now_ns;
+                }
+                match cold {
+                    Some(idx) => {
+                        cold_apply(self, &entries[idx], now_ns, sink);
+                        pos = idx + 1;
+                        continue;
+                    }
+                    None => break,
+                }
+            }
+            if pos >= entries.len() {
+                break;
+            }
+            cold_apply(self, &entries[pos], now_ns, sink);
+            pos += 1;
+        }
+    }
+
     /// Seals the sequencer into permanent DEAD state.
     pub fn seal<S: Sink>(&mut self, reason: DeadReason, sink: &mut S) {
         session::seal(reason, self.w, &mut self.state, sink);
@@ -864,3 +1048,541 @@ impl Default for Sequencer {
     }
 }
 
+/// R12: the per-entry steady ladder — ONE source of truth shared verbatim
+/// by all three scan drivers (the by-value iterator scan, the by-reference
+/// slice scan, and the SoA vector scan's scalar fallback), pinned to the
+/// classic `ingest_auto` path by the batch/pipeline parity suites and to
+/// each other by the SoA 3-way parity suite. `#[inline(always)]` keeps the
+/// ladder fused into each driver's loop (the R9 DSB lesson).
+///
+/// The ladder (exact `ingest_indexed` steady semantics, hoisted to
+/// register locals): triple-count gate (HB/EOS/index-less frames are the
+/// classic path's business), fused session compare against the scan's
+/// template words, span/dup classify from the inline first/n, R2 memo
+/// gate, then counters + (span rec buffering | per-message emission) +
+/// the watermark advance.
+#[derive(Clone, Copy)]
+enum StepOutcome<'e, 'a> {
+    /// Contiguous frame applied (w advanced, emissions buffered).
+    Advanced,
+    /// Pure duplicate skipped (counters only).
+    DupSkipped,
+    /// The frame needs the classic ladder — the driver stops and hands it
+    /// back to its caller UNAPPLIED.
+    Cold(&'e packet::FrameEntry<'a>),
+}
+
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn steady_step<'e, 'a, S: Sink>(
+    entry: &'e packet::FrameEntry<'a>,
+    w: &mut u64,
+    pk: &mut [u64; 2],
+    byt: &mut [u64; 2],
+    dup: &mut [u64; 2],
+    dup_msgs: &mut u64,
+    emitted: &mut u64,
+    recs: &mut [crate::types::SpanRec<'a>; STEADY_RECS],
+    nrecs: &mut usize,
+    sink: &mut S,
+    proof: &LiveFeedProof,
+    wants_spans: bool,
+    sess_lo: u64,
+    sess_hi: u64,
+) -> StepOutcome<'e, 'a> {
+    let frame = entry.bytes;
+    let blocks = entry.blocks;
+    let n = blocks.len();
+    if n == 0 {
+        return StepOutcome::Cold(entry);
+    }
+    if entry.sess_lo != sess_lo || entry.sess_hi != sess_hi {
+        return StepOutcome::Cold(entry);
+    }
+    let first = entry.first_seq;
+    let last = first + n as u64 - 1;
+    if last < *w {
+        // Pure duplicate packet (HOT in dual-feed replay) — the exact
+        // classic counters (no progress_vt write, matching classic).
+        let fi = (entry.feed & 1) as usize;
+        pk[fi] += 1;
+        byt[fi] += frame.len() as u64;
+        dup[fi] += 1;
+        *dup_msgs += n as u64;
+        return StepOutcome::DupSkipped;
+    }
+    if first != *w {
+        // Partial overlap (first < w <= last: re-ordered dual-feed copy)
+        // or gap (first > w): the classic ladder's skip/stage logic.
+        return StepOutcome::Cold(entry);
+    }
+    // S5 contiguous apply at skip == 0. R2 memo gate — identical
+    // semantics. Body bounds are DERIVED: the tombstone rule forces the
+    // last block's end to the frame end and the first block to start at
+    // HEADER_LEN + 2, so body == frame[HEADER_LEN+2..len] exactly (the
+    // classic path's blocks[0].1..blocks[n-1].2 for skip == 0).
+    let all_valid = entry.memo.is_some_and(|m| m.valid_count as usize == n);
+    if !all_valid {
+        return StepOutcome::Cold(entry);
+    }
+    let fi = (entry.feed & 1) as usize;
+    pk[fi] += 1;
+    byt[fi] += frame.len() as u64;
+    if wants_spans {
+        let body = &frame[moldudp64::HEADER_LEN + 2..frame.len()];
+        recs[*nrecs] = crate::types::SpanRec {
+            first_seq: first,
+            count: n as u16,
+            body,
+            blocks,
+        };
+        *nrecs += 1;
+        if *nrecs == recs.len() {
+            sink.on_span_batch(proof, recs);
+            *nrecs = 0;
+        }
+    } else {
+        for &(seq, start, end) in blocks {
+            sink.on_msg(proof, seq, &frame[start as usize..end as usize]);
+        }
+    }
+    *emitted += n as u64;
+    *w = last + 1;
+    StepOutcome::Advanced
+}
+
+/// R8: the steady-scan span-rec buffer depth (32 covers a coalesced poll's
+/// emitting frames at k=8..32; overflow flushes mid-scan in order — see
+/// `steady_step`).
+const STEADY_RECS: usize = 32;
+
+/// R8: the by-REFERENCE steady scan — identical ladder to [`steady_scan`],
+/// iterating `&[FrameEntry]` with zero per-frame entry copies (the
+/// RX-pipelined transport's mailbox carries a ready-made array). The two
+/// implementations are pinned to each other by the batch-parity and
+/// pipeline-parity suites.
+#[inline(always)]
+#[allow(clippy::too_many_arguments, clippy::while_let_on_iterator)]
+fn steady_scan_ref<'a, S: Sink>(
+    counters: &mut Counters,
+    sink: &mut S,
+    entries: &mut std::slice::Iter<'a, packet::FrameEntry<'a>>,
+    w: &mut u64,
+    sess_lo: u64,
+    sess_hi: u64,
+    gen: u64,
+    wants_spans: bool,
+) -> (bool, Option<&'a packet::FrameEntry<'a>>) {
+    let mut pk = [0u64; 2];
+    let mut byt = [0u64; 2];
+    let mut dup = [0u64; 2];
+    let mut dup_msgs = 0u64;
+    let mut emitted = 0u64;
+    let mut progressed = false;
+    let mut cold: Option<&packet::FrameEntry<'a>> = None;
+    let mut recs = [
+        crate::types::SpanRec {
+            first_seq: 0,
+            count: 0,
+            body: &[],
+            blocks: &[],
+        };
+        STEADY_RECS
+    ];
+    let mut nrecs = 0usize;
+    let proof = LiveFeedProof { gen };
+    while let Some(entry) = entries.next() {
+        match steady_step(
+            entry,
+            w,
+            &mut pk,
+            &mut byt,
+            &mut dup,
+            &mut dup_msgs,
+            &mut emitted,
+            &mut recs,
+            &mut nrecs,
+            sink,
+            &proof,
+            wants_spans,
+            sess_lo,
+            sess_hi,
+        ) {
+            StepOutcome::Cold(e) => {
+                cold = Some(e);
+                break;
+            }
+            StepOutcome::Advanced => progressed = true,
+            StepOutcome::DupSkipped => {}
+        }
+    }
+    if nrecs != 0 {
+        sink.on_span_batch(&proof, &recs[..nrecs]);
+    }
+    counters.feed_a.packets += pk[0];
+    counters.feed_b.packets += pk[1];
+    counters.feed_a.bytes += byt[0];
+    counters.feed_b.bytes += byt[1];
+    counters.feed_a.dups += dup[0];
+    counters.feed_b.dups += dup[1];
+    counters.dup_msgs += dup_msgs;
+    counters.msgs_emitted += emitted;
+    (progressed, cold)
+}
+
+/// R12c: the 8-entry group fast path, out-of-line (the R8/R9 DSB lesson —
+/// inlined, the group body's code size bloated the scan loop past the
+/// µop-cache and the sustained arm measured the decode tax at −2-3.6%;
+/// one call per 8 entries amortizes at ~0.6 cycles/group). Returns true
+/// when the group was applied; false routes it through the scalar ladder.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn ladder_group_apply<'a, S: Sink>(
+    entries: &'a [packet::FrameEntry<'a>],
+    p: usize,
+    ladder8: packet::SoaLadder8,
+    w: &mut u64,
+    pk: &mut [u64; 2],
+    byt: &mut [u64; 2],
+    dup: &mut [u64; 2],
+    dup_msgs: &mut u64,
+    emitted: &mut u64,
+    recs: &mut [crate::types::SpanRec<'a>; STEADY_RECS],
+    nrecs: &mut usize,
+    sink: &mut S,
+    proof: &LiveFeedProof,
+    wants_spans: bool,
+    sess_lo: u64,
+    sess_hi: u64,
+    firsts: &mut [u64; 8],
+    ns: &mut [u64; 8],
+) -> bool {
+    // Gather the group's sequence facts (AoS loads — L1-hot in the scan).
+    for k in 0..8 {
+        firsts[k] = entries[p + k].first_seq;
+        ns[k] = entries[p + k].blocks.len() as u64;
+    }
+    // The ladder's relations: anchor + pair-eq + dup-le + chain + wrap.
+    if !ladder8(firsts.as_ptr(), ns.as_ptr(), *w) {
+        return false;
+    }
+    // Session gate + the first entry's elig: every published frame carries
+    // the baked session, so the first entry matching the scan's LIVE
+    // template proves baked == live for the whole group (exactness).
+    let e0 = &entries[p];
+    if e0.sess_lo != sess_lo
+        || e0.sess_hi != sess_hi
+        || e0.elig & packet::FRAME_ELIG_OK == 0
+    {
+        return false;
+    }
+    // The 8 elig bytes: steady-ok bits + feed-parity uniformity.
+    let f0 = packet::elig_feed(e0.elig);
+    let f1 = packet::elig_feed(entries[p + 1].elig);
+    for k in 0..8 {
+        let e = &entries[p + k];
+        let want_feed = if k & 1 == 0 { f0 } else { f1 };
+        if e.elig & packet::FRAME_ELIG_OK == 0 || packet::elig_feed(e.elig) != want_feed {
+            return false;
+        }
+    }
+    // GROUP VERIFIED: [emit, dup] × 4. Counters fold exactly as the
+    // scalar ladder would (batched); the four even entries' emissions
+    // are buffered exactly as the scalar path would.
+    let sum_e = ns[0] + ns[2] + ns[4] + ns[6];
+    let fi_e = (f0 & 1) as usize;
+    let fi_d = (f1 & 1) as usize;
+    pk[fi_e] += 4;
+    pk[fi_d] += 4;
+    byt[fi_e] += entries[p].bytes.len() as u64
+        + entries[p + 2].bytes.len() as u64
+        + entries[p + 4].bytes.len() as u64
+        + entries[p + 6].bytes.len() as u64;
+    byt[fi_d] += entries[p + 1].bytes.len() as u64
+        + entries[p + 3].bytes.len() as u64
+        + entries[p + 5].bytes.len() as u64
+        + entries[p + 7].bytes.len() as u64;
+    dup[fi_d] += 4;
+    *dup_msgs += ns[1] + ns[3] + ns[5] + ns[7];
+    *emitted += sum_e;
+    if wants_spans {
+        for k in [0usize, 2, 4, 6] {
+            let entry = &entries[p + k];
+            let frame = entry.bytes;
+            let body = &frame[moldudp64::HEADER_LEN + 2..frame.len()];
+            recs[*nrecs] = crate::types::SpanRec {
+                first_seq: firsts[k],
+                count: ns[k] as u16,
+                body,
+                blocks: entry.blocks,
+            };
+            *nrecs += 1;
+            if *nrecs == recs.len() {
+                sink.on_span_batch(proof, recs);
+                *nrecs = 0;
+            }
+        }
+    } else {
+        for k in [0usize, 2, 4, 6] {
+            let entry = &entries[p + k];
+            let frame = entry.bytes;
+            for &(seq, start, end) in entry.blocks {
+                sink.on_msg(proof, seq, &frame[start as usize..end as usize]);
+            }
+        }
+    }
+    // The ladder's wrap guard proved firsts[0] + sum_e does not overflow,
+    // and the anchor proved firsts[0] == *w — the advance is wrap-free.
+    *w += sum_e;
+    true
+}
+
+/// R12c: the vectorized-ladder steady scan — the slice scan with the
+/// 8-entry group fast path. For each group of 8 entries fully below the
+/// batch length, the scan GATHERS `firsts`/`ns` from the (L1-hot) entry
+/// array and calls the [`SoaLadder8`] kernel (anchor + pair-eq + dup-le +
+/// chain + wrap guard); on a relations-pass it verifies the group's
+/// steady eligibility from the publisher-packed [`FrameEntry::elig`]
+/// bytes (session/memo/non-empty precomputed at publish; feed parity) —
+/// the R12b gather design re-ran those ~90 scalar µops per group
+/// consumer-side and measured them eating the entire vector win on the
+/// 8573C (11m-vs-11b attribution: −3.6%). A fully-verified group advances `w` by
+/// `Σ ns[even]`, buffers the four even spans, and folds all eight
+/// entries' counter updates — observably identical to running
+/// [`steady_step`] over the same eight entries.
+///
+/// ZERO transport-side cost: the first 8370C draw refuted the RX-published
+/// SoA sidecar (the RX is the co-bottleneck on both Intel classes; the
+/// sidecar's extra per-frame stores/uops collapsed Front A 41%) — the
+/// gather runs consumer-side where the entries are already resident. The
+/// session compare against the scan's LIVE template also makes the
+/// eligibility exact in every consumer state (the sidecar design needed a
+/// baked-template gate for mid-pass session flips).
+///
+/// Any unproven or ineligible group falls back to the exact per-entry
+/// scalar ladder; any cold frame stops the scan and is returned unapplied.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn steady_scan_ladder<'a, S: Sink>(
+    counters: &mut Counters,
+    sink: &mut S,
+    entries: &'a [packet::FrameEntry<'a>],
+    pos: &mut usize,
+    w: &mut u64,
+    sess_lo: u64,
+    sess_hi: u64,
+    gen: u64,
+    wants_spans: bool,
+    ladder: Option<packet::SoaLadder8>,
+) -> (bool, Option<usize>) {
+    let len = entries.len();
+    let mut pk = [0u64; 2];
+    let mut byt = [0u64; 2];
+    let mut dup = [0u64; 2];
+    let mut dup_msgs = 0u64;
+    let mut emitted = 0u64;
+    let mut progressed = false;
+    let mut cold: Option<usize> = None;
+    let mut recs = [
+        crate::types::SpanRec {
+            first_seq: 0,
+            count: 0,
+            body: &[],
+            blocks: &[],
+        };
+        STEADY_RECS
+    ];
+    let mut nrecs = 0usize;
+    let proof = LiveFeedProof { gen };
+    // The group gather buffers (stack; L1-hot).
+    let mut firsts = [0u64; 8];
+    let mut ns = [0u64; 8];
+    while *pos < len {
+        // ── vector group fast path (out-of-line: the DSB lesson) ────────
+        if let Some(ladder8) = ladder {
+            let p = *pos;
+            if p + 8 <= len
+                && ladder_group_apply(
+                    entries,
+                    p,
+                    ladder8,
+                    w,
+                    &mut pk,
+                    &mut byt,
+                    &mut dup,
+                    &mut dup_msgs,
+                    &mut emitted,
+                    &mut recs,
+                    &mut nrecs,
+                    sink,
+                    &proof,
+                    wants_spans,
+                    sess_lo,
+                    sess_hi,
+                    &mut firsts,
+                    &mut ns,
+                )
+            {
+                progressed = true;
+                *pos = p + 8;
+                continue;
+            }
+        }
+        // ── exact scalar ladder (the shared steady_step) ───────────────
+        let step_pos = *pos;
+        *pos += 1;
+        match steady_step(
+            &entries[step_pos],
+            w,
+            &mut pk,
+            &mut byt,
+            &mut dup,
+            &mut dup_msgs,
+            &mut emitted,
+            &mut recs,
+            &mut nrecs,
+            sink,
+            &proof,
+            wants_spans,
+            sess_lo,
+            sess_hi,
+        ) {
+            StepOutcome::Cold(_) => {
+                cold = Some(step_pos);
+                break;
+            }
+            StepOutcome::Advanced => progressed = true,
+            StepOutcome::DupSkipped => {}
+        }
+    }
+    if nrecs != 0 {
+        sink.on_span_batch(&proof, &recs[..nrecs]);
+    }
+    counters.feed_a.packets += pk[0];
+    counters.feed_b.packets += pk[1];
+    counters.feed_a.bytes += byt[0];
+    counters.feed_b.bytes += byt[1];
+    counters.feed_a.dups += dup[0];
+    counters.feed_b.dups += dup[1];
+    counters.dup_msgs += dup_msgs;
+    counters.msgs_emitted += emitted;
+    (progressed, cold)
+}
+
+/// R8: out-of-line cold-frame apply. `ingest_auto` and its whole classic
+/// ladder are #[inline(always)]; inlined into the batch loop they bloat the
+/// hot loop past the µop-cache (DSB) capacity and make the steady scan
+/// decode-bound — measured as a 25% throughput regression. The cold path is
+/// rare by definition, so this wrapper keeps it out of the loop body at the
+/// cost of one call per anomaly.
+#[inline(never)]
+fn cold_apply<S: Sink>(
+    this: &mut Sequencer,
+    entry: &packet::FrameEntry<'_>,
+    now_ns: u64,
+    sink: &mut S,
+) {
+    this.ingest_auto(entry.bytes, entry.feed, now_ns, sink, entry.blocks, entry.memo);
+}
+
+/// R8: the steady-apply scan — a maximal run of frames through the exact
+/// `ingest_indexed` steady ladder, executed WITHOUT any Sequencer reference
+/// (only `counters`, the sink, the frame iterator, and register-resident
+/// scalars). This is the doc-21 "main-core batching of the sequencer apply"
+/// lever: because the scan cannot touch sequencer control state, the
+/// compiler keeps `w`, the session template, the proof era and the deferred
+/// counter accumulators in registers for the whole run, and the sequencer's
+/// cache lines stay quiet.
+///
+/// Stops at (and returns, unapplied) the first frame that needs the classic
+/// ladder: session change, HB/EOS, gap (`first > w`), unmemoized or
+/// partially-invalid frame, index-less frame, or sub-header length. Returns
+/// whether any frame advanced `w` (the caller mirrors classic `progress_vt`
+/// semantics: set on contiguous applies, never on pure duplicates).
+///
+/// Deferred counters (packets/bytes/dups per feed, dup_msgs, msgs_emitted)
+/// commit at scan exit, BEFORE the caller applies the cold frame — the
+/// increment order against cold-path updates is preserved exactly.
+#[inline(always)]
+#[allow(clippy::too_many_arguments, clippy::while_let_on_iterator)]
+fn steady_scan<'a, S: Sink, I>(
+    counters: &mut Counters,
+    sink: &mut S,
+    entries: &mut I,
+    w: &mut u64,
+    sess_lo: u64,
+    sess_hi: u64,
+    gen: u64,
+    wants_spans: bool,
+) -> (bool, Option<packet::FrameEntry<'a>>)
+where
+    I: Iterator<Item = packet::FrameEntry<'a>>,
+{
+    let mut pk = [0u64; 2];
+    let mut byt = [0u64; 2];
+    let mut dup = [0u64; 2];
+    let mut dup_msgs = 0u64;
+    let mut emitted = 0u64;
+    let mut progressed = false;
+    let mut cold: Option<packet::FrameEntry<'a>> = None;
+    // R8: span-emission buffer — steady spans are captured as SpanRecs and
+    // delivered with ONE on_span_batch call per buffer-fill / scan-exit (the
+    // default Sink impl replays them exactly, so this is purely mechanical
+    // batching; sinks like the count/hydra/fabric sinks amortize their
+    // per-call guard work across the batch). 32 covers a coalesced poll's
+    // emitting frames at k=8..32; overflow flushes mid-scan in order.
+    let mut recs = [
+        crate::types::SpanRec {
+            first_seq: 0,
+            count: 0,
+            body: &[],
+            blocks: &[],
+        };
+        STEADY_RECS
+    ];
+    let mut nrecs = 0usize;
+    let proof = LiveFeedProof { gen };
+    while let Some(entry) = entries.next() {
+        // R12: the shared per-entry ladder (one source of truth for all
+        // three scan drivers — the iterator, slice, and SoA vector paths).
+        match steady_step(
+            &entry,
+            w,
+            &mut pk,
+            &mut byt,
+            &mut dup,
+            &mut dup_msgs,
+            &mut emitted,
+            &mut recs,
+            &mut nrecs,
+            sink,
+            &proof,
+            wants_spans,
+            sess_lo,
+            sess_hi,
+        ) {
+            StepOutcome::Cold(e) => {
+                cold = Some(*e);
+                break;
+            }
+            StepOutcome::Advanced => progressed = true,
+            StepOutcome::DupSkipped => {}
+        }
+    }
+    // Flush any buffered span emissions (BEFORE the caller applies the cold
+    // frame, preserving emission order).
+    if nrecs != 0 {
+        sink.on_span_batch(&proof, &recs[..nrecs]);
+    }
+    // Commit deferred counters (scan exit — before the caller touches the
+    // cold frame, preserving increment order).
+    counters.feed_a.packets += pk[0];
+    counters.feed_b.packets += pk[1];
+    counters.feed_a.bytes += byt[0];
+    counters.feed_b.bytes += byt[1];
+    counters.feed_a.dups += dup[0];
+    counters.feed_b.dups += dup[1];
+    counters.dup_msgs += dup_msgs;
+    counters.msgs_emitted += emitted;
+    (progressed, cold)
+}

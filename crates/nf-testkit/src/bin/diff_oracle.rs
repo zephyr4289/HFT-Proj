@@ -609,10 +609,16 @@ fn test_d11_crc_kernel_differential() {
         let (ga, gb) = unsafe { kernel.eval2(&a, &b) };
         assert_eq!(want_a, ga, "D11: eval2 A diverged ({} x {})", la, lb);
         assert_eq!(want_b, gb, "D11: eval2 B diverged ({} x {})", la, lb);
-        checked += 2;
+        // R10: the sequential-load pair (the pipelined-tail schedule) —
+        // identical values, different instruction order.
+        // SAFETY: feature contract verified above.
+        let (pa, pb) = unsafe { kernel.eval_pair(&a, &b) };
+        assert_eq!(want_a, pa, "D11: eval_pair A diverged ({} x {})", la, lb);
+        assert_eq!(want_b, pb, "D11: eval_pair B diverged ({} x {})", la, lb);
+        checked += 4;
     }
     println!(
-        "D11 CRC_KERNEL_DIFFERENTIAL_PASSED: scalar==reference, fold512==scalar on {} bodies (exhaustive lengths + patterns + random + eval2)",
+        "D11 CRC_KERNEL_DIFFERENTIAL_PASSED: scalar==reference, fold512==scalar on {} bodies (exhaustive lengths + patterns + random + eval2 + eval_pair)",
         checked
     );
 }
@@ -634,5 +640,78 @@ fn main() {
     test_d7_d8_watchdog_and_determinism(&gt);
     test_d9_indexed_equivalence(&gt);
     test_d11_crc_kernel_differential();
-    println!("=== ALL D1..D11 DIFFERENTIAL ORACLE CHECKS PASSED SUCCESSFULLY ===");
+    test_d12_batch_and_pipeline_equivalence(&gt);
+    println!("=== ALL D1..D12 DIFFERENTIAL ORACLE CHECKS PASSED SUCCESSFULLY ===");
+}
+
+/// D12 (R8): the batched apply loop (`ingest_batch`) and the RX-pipelined
+/// transport must be observationally identical to the classic per-frame
+/// ladder on the canonical sample — same counters, watermark, count, hash —
+/// under the canonical dual-feed MtuBound schedule, across a multi-pass
+/// reset cycle with fresh sessions (the pipelined transport's reset
+/// handshake + RX-side session bake are the new moving parts).
+fn test_d12_batch_and_pipeline_equivalence(gt: &[u8]) {
+    use nf_testkit::batch_parity::{classic_pass, default_cfg};
+    use nf_testkit::sched::build_schedule;
+    use nf_testkit::sink::SpanConformanceSink;
+    use nf_arbitrator::{Sequencer, Sink};
+    use nf_transport::replay::ReplayTransport;
+    use nf_transport::Transport;
+
+    let cfg = default_cfg();
+    let sched = build_schedule(gt, &cfg);
+    let sess = *b"D12PARIT01";
+
+    // Classic reference (5-tuple: counters, watermark, count, hash, events).
+    let mut t_c = ReplayTransport::new(gt, sched.clone(), sess);
+    let c_full = classic_pass(&mut t_c, sess);
+    let c = (c_full.0, c_full.1, c_full.2, c_full.3);
+
+    // Batched apply (ingest_batch) over the coalesced transport.
+    let mut t_b = ReplayTransport::new(gt, sched.clone(), sess);
+    t_b.set_poll_coalesce(128);
+    t_b.reset(sess);
+    let mut seq_b = nf_arbitrator::Sequencer::new();
+    let mut sink_b = SpanConformanceSink::new();
+    let mut batch = nf_transport::FrameBatch::new();
+    while t_b.poll(&mut batch) > 0 {
+        let now = t_b.now_ns();
+        seq_b.ingest_batch(t_b.batch_entries(&batch), now, &mut sink_b);
+    }
+    let b = (seq_b.counters(), seq_b.watermark(), sink_b.count, sink_b.hash);
+    assert_eq!(c, b, "D12: batched apply diverged from classic");
+
+    // RX-pipelined transport + the R12 SoA slice scan (the production
+    // path: vectorized ladder when the silicon has avx512f, scalar
+    // fallback otherwise — both pinned to classic here every CI run).
+    let mut t_p = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce(
+        gt, sched, sess, 128,
+    );
+    let ladder = nf_testkit::soa::ladder8_best();
+    let run_pipe = |t: &mut nf_transport::pipeline::PipelinedReplayTransport,
+                    s: [u8; 10]|
+     -> (nf_arbitrator::Counters, u64, u64, u64) {
+        t.reset(s);
+        let mut seq = Sequencer::new();
+        let mut sink = SpanConformanceSink::new();
+        while t.next_batch() {
+            seq.ingest_entries_ladder(t.entries(), t.now_ns(), &mut sink, ladder);
+        }
+        (seq.counters(), seq.watermark(), sink.count, sink.hash)
+    };
+    let p = run_pipe(&mut t_p, sess);
+    assert_eq!(c, p, "D12: RX-pipelined transport diverged from classic");
+
+    // Multi-pass reset cycle with fresh sessions (pipelined handshake).
+    for pass in 0..3u64 {
+        let mut s2 = *b"D12PARIT01";
+        s2[7..10].copy_from_slice(&(500 + pass).to_be_bytes()[5..8]);
+        let mut t_c2 = ReplayTransport::new(gt, build_schedule(gt, &cfg), s2);
+        let c2f = classic_pass(&mut t_c2, s2);
+        let c2 = (c2f.0, c2f.1, c2f.2, c2f.3);
+        let p2 = run_pipe(&mut t_p, s2);
+        assert_eq!(c2, p2, "D12: pipelined pass {pass} diverged from classic");
+    }
+
+    println!("D12 BATCH_AND_PIPELINE_EQUIVALENCE_PASSED: classic == ingest_batch == RX-pipelined (counters/watermark/count/hash) incl. multi-pass resets");
 }

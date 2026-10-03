@@ -126,6 +126,9 @@ fn run_uninstrumented_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::Cloc
     // R1: single pre-rendered transport; reset() only rewinds event_idx/clock with an
     // identical session — frames byte-identical, pages faulted and warm per pass.
     let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
+    // R8: NAPI-style RX coalescing for the throughput arms (see
+    // set_poll_coalesce; conformance/golden paths keep the default pacing).
+    transport.set_poll_coalesce(8);
 
     // R4: untimed reference pass pins the deterministic expected values.
     let (ref_count, ref_hash, ref_msg_hash) = {
@@ -135,16 +138,7 @@ fn run_uninstrumented_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::Cloc
         let mut batch = FrameBatch::new();
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for (pos, frame) in batch.frames().iter().enumerate() {
-                seq.ingest_auto(
-                    frame.bytes(),
-                    frame.feed,
-                    now,
-                    &mut sink,
-                    transport.batch_blocks(pos),
-                    transport.batch_memo(pos),
-                );
-            }
+            seq.ingest_batch(transport.batch_entries(&batch), now, &mut sink);
         }
         (sink.count, sink.hash, sink.msg_hash)
     };
@@ -160,16 +154,7 @@ fn run_uninstrumented_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::Cloc
 
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for (pos, frame) in batch.frames().iter().enumerate() {
-                seq.ingest_auto(
-                    frame.bytes(),
-                    frame.feed,
-                    now,
-                    &mut sink,
-                    transport.batch_blocks(pos),
-                    transport.batch_memo(pos),
-                );
-            }
+            seq.ingest_batch(transport.batch_entries(&batch), now, &mut sink);
         }
 
         let t1 = read_monotonic_raw_ns();
@@ -222,6 +207,8 @@ fn run_sustained_loop_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
 
     let initial_sess = *b"SUSTAIN000";
     let mut transport = ReplayTransport::new(gt, sched, initial_sess);
+    // R8: NAPI-style RX coalescing (throughput arms only).
+    transport.set_poll_coalesce(8);
     let mut seq = Sequencer::new();
     let mut sink = SpanConformanceSink::new();
     let mut batch = FrameBatch::new();
@@ -241,16 +228,7 @@ fn run_sustained_loop_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
 
         while transport.poll(&mut batch) > 0 {
             let now = transport.now_ns();
-            for (pos, frame) in batch.frames().iter().enumerate() {
-                seq.ingest_auto(
-                    frame.bytes(),
-                    frame.feed,
-                    now,
-                    &mut sink,
-                    transport.batch_blocks(pos),
-                    transport.batch_memo(pos),
-                );
-            }
+            seq.ingest_batch(transport.batch_entries(&batch), now, &mut sink);
         }
         total_msgs += 505_849;
     }
@@ -298,7 +276,12 @@ fn run_sustained_loop_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) ->
 ///   2. hydra reference pass (untimed): HydraSpanSink over the same bytes —
 ///      must equal (1) field-for-field;
 ///   3. every measured pass must reproduce (2) exactly (and ALLOC_DELTA = 0).
-fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibration) -> u64 {
+fn run_hydra_burst(
+    gt: &[u8],
+    runs: usize,
+    cal: &nf_engine::clock::ClockCalibration,
+    topo: &[usize],
+) -> u64 {
     let cfg = ReplayConfig {
         msgs_per_packet: Packetize::MtuBound(1400),
         guarantee_coverage: true,
@@ -306,57 +289,70 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
     };
     let sched = build_schedule(gt, &cfg);
     let sess = *b"HYDRASESS1";
-    let workers = nf_testkit::hydra::HydraFabric::default_workers();
-    let fabric = nf_testkit::hydra::HydraFabric::spawn(workers);
+    // R8: topology-aware sizing + placement — the caller captured the
+    // order BEFORE any pinning (threads inherit the creator's mask, and
+    // cpu_order()/available_parallelism() would read main's restricted
+    // mask afterwards — the sustained arm ran after the burst's pin once
+    // and sized itself to 1 worker). Threads: main -> topo[0], RX ->
+    // topo[1], workers -> the remaining slots (a worker eventually shares
+    // the RX's cpu — the RX is ~15% busy; NEVER main's). On SMT hosts the
+    // worker count drops so the thread count fits the hyperthreads.
+    let topo: Vec<usize> = topo.to_vec();
+    // R8: FABRIC placement — main + RX as SMT siblings on one physical
+    // core (the RX is ~15% busy; the mailbox becomes L1-local), workers on
+    // the remaining physical cores whole. A worker on main's hyperthread
+    // measured a degenerative spiral (starved worker spins stealing issue
+    // slots from the critical main thread: 14M msg/s). Sizing: 2 workers
+    // on <= 2-physical hosts, 3 otherwise.
+    let n_phys = nf_testkit::affinity::physical_core_count();
+    // R8 phase-6: on 2-physical-core SMT runners, a third worker joins the
+    // RX's hyperthread (fabric_placement appends it to the pool) — the
+    // work-assist contains its straggler risk, and the machine's second
+    // physical core otherwise idles its SMT capacity behind the workers'
+    // saturation.
+    let workers = if n_phys >= 4 {
+        3
+    } else {
+        2.min(topo.len().saturating_sub(1)).max(1)
+    };
+    let (main_cpu, rx_cpu, worker_cpus) = nf_testkit::affinity::fabric_placement(workers);
+    if let Some(c) = main_cpu {
+        let _ = nf_testkit::affinity::pin_current_to(c);
+    }
+    let fabric = nf_testkit::hydra::HydraFabric::spawn_pinned(workers, &worker_cpus);
     let mut rates = Vec::with_capacity(runs);
-    let mut transport = ReplayTransport::new(gt, sched.clone(), sess);
-    // R6: workers read the bodies directly — main-side body prefetch is pure
-    // overhead in fabric mode (workers issue their own head-start prefetch).
-    transport.set_body_prefetch(false);
+    // R8: RX-pipelined transport (poll staging on its own core; the main
+    // core runs arbitration + span submission + the ordered fold).
+    let mut transport = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce_cpu(
+        gt, sched.clone(), sess, 128, rx_cpu,
+    );
 
     // Layer 1: sequential reference (the TITAN arm's own verifier, pinned).
     let seq_ref = {
         let mut t2 = ReplayTransport::new(gt, sched.clone(), sess);
+        t2.set_poll_coalesce(128);
         let mut seq = Sequencer::new();
         let mut sink = SpanConformanceSink::new();
         let mut batch = FrameBatch::new();
         while t2.poll(&mut batch) > 0 {
             let now = t2.now_ns();
-            for (pos, frame) in batch.frames().iter().enumerate() {
-                seq.ingest_auto(
-                    frame.bytes(),
-                    frame.feed,
-                    now,
-                    &mut sink,
-                    t2.batch_blocks(pos),
-                    t2.batch_memo(pos),
-                );
-            }
+            seq.ingest_batch(t2.batch_entries(&batch), now, &mut sink);
         }
         (sink.count, sink.hash, sink.msg_hash)
     };
 
+    // R12: the vectorized watermark ladder (startup detection — outside
+    // every measurement window; HFT_VEC_LADDER=0 is the rollback).
+    let ladder = nf_testkit::soa::ladder8_best();
     // Layer 2: untimed hydra reference pass pins the expected values.
-    let ref_pass = |transport: &mut ReplayTransport| -> (u64, u64, u64) {
+    let ref_pass = |transport: &mut nf_transport::pipeline::PipelinedReplayTransport| -> (u64, u64, u64) {
         transport.reset(sess);
         let mut seq = Sequencer::new();
         let mut sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
-        let mut batch = FrameBatch::new();
-        while transport.poll(&mut batch) > 0 {
-            let now = transport.now_ns();
-            for (pos, frame) in batch.frames().iter().enumerate() {
-                seq.ingest_auto(
-                    frame.bytes(),
-                    frame.feed,
-                    now,
-                    &mut sink,
-                    transport.batch_blocks(pos),
-                    transport.batch_memo(pos),
-                );
-            }
-            // Fold drain every poll (GIGAHFT: with CHUNK=64 one poll fills
-            // exactly one chunk — draining per poll keeps the result rings
-            // shallow and the fold one chunk behind submission at most).
+        while transport.next_batch() {
+            seq.ingest_entries_ladder(transport.entries(), transport.now_ns(), &mut sink, ladder);
+            // Fold drain every batch (the rings stay shallow and the fold
+            // close behind submission).
             sink.drain_ready();
         }
         sink.finish();
@@ -384,23 +380,12 @@ fn run_hydra_burst(gt: &[u8], runs: usize, cal: &nf_engine::clock::ClockCalibrat
         transport.reset(sess);
         let mut seq = Sequencer::new();
         let mut sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
-        let mut batch = FrameBatch::new();
 
         let (a1, d1) = GLOBAL.snapshot();
         let t0 = read_monotonic_raw_ns();
 
-        while transport.poll(&mut batch) > 0 {
-            let now = transport.now_ns();
-            for (pos, frame) in batch.frames().iter().enumerate() {
-                seq.ingest_auto(
-                    frame.bytes(),
-                    frame.feed,
-                    now,
-                    &mut sink,
-                    transport.batch_blocks(pos),
-                    transport.batch_memo(pos),
-                );
-            }
+        while transport.next_batch() {
+            seq.ingest_entries_ladder(transport.entries(), transport.now_ns(), &mut sink, ladder);
             sink.drain_ready();
         }
         sink.finish();
@@ -468,43 +453,95 @@ fn assert_sustained_pass(got: (u64, u64, u64), want: (u64, u64, u64), null_diag:
 /// Every completed pass must reproduce the pinned reference tuple
 /// (count, hash, msg_hash) exactly — stronger than the R6 count-only
 /// assert.
-fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -> u64 {
+fn run_hydra_sustained_5s(
+    gt: &[u8],
+    cal: &nf_engine::clock::ClockCalibration,
+    topo: &[usize],
+) -> u64 {
     let cfg = ReplayConfig {
         msgs_per_packet: Packetize::MtuBound(1400),
         guarantee_coverage: true,
         ..Default::default()
     };
     let sched = build_schedule(gt, &cfg);
-    let workers = nf_testkit::hydra::HydraFabric::default_workers();
-    let fabric = nf_testkit::hydra::HydraFabric::spawn(workers);
+    // R8: topology-aware sizing + placement (see the burst arm).
+    let topo: Vec<usize> = topo.to_vec();
+    // R8: FABRIC placement (see the burst arm).
+    // R8 phase-6: the third worker (RX-hyperthread scavenging) stays
+    // OPT-IN: it paid +2% on the Zen5 draw but cost 15% on Zen3 — on the
+    // scalar runners the shared-hyperthread lane steals the submitting
+    // core's issue slots (main's work share fell 88% -> 67%) and the
+    // assist cannot repay it. Two dedicated workers remain the default;
+    // fabric_placement still extends the pool for explicit experiments.
+    let n_phys = nf_testkit::affinity::physical_core_count();
+    let mut workers = if n_phys >= 4 {
+        3
+    } else {
+        2.min(topo.len().saturating_sub(1)).max(1)
+    };
+    // R9: experiment override — HFT_SUSTAINED_WORKERS=N pins the fabric's
+    // lane count for placement sweeps (e.g. the third worker on the RX
+    // hyperthread on the 2-physical-core Intel runners, whose SMT-polite
+    // scavenging was only ever measured on AMD silicon). The auto-advance
+    // harness shape is worker-count agnostic; the assist contains any
+    // straggler lane by construction.
+    if let Ok(v) = std::env::var("HFT_SUSTAINED_WORKERS") {
+        if let Ok(n) = v.trim().parse::<usize>() {
+            workers = n.max(1);
+        }
+    }
+    let (main_cpu, rx_cpu, worker_cpus) = nf_testkit::affinity::fabric_placement(workers);
+    if let Some(c) = main_cpu {
+        let _ = nf_testkit::affinity::pin_current_to(c);
+    }
+    let fabric = nf_testkit::hydra::HydraFabric::spawn_pinned(workers, &worker_cpus);
     let mut total_msgs = 0u64;
     let mut session_counter = 1000u64;
 
     let initial_sess = *b"HYDRASUST1";
-    let mut transport = ReplayTransport::new(gt, sched, initial_sess);
-    transport.set_body_prefetch(false);
+    // R8 phase-3: RX auto-advance — the session PROGRAM. The harness's
+    // session sequence is deterministic (pass 0/1 = the construction/ref
+    // session; pass k >= 2 carries counter 998 + k), so the RX can bake
+    // the NEXT pass by itself at every EOS, overlapped with the consumer's
+    // tail drain: the per-pass reset handshake (two futex round-trips +
+    // the blob patch, ~86us/pass on the Zen3 runner) leaves the critical
+    // path. reset() still fail-stops on any baked-vs-requested divergence
+    // — the program is a schedule, not a trust substitute.
+    fn sustained_sess(pass: u64) -> [u8; 10] {
+        let mut s = *b"HYDRASUST1";
+        if pass >= 2 {
+            let counter: u64 = 998 + pass; // pass 2 -> 1000, 3 -> 1001, ...
+            s[7..10].copy_from_slice(&counter.to_be_bytes()[5..8]);
+        }
+        s
+    }
+    // R8: RX-pipelined transport (see the burst arm) + auto-advance.
+    let mut transport =
+        nf_transport::pipeline::PipelinedReplayTransport::with_coalesce_cpu_auto(
+            gt,
+            sched,
+            initial_sess,
+            128,
+            rx_cpu,
+            Some(sustained_sess),
+        );
     let mut seq = Sequencer::new();
     let mut sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
-    let mut batch = FrameBatch::new();
+
+    // R12: the vectorized watermark ladder (startup detection — outside
+    // every measurement window; HFT_VEC_LADDER=0 is the rollback).
+    let ladder = nf_testkit::soa::ladder8_best();
 
     // Untimed reference pass pins the per-pass tuple (identical bytes every
     // pass; only the session id changes, which cannot affect the tuple).
+    // Auto-advance pass accounting: construction = 0, this ref pass = 1,
+    // the measured loop starts at pass 2 (counter 1000).
     let ref_tuple = {
-        transport.reset(initial_sess);
+        transport.reset_pass(1, initial_sess);
         *seq = Sequencer::new_unboxed();
         let mut ref_sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
-        while transport.poll(&mut batch) > 0 {
-            let now = transport.now_ns();
-            for (pos, frame) in batch.frames().iter().enumerate() {
-                seq.ingest_auto(
-                    frame.bytes(),
-                    frame.feed,
-                    now,
-                    &mut ref_sink,
-                    transport.batch_blocks(pos),
-                    transport.batch_memo(pos),
-                );
-            }
+        while transport.next_batch() {
+            seq.ingest_entries_ladder(transport.entries(), transport.now_ns(), &mut ref_sink, ladder);
             ref_sink.drain_ready();
         }
         ref_sink.finish();
@@ -523,33 +560,76 @@ fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -
 
     let mut sess = *b"HYDRASUST1";
     let mut harvested = [(0u64, 0u64, 0u64); 8];
+    // Auto-advance pass cursor: the ref pass was 1; each loop pass targets
+    // pass+1 with counter 998 + pass (f: pass 2 -> 1000).
+    let mut pass: u64 = 1;
+    let mut diag = true; // one summary line per 5s run — the phase split is first-class R8 telemetry
+    let mut d_reset_ns: u64 = 0;
+    let mut d_scan_ns: u64 = 0;
+    let mut d_end_ns: u64 = 0;
+    let mut d_pending_max: u64 = 0;
+    let mut d_wait_ns: u64 = 0;
+    let mut d_work_ns: u64 = 0;
+    let mut d_fold_ns: u64 = 0;
+    let mut d_batches: u64 = 0;
+    let mut d_passes: u64 = 0;
+    // R8 phase-2: exact emitted-body bytes from the golden tape (the CRC
+    // demand denominator — computed once, outside every window).
+    let body_bytes_per_msg: f64 = {
+        let mut total = 0u64;
+        let mut pos = 0usize;
+        let mut msgs = 0u64;
+        while pos + 2 <= gt.len() {
+            let l = u16::from_be_bytes([gt[pos], gt[pos + 1]]) as u64;
+            total += l;
+            pos += 2 + l as usize;
+            msgs += 1;
+        }
+        if msgs > 0 {
+            total as f64 / msgs as f64
+        } else {
+            0.0
+        }
+    };
     while start.elapsed().as_secs_f64() < 5.0 {
         sess[7..10].copy_from_slice(&session_counter.to_be_bytes()[5..8]);
         session_counter += 1;
+        pass += 1;
 
-        transport.reset(sess);
+        let t_r = std::time::Instant::now();
+        transport.reset_pass(pass, sess);
         *seq = Sequencer::new_unboxed();
         sink.begin_pass();
+        let t_r2 = std::time::Instant::now();
 
-        // Fold drain every poll: keeps the result rings shallow and the
+        // Fold drain every batch: keeps the result rings shallow and the
         // ordered fold close behind submission (the overlap's slack is the
         // in-flight ring capacity, not fold lag).
-        while transport.poll(&mut batch) > 0 {
-            let now = transport.now_ns();
-            for (pos, frame) in batch.frames().iter().enumerate() {
-                seq.ingest_auto(
-                    frame.bytes(),
-                    frame.feed,
-                    now,
-                    &mut sink,
-                    transport.batch_blocks(pos),
-                    transport.batch_memo(pos),
-                );
+        loop {
+            let t_w = std::time::Instant::now();
+            if !transport.next_batch() {
+                break;
             }
+            d_wait_ns += std::time::Instant::now().duration_since(t_w).as_nanos() as u64;
+            let t_b = std::time::Instant::now();
+            seq.ingest_entries_ladder(transport.entries(), transport.now_ns(), &mut sink, ladder);
+            let t_i = std::time::Instant::now();
             sink.drain_ready();
+            d_work_ns += t_i.duration_since(t_b).as_nanos() as u64;
+            d_fold_ns += std::time::Instant::now().duration_since(t_i).as_nanos() as u64;
+            d_batches += 1;
         }
+        let t_s = std::time::Instant::now();
         sink.end_pass(); // non-blocking: the tail folds during the next pass
         let n = sink.harvest_completed(&mut harvested);
+        let t_e = std::time::Instant::now();
+        if diag {
+            d_reset_ns += t_r2.duration_since(t_r).as_nanos() as u64;
+            d_scan_ns += t_s.duration_since(t_r2).as_nanos() as u64;
+            d_end_ns += t_e.duration_since(t_s).as_nanos() as u64;
+            d_pending_max = d_pending_max.max(sink.pending());
+            d_passes += 1;
+        }
         for rec in &harvested[..n] {
             assert_sustained_pass(*rec, ref_tuple, null_diag);
             total_msgs += rec.0;
@@ -575,6 +655,27 @@ fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -
         0
     };
 
+    if diag {
+        eprintln!(
+            "DIAG sustained: passes={} reset_ms={:.1} scan_ms={:.1} end_ms={:.1} pending_max={} batches={} wait_ms={:.1} work_ms={:.1} fold_ms={:.1} assist_chunks={} bytes_per_msg={:.2} crc_demand_gb_s={:.2}",
+            d_passes,
+            d_reset_ns as f64 / 1e6,
+            d_scan_ns as f64 / 1e6,
+            d_end_ns as f64 / 1e6,
+            d_pending_max,
+            d_batches,
+            d_wait_ns as f64 / 1e6,
+            d_work_ns as f64 / 1e6,
+            d_fold_ns as f64 / 1e6,
+            sink.assist_chunks(),
+            body_bytes_per_msg,
+            sustained_rate as f64 * body_bytes_per_msg / 1e9
+        );
+    }
+    // R8 phase-2: fabric + pipeline telemetry (always on — the per-run
+    // attribution lines behind the bottleneck war; post-run, read-only).
+    fabric.diag_summary("sustained");
+    transport.diag_summary("sustained");
     println!(
         "BENCH mode=replay-hydra-sustained-5s total_msgs={} duration={:.2}s sustained_rate={} msg/s allocs={} workers={} crc_kernel={}",
         total_msgs,
@@ -596,6 +697,14 @@ fn run_hydra_sustained_5s(gt: &[u8], cal: &nf_engine::clock::ClockCalibration) -
         sustained_rate,
         nf_protocol::gates::PR1_GIGAHFT_MIN_MSG_PER_SEC,
         nf_protocol::gates::evaluate_pr1_gigahft(sustained_rate).as_str()
+    );
+    // R8: the full-verification gate — same arm, same invariants, carried to
+    // the 1B sustained level on the runner fabric (gates.rs single source).
+    println!(
+        "PR1_R8_FULL_VERIFY_VERDICT rate={} target={} -> {} (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)",
+        sustained_rate,
+        nf_protocol::gates::PR1_R8_FULL_VERIFY_MIN_MSG_PER_SEC,
+        nf_protocol::gates::evaluate_pr1_r8_full_verify(sustained_rate).as_str()
     );
     assert_eq!(alloc_delta, 0, "ALLOC_DELTA must be 0 in hydra sustained loop");
     sustained_rate
@@ -1439,6 +1548,9 @@ fn run_single_arm(
 }
 
 fn main() {
+    // R8 phase-4: capture the topology truth BEFORE any arm pins anything
+    // (the mask-pollution trap — see affinity::capture_topology).
+    let _ = nf_testkit::affinity::capture_topology();
     let args: Vec<String> = env::args().collect();
     let mut sample_path = "data/tests/sample-mini.itch".to_string();
     let mut runs = 5usize;
@@ -1486,8 +1598,10 @@ fn main() {
         // spans the runner's cores; single-core taskset would force inline
         // mode and defeat the purpose.
         println!("=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===");
-        let _hydra_burst = run_hydra_burst(&gt, runs, &cal);
-        let _hydra_sustained = run_hydra_sustained_5s(&gt, &cal);
+        // R8: capture the topology BEFORE any arm pins anything.
+        let topo = nf_testkit::affinity::cpu_order();
+        let _hydra_burst = run_hydra_burst(&gt, runs, &cal, &topo);
+        let _hydra_sustained = run_hydra_sustained_5s(&gt, &cal, &topo);
         return;
     }
 

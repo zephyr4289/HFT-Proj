@@ -20,6 +20,11 @@ rustc --print cfg 2>&1 | grep -E "target_arch|target_cpu|target_feature" | head 
 # taskset optional (fallback unpinned); nproc + cpuinfo logged for provenance.
 echo "CPUS: $(nproc 2>&1 || echo unknown)"
 grep -m1 "model name" /proc/cpuinfo 2>&1 || true
+# R8: topology provenance — sibling groups + physical count (drives the
+# fabric's thread sizing; see nf-testkit/src/affinity.rs).
+for c in $(seq 0 $(( $(nproc) - 1 ))); do
+  echo "cpu$c siblings: $(cat /sys/devices/system/cpu/cpu$c/topology/thread_siblings_list 2>/dev/null || echo n/a) L3: $(cat /sys/devices/system/cpu/cpu$c/cache/index3/shared_cpu_list 2>/dev/null || echo n/a)"
+done
 if command -v taskset >/dev/null 2>&1; then
   echo "taskset: $(taskset -pc $$ 2>&1 || true)"
   export HFT_TASKSET="taskset -c 1"
@@ -91,17 +96,163 @@ echo "=== 11b. R6: PR-1 HYDRA Bit-Exact Multi-Core Span Conformance (UNPINNED) =
 # is the single threshold source — see docs/20-hydra.md for the topology
 # guidance (4-vCPU runner; adjust the constant if the pool's silicon differs).
 cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --hydra-only --runs 1 > /dev/null 2>&1 || true
-cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --hydra-only --runs 7 | tee /tmp/bench_hydra.txt
+cargo run --release -p nf-engine --bin bench -- --sample data/tests/sample-mini.itch --hydra-only --runs 7 2>&1 | tee /tmp/bench_hydra.txt
 grep -q "HYDRA_BITPARITY.*-> BIT-EXACT" /tmp/bench_hydra.txt
 grep -q "allocs=0" /tmp/bench_hydra.txt
 grep -q "PR1_HYDRA_VERDICT" /tmp/bench_hydra.txt
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_hydra.txt
+# R8: the full-verify verdict line must be present and honestly evaluated
+# (the 1B sustained target is OPEN — measured 288M on the Zen5 runner;
+# enforcement lands when the fabric reaches it; see docs/22 §Physics).
+grep -q "PR1_R8_FULL_VERIFY_VERDICT rate=" /tmp/bench_hydra.txt
 
-echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D11) ==="
+# R10b: the blob's THP backing line is a first-class CI artifact — a draw
+# that lost the hugepage grant must be VISIBLE, not silent (the 1.867B gate
+# failure was unattributable before this line existed). Assert presence;
+# grep the verdict per draw so the fish-history lands in the log summary.
+grep -q "BLOB_BACKING" /tmp/bench_hydra.txt
+grep "BLOB_BACKING" /tmp/bench_hydra.txt | head -1
+
+echo "=== 11c. R8: Kernel-Ceiling Microbenchmark (fabric physics telemetry) ==="
+# Diagnostics only — never gated. Prints the runner's measured CRC ceilings
+# per kernel (scalar8lane / fold512 / pclmul128_raw / crc32:pclmul mix) and
+# per placement (1 cpu / 2 distinct / 2 SMT), so the fabric's achieved
+# numbers sit next to the machine's physics in every run log.
+cargo run --release -p nf-engine --bin kbench | tee /tmp/kbench.txt
+grep -q "KBENCH mode=scalar8lane threads=1" /tmp/kbench.txt
+grep -q "KBENCH done" /tmp/kbench.txt
+
+echo "=== 11d. R9: Fabric-Shape Kernel Ablation (layout attribution telemetry) ==="
+# Diagnostics only — never gated. Decomposes the worker's real execution
+# shape (P packed / K real-layout kernel-only / D +desc ring / R +res ring
+# / F full replica) on the actual tape bodies, attributing per-span cycle
+# costs to the layout, the handoff rings, and the kernel. Post-R9 the real
+# blob is alias-deduplicated, so K tracks the packed P closely; any K-vs-P
+# regression is a layout regression and must be investigated.
+cargo run --release -p nf-testkit --bin fbench -- --stage all --workers 2 --ms 1000 | tee /tmp/fbench.txt
+grep -q "FBENCH stage=P" /tmp/fbench.txt
+grep -q "FBENCH stage=F" /tmp/fbench.txt
+grep -q "FBENCH done" /tmp/fbench.txt
+
+echo "=== 11e. R11: Unarmed Prepatch Soak (rollback evidence) ==="
+# R11: the prepatch is DEFAULT ON (7/7 armed-wins on the R10 stack across
+# Zen3 / 8573C / 8370C — see pipeline.rs R11 note); this arm keeps the
+# UNARMED side of the ledger running on every push (HFT_PREPATCH=0 is the
+# rollback). The default (armed) numbers are 11b above; the per-draw
+# comparison lands in the log summary either way.
+HFT_PREPATCH=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_prepatch.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_prepatch.txt
+grep -q "allocs=0" /tmp/bench_prepatch.txt
+
+echo "=== 11f. R9: Third-Worker Placement Sweep (RX-hyperthread scavenging) ==="
+# The 3-worker shape (third lane on the RX's hyperthread) was only ever
+# measured on AMD (-15% Zen3, +2% Zen5). Post-R9 the workers' delivery
+# economics changed (aliasing + spray); this sweep measures the shape on
+# EVERY runner draw the CI sees, with the assist containing any straggler
+# lane by construction. Diagnostics only — never gated beyond the
+# bit-exact asserts the sustained arm already enforces.
+HFT_SUSTAINED_WORKERS=3 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_w3.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_w3.txt
+grep -q "allocs=0" /tmp/bench_w3.txt
+
+echo "=== 11g. R9: Worker eval2 Interleave Sweep (load-MLP experiment) ==="
+# The kbench eval-vs-eval2 parity was measured on PACKED buffers; the
+# post-aliasing real layout is L3-latency bound, where two concurrent
+# span streams double the loads in flight. Diagnostics only.
+HFT_WORKER_EVAL2=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_eval2.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_eval2.txt
+grep -q "allocs=0" /tmp/bench_eval2.txt
+
+echo "=== 11h. R9: Worker Prefetch Shape Sweep (deeper lead) ==="
+# The spray default (2,22,24) was tuned on the shared-core sandbox; the
+# dedicated worker pairs of the real runners may prefer a deeper lead.
+# Diagnostics only.
+HFT_PF_AHEAD=6 HFT_PF_LINES=32 HFT_PF_BURST=32 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_pf.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_pf.txt
+grep -q "allocs=0" /tmp/bench_pf.txt
+
+echo "=== 11i. R10: Assist-Ring Depth Sweep (the spin->CRC conversion budget) ==="
+# The deep assist ring converts lane-full backpressure spins into
+# in-window CRC on the submitting core. The depth bounds how far the
+# submit point may run ahead of the fold before the conversion saturates:
+# local sandbox 4/16/64/256 -> 266/343/422/442M. The 11b default arm
+# carries slots=64; this sweep brackets the curve per runner class
+# (shallow=4 reproduces the R8 equilibrium, deep=256 probes the lead).
+# Diagnostics only — bit-exactness is asserted by every arm's per-pass
+# tuple checks.
+HFT_ASSIST_SLOTS=4 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_assist4.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_assist4.txt
+grep -q "allocs=0" /tmp/bench_assist4.txt
+HFT_ASSIST_SLOTS=256 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_assist256.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_assist256.txt
+grep -q "allocs=0" /tmp/bench_assist256.txt
+
+echo "=== 11j. R10: Worker Pipelined-Tail Sweep (sequential-load pair eval) ==="
+# The deferred-ending schedule: consecutive span pairs evaluate through
+# eval_pair (A's vector fold, B's vector fold, A's endings, B's endings —
+# one sequential load stream, the per-span ending overhead hidden under
+# the next span's clmul chains). Unlike eval2 (dead: -28%, interleaved
+# loads thrash the streamer) the load order is unchanged. kbench's
+# fold512_pair vs fold512 rows attribute the kernel-level effect on
+# every fold512 draw. Diagnostics only.
+HFT_WORKER_PIPE=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_pipe.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_pipe.txt
+grep -q "allocs=0" /tmp/bench_pipe.txt
+
+echo "=== 11k. R11: Distinct-Core Worker Placement Sweep (the SMT ceiling unlock) ==="
+# THE PLACEMENT CEILING: on the 2-physical-core SMT draws the default
+# (siblings) strategy stacks BOTH workers on one physical core's two
+# hyperthreads — their combined fold is capped at the kbench 2cpu_smt
+# ceiling (32.83 GB/s on the 1.109B draw) while 2cpu_distinct sat unused
+# at 61.74 GB/s. HFT_FABRIC_PLACE=distinct gives each worker a physical
+# core and demotes main+rx to the SMT siblings (each steals issue slots
+# from exactly one worker). The worker DIAG lines echo the new pins;
+# kbench's fold512 2cpu_distinct row prices the ceiling it chases.
+# Diagnostics only — bit-exactness asserted by the arm's per-pass checks.
+HFT_FABRIC_PLACE=distinct cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_place_distinct.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_place_distinct.txt
+grep -q "allocs=0" /tmp/bench_place_distinct.txt
+
+echo "=== 11l. R11: Tri-Stream Fold Sweep (3-way interleave ILP) ==="
+# The fold kernel's two state chains run one clmul->xor->clmul->xor
+# dependency per 128 body bytes; measured fold512 sits at ~9 cyc/step —
+# near that chain's length. The tri-stream split (mod-3 block pairs,
+# y^384 stream fold, fixed-power merge) gives the OoO engine six chains
+# over ONE load stream at unchanged per-byte issue cost. kbench's
+# fold512_tri vs fold512 rows (1t / 2cpu_distinct / 2cpu_smt) attribute
+# the kernel effect; this sweep prices it through the worker loop on the
+# real span mix. Diagnostics only — D11 + the crcfold differential sweep
+# pin the values bit-exact.
+HFT_WORKER_TRI=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_tri.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_tri.txt
+grep -q "allocs=0" /tmp/bench_tri.txt
+
+echo "=== 11m. R12: Vectorized Watermark Ladder ARMED Soak (the refuted experiment) ==="
+# R12 verdict (the R9c->R9d law): the CI attribution measured the ladder
+# at -5.3% sustained on the 8573C (11b 968.5M vs scalar 1,022.6M) and
+# +1.0% on the 8370C — the classes disagree and the record class
+# refutes, so the default is OFF and this arm runs the ARMED soak for
+# the evidence ledger (the eval2/tri precedent). Front A recovers to
+# ~R11 parity with it on; the sustained record gate is what it costs.
+HFT_VEC_LADDER=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_vecladder_on.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_vecladder_on.txt
+grep -q "allocs=0" /tmp/bench_vecladder_on.txt
+
+echo "=== 11n. R12: Compact 8-Byte Span Descriptors OFF (rollback attribution) ==="
+# The R12 Desc8 format: {offset:u32 | len:u16 | flags:u16} — 8 descs per
+# 64B L1 line (vs 4), one u64 store per span, span ids derived worker-side
+# from per-chunk anchor descs (robust to assist diversion; the fold-order
+# assert pins the derivation). 11b runs it ON; this arm runs the legacy
+# 16-byte descriptor format for per-draw attribution.
+HFT_DESC8=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_desc8_off.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_desc8_off.txt
+grep -q "allocs=0" /tmp/bench_desc8_off.txt
+
+echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)
 cargo run --release -p nf-testkit --bin diff_oracle | tee /tmp/diff_oracle.txt
-grep -q "ALL D1..D11 DIFFERENTIAL ORACLE CHECKS PASSED SUCCESSFULLY" /tmp/diff_oracle.txt
+grep -q "ALL D1..D12 DIFFERENTIAL ORACLE CHECKS PASSED SUCCESSFULLY" /tmp/diff_oracle.txt
 
 echo "=== 13. T2 Window Sweep & Full 17-Cell Matrix Confluence Campaign ==="
 cargo run --release -p nf-testkit --bin window_sweep | tee /tmp/window_sweep.txt
@@ -134,7 +285,11 @@ else
   tail -n 20 /tmp/musl_build.log || true
   echo "MUSL_BUILD_FAILED fallback gnu" > /tmp/musl_build.log
 fi
-$HFT_TASKSET "$HFT_BIN" --sample data/tests/sample-mini.itch --runs 30 --warmup 5 --output-format json | tee /tmp/bench_results.json
+# R8: hft_bench runs the RX-pipelined span arm (2 threads) — the external
+# single-core taskset would timeslice them. The binary pins its own threads
+# topology-aware (main -> first allowed cpu, RX -> second); the classic
+# per-message arm runs on the pinned main thread (deterministic, as before).
+"$HFT_BIN" --sample data/tests/sample-mini.itch --runs 30 --warmup 5 --output-format json | tee /tmp/bench_results.json
 grep -q "median_cycles" /tmp/bench_results.json
 python3 - <<'PYEOF'
 import json, sys
@@ -157,6 +312,12 @@ failed = []
 # R4: PR-1 TITAN — span arm wall-rate (count sink, closed-form emission) >= 100M msg/s
 if r['span_rate_msg_per_sec'] < 100_000_000:
     failed.append(f"span_rate_msg_per_sec: {r['span_rate_msg_per_sec']} < 100000000 msg/s (PR1_TITAN)")
+# R8: PR-1 pure ingest — 2B msg/s on the RX-pipelined span arm (gates.rs
+# single threshold source; the verdict field is computed in Rust from the
+# same statistical median). ENFORCED since the R8 branch stabilized six
+# consecutive runner passes (2.04-2.48B on Zen3, 4.08B on Zen5).
+if r.get('r8_pure_ingest_verdict') != 'PASS':
+    failed.append(f"r8_pure_ingest_verdict: {r.get('r8_pure_ingest_verdict')} (R8 pure ingest 2B gate — see gates.rs PR1_R8_PURE_INGEST_MIN_MSG_PER_SEC)")
 for metric, rule in constraints.items():
     val = r[metric]
     if val > rule['max']:

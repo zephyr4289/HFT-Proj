@@ -89,6 +89,7 @@ dependencies = [
 name = "nf-testkit"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "nf-arbitrator",
  "nf-protocol",
  "nf-recovery",

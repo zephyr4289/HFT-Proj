@@ -69,6 +69,20 @@ pub struct RecoveryIntent {
     pub to_excl: u64,
 }
 
+/// R8: one buffered span emission for [`Sink::on_span_batch`] — the exact
+/// argument tuple of one `on_span` call (see its contract), captured by the
+/// batched apply loop and delivered in emission order, several spans per
+/// call. Sinks that do not override `on_span_batch` receive the identical
+/// per-span `on_span` sequence (the default loops), so batched emission is
+/// observationally identical to eager emission for every sink.
+#[derive(Debug, Clone, Copy)]
+pub struct SpanRec<'a> {
+    pub first_seq: u64,
+    pub count: u16,
+    pub body: &'a [u8],
+    pub blocks: &'a [(u64, u32, u32)],
+}
+
 /// Confluence consumer sink. Single-threaded fold target.
 ///
 /// R3 span protocol: a sink MAY opt into batched emission for contiguous
@@ -115,5 +129,20 @@ pub trait Sink {
         _body: &[u8],
         _blocks: &[(u64, u32, u32)],
     ) {
+    }
+
+    /// R8: batched span emission — `recs` carries consecutive span emissions
+    /// in exact emission order (the same proof era for all of them; each rec
+    /// satisfies the `on_span` contract; the recs are globally consecutive
+    /// in sequence space whenever the source frames were). The default
+    /// implementation replays them one by one through `on_span`, so any sink
+    /// observes bit-identical emissions either way; performance sinks
+    /// override to amortize per-call work (black-box guards, hashing setup,
+    /// fabric bookkeeping) across the batch.
+    #[inline(always)]
+    fn on_span_batch(&mut self, proof: &LiveFeedProof, recs: &[SpanRec<'_>]) {
+        for r in recs {
+            self.on_span(proof, r.first_seq, r.count, r.body, r.blocks);
+        }
     }
 }

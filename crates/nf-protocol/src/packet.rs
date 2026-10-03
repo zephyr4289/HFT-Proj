@@ -32,6 +32,95 @@ pub struct FrameMemo {
     pub valid_count: u16,
 }
 
+/// R12: the 8-entry vectorized watermark-ladder check — a pure function of
+/// a GATHERED group: the caller collects `firsts[8]` and `ns[8]` from the
+/// entries it is about to scan (AoS loads, L1-hot — zero transport-side
+/// cost) and passes pointers to those arrays with the scan's current
+/// watermark `w`. It returns whether the 8 entries are exactly:
+///
+/// * `[emit, dup, emit, dup, emit, dup, emit, dup]` — even entries emit
+///   (their `first`s chain `w → w+n₀ → …`), odd entries are PURE duplicates
+///   (same `first` as their even partner, `n_odd ≤ n_even` so their last
+///   sequence sits below the watermark at their turn),
+///
+/// in which case the scan can advance `w` by `Σ n_even`, emit the four even
+/// spans, and count the four odd entries as duplicates — observably
+/// identical (counters, emissions, watermark) to running the scalar ladder
+/// over the same eight entries, proven by the pair/chains/anchor relations
+/// (see `nf_testkit::soa` for the derivation).
+///
+/// The implementation lives behind a runtime CPU gate (`avx512f`) in
+/// `nf_testkit::soa` because CI compiles `x86-64-v3`; the type lives here as
+/// the shared contract between the arbitrator (the gather + the scalar
+/// fallback) and the testkit (the SIMD implementation). Raw pointers keep
+/// the per-group call lean (no fat slices); passing raw pointers is safe,
+/// and the implementation's dereference is bounded by the documented
+/// contract.
+pub type SoaLadder8 = fn(*const u64, *const u64, u64) -> bool;
+
+/// R8: one frame ready for batched ingest — the frame bytes together with
+/// the transport's precomputed per-frame index (Q1 block triples + R2
+/// validation memo) in a single value, so the sequencer's batch apply loop
+/// consumes frames with zero side-table indirection.
+///
+/// `blocks`/`memo` follow the exact contracts of
+/// `Transport::batch_blocks`/`Transport::batch_memo`: empty blocks means
+/// "no index" (HB/EOS frame, live transport, or defensive fallback — the
+/// sequencer then takes the classic per-frame path, identical observables);
+/// `None` memo means "unmemoized — validate in-window".
+///
+/// The batched apply path is observationally identical to feeding the same
+/// frames through `ingest_auto` one by one: the same per-frame arbitration
+/// ladder runs (session dispatch, kind classify, span/dup classify, apply),
+/// in the same order, with the same counters and emissions. The only
+/// difference is mechanical: sequencer state is hoisted across the steady
+/// run and span emissions are buffered until a cold path or batch end
+/// flushes them in order.
+#[derive(Debug, Clone, Copy)]
+pub struct FrameEntry<'a> {
+    pub bytes: &'a [u8],
+    /// Origin feed (arbitrator `FeedId` — plain u8, aliased at the consumer).
+    pub feed: u8,
+    pub blocks: &'a [(u64, u32, u32)],
+    pub memo: Option<FrameMemo>,
+    /// R8: the frame's first block sequence number, carried inline by the
+    /// transport's slot (from the schedule at render time). With
+    /// `blocks.len()` this yields last = first + n - 1 without touching the
+    /// triple store; for triple-carrying rendered frames it equals
+    /// `blocks[0].0` by construction (the render walk emits exactly
+    /// `first_seq + i` triples or tombstones the frame).
+    pub first_seq: u64,
+    /// R8: the frame's session prefix as the sequencer's fused compare
+    /// words (bytes 0..8 / 2..10 little-endian), carried inline by the
+    /// slot — equals the corresponding `bytes` words by construction (the
+    /// publisher computes them from those bytes). Lets the steady scan run
+    /// without touching the frame lines (cross-core in pipelined mode).
+    pub sess_lo: u64,
+    pub sess_hi: u64,
+    /// R12c: steady-eligibility byte — packs the per-frame checks the
+    /// scalar ladder would run, computed by the publisher from values
+    /// already in registers (+~4 µops; the byte rides the entry's OWN
+    /// cache line in what was padding — ZERO added line traffic):
+    /// bit 7 = (session == the publisher's baked template) AND (R2 memo
+    /// proves every block valid) AND (block count > 0); bits 0..1 = the
+    /// feed (& 3). The vectorized ladder verifies a group's 8 elig bytes
+    /// instead of re-running ~90 scalar compare µops. The session
+    /// component's exactness: the consumer additionally requires the
+    /// group's first entry to match ITS OWN live template (2 compares) —
+    /// since every published frame carries the baked session, that entry
+    /// match proves baked == live, making the bit exact for all 8.
+    pub elig: u8,
+}
+
+/// The elig byte's steady-ok bit (session + memo + non-empty).
+pub const FRAME_ELIG_OK: u8 = 0x80;
+
+/// Extract the feed (& 3) from an elig byte.
+#[inline(always)]
+pub fn elig_feed(elig: u8) -> u8 {
+    elig & 3
+}
+
 /// Single-pass fused framing + per-block callback walk for the ingest hot path
 /// (P9c). Replaces parse-then-validate-then-emit (3 block-walks/packet) with ONE
 /// pass: framing bounds are checked per block and `f` runs for blocks past

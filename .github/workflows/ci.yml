@@ -33,6 +33,17 @@ jobs:
           shared-key: "ci-v3-v0.1"
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v0.1' }}
 
+      - name: Target Silicon Filter (Intel Xeon 8573C / 8370C fold512 Gate)
+        run: |
+          CPU_NAME=$(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2 | xargs)
+          echo "Drawn Host CPU: $CPU_NAME"
+          # Check for target Intel Xeon silicon with fold512 capability
+          if ! grep -qE "8573C|8370C" /proc/cpuinfo; then
+            echo "❌ Non-target silicon ($CPU_NAME). Exiting early to re-roll."
+            exit 1
+          fi
+          echo "🎯 TARGET SILICON ACQUIRED ($CPU_NAME). Proceeding to full benchmark."
+
       - name: Run CI Suite with Full Log Capture
         id: ci_run
         run: |

@@ -2,6 +2,8 @@
 
 #![allow(clippy::all)]
 
+pub mod affinity;
+pub mod batch_parity;
 pub mod crcfold;
 pub mod fakeserver;
 pub mod golden;
@@ -9,6 +11,7 @@ pub mod hydra;
 pub mod reference;
 pub mod sched;
 pub mod sink;
+pub mod soa;
 
 #[cfg(test)]
 mod tests {

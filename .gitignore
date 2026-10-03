@@ -13,3 +13,4 @@ target/
 .env.local
 *.log
 !ci-logs/*
+tests/lint_fixture/Cargo.lock
