@@ -181,10 +181,52 @@ memoization, `ALLOC_DELTA=0`, bit-exact goldens `0x881639cead506f25` /
 untouched on `nf-protocol`/`nf-arbitrator`, and every rate claim above waits for
 CI draws on target silicon with the kbench attribution printed alongside.
 
-## 6. Verdicts
+## 6. Verdicts — five target draws, reflect 5/5
 
-*(to be filled from CI; ≥ 3 independent target-class draws per the challenge's
-reproducibility rule. Local battery: build, clippy -D warnings, cargo test
---workspace, D1..D12 incl. the reflect differential, window_sweep, 17/17 matrix,
-HYDRA_BITPARITY bit-exact under default(reflect)/rollback(fold512), replay golden
-+ ALLOC_DELTA=0 — ALL GREEN.)*
+| Draw | Run | Silicon | 11b reflect (msg/s) | 11r mirror (msg/s) | Δ sustained | kbench 1t mirror / reflect |
+|---|---|---|---|---|---|---|
+| 1 | 37154454987 | 8573C | **1,234,210,590** | 1,201,821,534 | **+2.70 %** | 34.86 / 33.94 GB/s |
+| 2 | 37155810659 | 8573C | 1,091,571,575 | 1,049,043,185 | **+4.05 %** | 31.70 / 31.07 |
+| 5 | 37159212735 | 8573C | 1,049,273,600 | 1,000,599,480 | **+4.86 %** | 29.03 / 29.38 |
+| 3 | 37156989499 | 8370C | 915,495,427 | 876,028,387 | **+4.50 %** | 23.40 / 25.03 |
+| 4 | 37158012917 | 8370C | **988,654,797** (class record) | 934,319,782 | **+5.82 %** | 26.87 / 30.12 |
+
+**Challenge rule 9 satisfied: ≥3 independent draws of the deciding class
+(3× 8573C, mean +3.87 %) plus a second-class confirmation (2× 8370C, mean
++5.16 %). The reflect kernel wins every sustained head-to-head.**
+
+- **The class split on the packed kbench corpus is the physics payoff:**
+  the 8370C (Ice Lake — the tighter port structure the challenge itself
+  flagged: single clmul port) rewards the p5 relief EVERYWHERE: +7.0 % and
+  +12.1 % on the pure packed loop, the largest kernel-level jump since
+  GIGAHFT. The 8573C (Golden Cove/SPR) has loop slack the mirror kernel
+  could hide in (packed −2 % on draws 1-2, +1.2 % on draw 5's weaker
+  instance) — but the real-mix fabric still favors reflect on every draw:
+  the ending machinery (the mirror's `rev64` pass + its store/reload
+  latency) is paid per SPAN, and the real corpus is span-shaped, not
+  loop-shaped. The scoreboard gate is the sustained fabric; both classes
+  agree.
+- **Draw 4's 988,654,797 msg/s is the all-time 8370C-class record**
+  (previous best 938.7M, R10b) — set with bit-exact goldens and allocs=0.
+- Draw 1's 1,234,210,590 matches the all-time sustained record (1,2348B,
+  R11 draw) on its instance; the same-draw mirror rollback prices the
+  kernel's share at +2.7 %.
+- Front A (pure ingest — no CRC in path, the kernel cannot touch it):
+  PASS on all five draws (2.25–2.80B; instance-variance band, unchanged
+  behavior).
+- Correctness on every draw and every arm: HYDRA_BITPARITY BIT-EXACT
+  (0x881639cead506f25), D1..D12 incl. `D11 REFLECT_KERNEL_DIFFERENTIAL_
+  PASSED` (2101 bodies), 17/17 matrix (0xF6EF154EFDE905D8), window sweep,
+  ALLOC_DELTA=0, thp-granted.
+
+**Scoreboard vs the challenge tiers:** reflect ships as a real, replicated
++2.7–5.8 % sustained win across both target classes — but Bronze
+(≥ 1.40 B) is NOT reached by this lever alone. The honest physics: on the
+8573C the fold kernel was not the only binding constraint at 1.2 B (the
+sandbox's +44 % step-density did not carry to the SPR packed loop), and
+the challenge's own §5 prediction holds — with fold density improved and
+the endings cheaper, the remaining walls are the RX per-frame entry build
+(Front A's co-wall) and the supply side. The 8370C result (+12 % kernel
+density) shows the lever's full size where ports ARE the wall. The next
+frontier for the 1.4–1.8 B tiers is the RX build, per docs/25 §7's R13
+candidate list.
