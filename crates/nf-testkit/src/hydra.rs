@@ -113,13 +113,62 @@ const DESC_CAP: u64 = 2048;
 const RES_MASK: u64 = (RES_CAP as u64) - 1;
 const DESC_MASK: u64 = DESC_CAP - 1;
 
-/// Main → worker work item: the span body to verify. 16 bytes.
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct Desc {
-    ptr: *const u8,
-    len: u32,
-    span_id: u32,
+/// Main → worker work item: the span body to verify.
+///
+/// R12 — DUAL FORMAT over one word array (`[u64; DESC_CAP * 2]`, 32 KB per
+/// lane — the same total bytes as the R8 `[Desc; 2048]` ring):
+///
+/// * **legacy (16 B/desc)** — desc `i` occupies words `[(i & 2047)*2,
+///   +1]`: `lo = body_ptr`, `hi = len | (span_id << 32)`. Full 2048-desc
+///   capacity; the `HFT_DESC8=0` rollback arm (CI 11n) runs it.
+/// * **compact Desc8 (8 B/desc)** — desc `i` occupies word `i & 2047`:
+///   `offset:u32 | len:u16 | flags:u16` — the body's offset from the
+///   lane's cached blob base (u32 covers the ~15 MB replay blob with
+///   room to spare), the body length (u16 — every bench config's span
+///   body is MTU-bounded ≤ 1378 B; the debug assert pins the contract),
+///   and flag bit 0 = *block start* (the desc opens a 64-span chunk-grid
+///   block). 8 descs per 64 B L1 line (vs 4) — the descriptor stream's
+///   line traffic between the sequencer and the worker lanes halves, and
+///   the ring's touched footprint halves (16 KB). The span id is DERIVED
+///   worker-side from the block-start flag + the lane's block counter
+///   (lane `l`'s `b`-th block is global chunk `b*W + l`, covering spans
+///   `(b*W + l)*CHUNK .. +CHUNK`), and the fold's exact-match assert
+///   pins the derivation with identical fail-stop semantics.
+///
+/// The blob base: the sink caches the first submitted body's pointer and
+/// stores it into each lane's `base` word at chunk-open (before the
+/// publish; ordered by the ring's Release/Acquire). All span bodies of a
+/// run live in one contiguous THP-backed blob, so `base + offset` is
+/// exact and offsets are non-negative and u32-ranged. The grid epoch:
+/// `reset()` (fully drained, by assert) bumps every lane's `epoch`; the
+/// worker resets its block counter on an epoch change, re-anchoring the
+/// derivation at the fresh sink's chunk 0.
+/// Desc8 flag bit: this word is an ANCHOR, not a span desc — the offset
+/// field carries the chunk's FIRST SPAN ID (u32), len is 0, and the worker
+/// re-anchors its derivation (`cur_span = anchor`) and consumes the slot
+/// without evaluating or emitting. One anchor per grid-aligned chunk-open
+/// (1 slot per 65): the derivation is robust to ANY chunk diversion — the
+/// assist path taking chunks inline, pass-boundary splits — because it
+/// never extrapolates across an anchor.
+const DESC8_ANCHOR: u64 = 1;
+
+#[inline(always)]
+fn desc8_pack_span(offset: u32, len: u16) -> u64 {
+    offset as u64 | ((len as u64) << 32)
+}
+
+#[inline(always)]
+fn desc8_pack_anchor(first_span: u32) -> u64 {
+    first_span as u64 | (DESC8_ANCHOR << 48)
+}
+
+#[inline(always)]
+fn desc8_unpack(w: u64) -> (u32, u16, bool) {
+    (
+        (w & 0xFFFF_FFFF) as u32,
+        ((w >> 32) & 0xFFFF) as u16,
+        (w >> 48) & DESC8_ANCHOR != 0,
+    )
 }
 
 /// Worker → main result: the exact `span_crc32c_8lane` value of that body.
@@ -183,10 +232,16 @@ impl std::ops::Deref for Pad {
 /// are consumed before the owning pass ends (transport reset/drop). Workers
 /// only dereference the pointer between submit and the matching fold drain.
 pub struct HydraLane {
-    /// Descriptor slots. `UnsafeCell`: slot ownership is transferred
-    /// producer→consumer by the ring atomics (the current slot OWNER is the
-    /// only accessor — never true aliasing).
-    desc: UnsafeCell<Box<[Desc; DESC_CAP as usize]>>,
+    /// Descriptor slots as a raw word array (see the Desc doc for the two
+    /// formats: legacy 16 B/desc at words [(i & 2047)*2, +1], compact
+    /// Desc8 8 B/desc at word i & 2047). `UnsafeCell`: slot ownership is
+    /// transferred producer→consumer by the ring atomics (the current slot
+    /// OWNER is the only accessor — never true aliasing).
+    desc: UnsafeCell<Box<[u64; DESC_CAP as usize * 2]>>,
+    /// R12 Desc8: this lane's blob base (the sink's first submitted body
+    /// pointer; 0 = unset). Written before the chunk's publish; read by the
+    /// worker after its desc_head Acquire.
+    base: Pad,
     /// Written by main (Release) after storing a whole chunk; read by worker
     /// (Acquire) to observe new work. Always advances in multiples of CHUNK.
     desc_head: Pad,
@@ -212,13 +267,8 @@ unsafe impl Sync for HydraLane {}
 impl HydraLane {
     fn new() -> Box<Self> {
         Box::new(Self {
-            desc: UnsafeCell::new(Box::new(
-                [Desc {
-                    ptr: std::ptr::null(),
-                    len: 0,
-                    span_id: 0,
-                }; DESC_CAP as usize],
-            )),
+            desc: UnsafeCell::new(Box::new([0u64; DESC_CAP as usize * 2])),
+            base: Pad(AtomicU64::new(0)),
             desc_head: Pad::zeroed(),
             desc_tail: Pad::zeroed(),
             res: UnsafeCell::new(Box::new(
@@ -233,12 +283,20 @@ impl HydraLane {
         })
     }
 
-    /// Consumer-side descriptor slots (worker thread only).
+    /// Consumer-side descriptor words (worker thread only).
     #[inline(always)]
-    fn desc_slots_read(&self) -> &[Desc; DESC_CAP as usize] {
+    fn desc_words_read(&self) -> &[u64; DESC_CAP as usize * 2] {
         // SAFETY: slots below the Acquire-loaded head cursor are published and
         // immutable to the consumer until it releases the tail.
         unsafe { &*self.desc.get() }
+    }
+
+    /// Producer-side descriptor words (main thread only).
+    #[inline(always)]
+    #[allow(clippy::mut_from_ref)]
+    fn desc_words(&self) -> &mut [u64; DESC_CAP as usize * 2] {
+        // SAFETY: SPSC protocol — producer-owned until the head Release.
+        unsafe { &mut *self.desc.get() }
     }
 
     /// Producer-side result slots (worker thread only).
@@ -258,20 +316,96 @@ impl HydraLane {
     }
 }
 
-/// Producer-side raw pointer to a descriptor ring slot (Lever 2: the
-/// submitting sink writes descriptors in place via a single unaligned
-/// 128-bit store).
-///
-/// SAFETY: the caller must own the slot (space checked at chunk start for
-/// the whole chunk) and publish it afterwards with the head Release store.
+/// Legacy-format desc load: desc `pos` → (ptr, len, span_id).
 #[inline(always)]
-fn lane_slot_ptr(lane: &HydraLane, pos: u64) -> *mut Desc {
-    // SAFETY: SPSC protocol — see HydraLane::desc_slots; per-slot masking
-    // handles the ring wrap.
-    unsafe {
-        (&mut *lane.desc.get())
-            .as_mut_ptr()
-            .add((pos & DESC_MASK) as usize)
+fn desc_legacy_at(words: &[u64; DESC_CAP as usize * 2], pos: u64) -> (u64, u32, u32) {
+    let i = ((pos & DESC_MASK) as usize) * 2;
+    let lo = words[i];
+    let hi = words[i + 1];
+    (lo, (hi & 0xFFFF_FFFF) as u32, (hi >> 32) as u32)
+}
+
+/// R12 Desc8: worker-side span-id derivation state — the running span id,
+/// re-anchored by every anchor desc (see DESC8_ANCHOR).
+#[derive(Clone, Copy)]
+struct Deriv {
+    cur_span: u64,
+}
+
+/// Read one SPAN desc in the run's format, advancing the derivation (EVAL
+/// ORDER ONLY — never call ahead of the CRC cursor; the prefetch path uses
+/// the pure `desc_ptr_len`). Anchors are handled by the eval loop (they
+/// re-anchor and skip); this reads a real span desc.
+#[inline(always)]
+fn desc_read(
+    words: &[u64; DESC_CAP as usize * 2],
+    pos: u64,
+    desc8: bool,
+    base: u64,
+    deriv: &mut Deriv,
+) -> (u64, u32, u32) {
+    if desc8 {
+        let w = words[(pos & DESC_MASK) as usize];
+        let (off, len, _) = desc8_unpack(w);
+        let sid = deriv.cur_span;
+        deriv.cur_span += 1;
+        (base.wrapping_add(off as u64), len as u32, sid as u32)
+    } else {
+        desc_legacy_at(words, pos)
+    }
+}
+
+/// Read one desc's kind: None for a span desc (ptr, len), Some(first_span)
+/// for an anchor. Legacy descs are always span descs.
+#[inline(always)]
+fn desc_peek(
+    words: &[u64; DESC_CAP as usize * 2],
+    pos: u64,
+    desc8: bool,
+    base: u64,
+) -> Desc8Word {
+    if desc8 {
+        let w = words[(pos & DESC_MASK) as usize];
+        let (off, len, anchor) = desc8_unpack(w);
+        if anchor {
+            let _ = off;
+            Desc8Word::Anchor
+        } else {
+            Desc8Word::Span {
+                ptr: base.wrapping_add(off as u64),
+                len: len as u32,
+            }
+        }
+    } else {
+        let (p, l, _) = desc_legacy_at(words, pos);
+        Desc8Word::Span { ptr: p, len: l }
+    }
+}
+
+enum Desc8Word {
+    Span { ptr: u64, len: u32 },
+    Anchor,
+}
+
+/// True when the desc at `pos` is an anchor (the pair-eval lookahead — a
+/// pair must not consume an anchor as its second span).
+#[inline(always)]
+fn desc8_anchor_ahead(words: &[u64; DESC_CAP as usize * 2], pos: u64, desc8: bool) -> bool {
+    desc8 && (words[(pos & DESC_MASK) as usize] >> 48) & DESC8_ANCHOR != 0
+}
+
+/// Pure (ptr, len) read for the prefetch spray — anchors prefetch nothing
+/// (len 0); no derivation advance.
+#[inline(always)]
+fn desc_ptr_len(
+    words: &[u64; DESC_CAP as usize * 2],
+    pos: u64,
+    desc8: bool,
+    base: u64,
+) -> (u64, u32) {
+    match desc_peek(words, pos, desc8, base) {
+        Desc8Word::Span { ptr, len } => (ptr, len),
+        Desc8Word::Anchor => (0, 0),
     }
 }
 
@@ -446,6 +580,7 @@ fn lane_worker(
     shutdown: Arc<AtomicBool>,
     kernel: CrcKernel,
     stats: Arc<WorkerStats>,
+    desc8: bool,
 ) {
     stats
         .cpu
@@ -475,6 +610,9 @@ fn lane_worker(
     // the published head are producer-owned and must not be read.
     let mut pf_span: u64 = 0;
     let mut pf_line: usize = 0;
+    // R12 Desc8: the running span-id derivation, re-anchored by anchor
+    // descs (one per grid-aligned chunk-open; robust to assist diversions).
+    let mut deriv = Deriv { cur_span: 0 };
     // H4: idle-spin backoff (see the worker loop doc). A busy-waiting worker
     // reloads `desc_head` in a tight PAUSE loop, ping-ponging the head line
     // against the main thread and burning shared execution resources on
@@ -500,7 +638,14 @@ fn lane_worker(
         stats.batches.fetch_add(1, Ordering::Relaxed);
         let t_eval = std::time::Instant::now();
         // SAFETY: slots in [tail, head) are published (Acquire above).
-        let slots = lane.desc_slots_read();
+        let slots = lane.desc_words_read();
+        // R12 Desc8: the lane's write-once blob base (read per batch;
+        // cache-hot — the word sits in the lane the worker already owns).
+        let lane_base = if desc8 {
+            lane.base.load(Ordering::Relaxed)
+        } else {
+            0
+        };
         // Re-anchor the prefetch cursor if it fell behind this batch
         // (stalled at a previous head, or a fresh worker start).
         if pf_span < tail {
@@ -532,6 +677,9 @@ fn lane_worker(
         // dependency latency).
         // SAFETY: res slots in [rhead, rhead+n) are owned by this worker.
         let res_slots = lane.res_slots();
+        // R12: results emitted this batch (anchors emit none) — res_head
+        // advances by THIS count.
+        let mut nres: u64 = 0;
         let mut i = 0u64;
         while i < n {
             // Advance the prefetch pipeline: spray up to `burst` lines per
@@ -541,13 +689,13 @@ fn lane_worker(
                 let target = tail + i + pf.ahead + 1;
                 let mut issued = 0usize;
                 while pf_span < target && pf_span < head && issued < pf.burst {
-                    let d = slots[(pf_span & DESC_MASK) as usize];
-                    let span_lines = (((d.len as usize) + 63) >> 6).min(pf.lines);
+                    let (dptr, dlen) = desc_ptr_len(slots, pf_span, desc8, lane_base);
+                    let span_lines = (((dlen as usize) + 63) >> 6).min(pf.lines);
                     let end = span_lines.min(pf_line + (pf.burst - issued));
                     // SAFETY: prefetch never faults and never dereferences;
                     // the slot is published (below head, above tail).
                     for l in pf_line..end {
-                        prefetch_line(d.ptr, l);
+                        prefetch_line(dptr as *const u8, l);
                     }
                     issued += end - pf_line;
                     if end >= span_lines {
@@ -558,12 +706,15 @@ fn lane_worker(
                     }
                 }
             }
-            let emit = |res_slots: &mut [Res], i: u64, span_id: u32, value: u64| {
-                res_slots[((rhead + i) & RES_MASK) as usize] = Res {
+            // R12: results are indexed by RESULT count, not desc count —
+            // anchor descs consume ring slots without emitting.
+            let emit = |res_slots: &mut [Res], nres: &mut u64, span_id: u32, value: u64| {
+                res_slots[((rhead + *nres) & RES_MASK) as usize] = Res {
                     span_id,
                     _pad: 0,
                     value,
                 };
+                *nres += 1;
             };
             // R8 phase-6: single-span eval for BOTH kernels. The eval2
             // interleave (two concurrent body streams per worker) was
@@ -582,59 +733,71 @@ fn lane_worker(
             // per the HydraLane contract — immutable bytes, valid until the
             // owning pass's finish() drain.
             {
-                if pipe && !null && i + 1 < n {
-                    // R10: the pipelined pair — same two descriptors, same
-                    // values, same emission order as two single-span evals;
-                    // only the instruction schedule differs (A's endings
-                    // issue behind B's vector fold).
-                    // SAFETY: as the single-span path, twice.
-                    let d0 = slots[((tail + i) & DESC_MASK) as usize];
-                    let d1 = slots[((tail + i + 1) & DESC_MASK) as usize];
-                    // SAFETY: published descriptor slots (Acquire above);
-                    // body slices per the HydraLane contract.
-                    let b0 =
-                        unsafe { std::slice::from_raw_parts(d0.ptr, d0.len as usize) };
-                    let b1 =
-                        unsafe { std::slice::from_raw_parts(d1.ptr, d1.len as usize) };
-                    // SAFETY: feature contract verified at spawn.
-                    let (v0, v1) = unsafe { kernel.eval_pair(b0, b1) };
-                    emit(res_slots, i, d0.span_id, v0);
-                    emit(res_slots, i + 1, d1.span_id, v1);
-                    i += 2;
-                } else if eval2 && !null && i + 1 < n {
-                    let d0 = slots[((tail + i) & DESC_MASK) as usize];
-                    let d1 = slots[((tail + i + 1) & DESC_MASK) as usize];
-                    // SAFETY: as the single-span path, twice.
-                    let b0 =
-                        unsafe { std::slice::from_raw_parts(d0.ptr, d0.len as usize) };
-                    let b1 =
-                        unsafe { std::slice::from_raw_parts(d1.ptr, d1.len as usize) };
-                    // SAFETY: feature contract verified at spawn.
-                    let (v0, v1) = unsafe { kernel.eval2(b0, b1) };
-                    emit(res_slots, i, d0.span_id, v0);
-                    emit(res_slots, i + 1, d1.span_id, v1);
-                    i += 2;
-                } else {
-                    let d = slots[((tail + i) & DESC_MASK) as usize];
-                    let value = if null {
-                        // Diagnostic: constant work, no body read, wrong value (by
-                        // design — see null_mode doc).
-                        (d.len as u64) | ((d.span_id as u64) << 32)
-                    } else if tri {
-                        // R11: the tri-stream fold — same value as eval
-                        // (D11-pinned), different ILP structure.
-                        let body =
-                            unsafe { std::slice::from_raw_parts(d.ptr, d.len as usize) };
+                // R12: anchors re-anchor the derivation and consume their
+                // slot without evaluating or emitting (they carry no body).
+                while i < n {
+                    if desc8 {
+                        let w = slots[((tail + i) & DESC_MASK) as usize];
+                        if (w >> 48) & DESC8_ANCHOR != 0 {
+                            deriv.cur_span = (w & 0xFFFF_FFFF) as u64;
+                            i += 1;
+                            continue;
+                        }
+                    }
+                    if pipe && !null && i + 1 < n && !desc8_anchor_ahead(slots, tail + i + 1, desc8) {
+                        // R10: the pipelined pair — same two descriptors, same
+                        // values, same emission order as two single-span evals;
+                        // only the instruction schedule differs (A's endings
+                        // issue behind B's vector fold).
+                        let (p0, l0, s0) =
+                            desc_read(slots, tail + i, desc8, lane_base, &mut deriv);
+                        let (p1, l1, s1) =
+                            desc_read(slots, tail + i + 1, desc8, lane_base, &mut deriv);
+                        // SAFETY: published descriptor slots (Acquire above);
+                        // body slices per the HydraLane contract.
+                        let b0 = unsafe { std::slice::from_raw_parts(p0 as *const u8, l0 as usize) };
+                        let b1 = unsafe { std::slice::from_raw_parts(p1 as *const u8, l1 as usize) };
                         // SAFETY: feature contract verified at spawn.
-                        unsafe { kernel.eval_tri(body) }
+                        let (v0, v1) = unsafe { kernel.eval_pair(b0, b1) };
+                        emit(res_slots, &mut nres, s0, v0);
+                        emit(res_slots, &mut nres, s1, v1);
+                        i += 2;
+                    } else if eval2 && !null && i + 1 < n && !desc8_anchor_ahead(slots, tail + i + 1, desc8) {
+                        let (p0, l0, s0) =
+                            desc_read(slots, tail + i, desc8, lane_base, &mut deriv);
+                        let (p1, l1, s1) =
+                            desc_read(slots, tail + i + 1, desc8, lane_base, &mut deriv);
+                        // SAFETY: as the single-span path, twice.
+                        let b0 = unsafe { std::slice::from_raw_parts(p0 as *const u8, l0 as usize) };
+                        let b1 = unsafe { std::slice::from_raw_parts(p1 as *const u8, l1 as usize) };
+                        // SAFETY: feature contract verified at spawn.
+                        let (v0, v1) = unsafe { kernel.eval2(b0, b1) };
+                        emit(res_slots, &mut nres, s0, v0);
+                        emit(res_slots, &mut nres, s1, v1);
+                        i += 2;
                     } else {
-                        let body =
-                            unsafe { std::slice::from_raw_parts(d.ptr, d.len as usize) };
-                        // SAFETY: feature contract verified at spawn.
-                        unsafe { kernel.eval(body) }
-                    };
-                    emit(res_slots, i, d.span_id, value);
-                    i += 1;
+                        let (dptr, dlen, dsid) =
+                            desc_read(slots, tail + i, desc8, lane_base, &mut deriv);
+                        let value = if null {
+                            // Diagnostic: constant work, no body read, wrong value (by
+                            // design — see null_mode doc).
+                            (dlen as u64) | ((dsid as u64) << 32)
+                        } else if tri {
+                            // R11: the tri-stream fold — same value as eval
+                            // (D11-pinned), different ILP structure.
+                            let body =
+                                unsafe { std::slice::from_raw_parts(dptr as *const u8, dlen as usize) };
+                            // SAFETY: feature contract verified at spawn.
+                            unsafe { kernel.eval_tri(body) }
+                        } else {
+                            let body =
+                                unsafe { std::slice::from_raw_parts(dptr as *const u8, dlen as usize) };
+                            // SAFETY: feature contract verified at spawn.
+                            unsafe { kernel.eval(body) }
+                        };
+                        emit(res_slots, &mut nres, dsid, value);
+                        i += 1;
+                    }
                 }
             }
         }
@@ -642,8 +805,10 @@ fn lane_worker(
         stats
             .eval_ns
             .fetch_add(t_eval.elapsed().as_nanos() as u64, Ordering::Relaxed);
-        lane.res_head.store(rhead + n, Ordering::Release);
-        rhead += n;
+        // R12: res_head advances by RESULTS emitted (anchors emit none) —
+        // the fold reads exactly the published spans.
+        lane.res_head.store(rhead + nres, Ordering::Release);
+        rhead += nres;
         // Free the consumed descriptor slots — one Release store per batch.
         lane.desc_tail.store(tail + n, Ordering::Release);
         tail += n;
@@ -666,6 +831,11 @@ pub struct HydraFabric {
     /// ONCE here — outside every measurement window; values are bit-exact
     /// across kernels by D11, so this choice affects speed only).
     pub kernel: CrcKernel,
+    /// R12: the descriptor format for this fabric's life — compact 8-byte
+    /// Desc8 (default; `HFT_DESC8=0` is the rollback, CI arm 11n). The
+    /// submitting sink and every worker read THIS flag, so one run never
+    /// mixes formats.
+    pub desc8: bool,
 }
 
 impl HydraFabric {
@@ -684,6 +854,17 @@ impl HydraFabric {
     /// gracefully. The doc-21 "worker core affinity" lever: unpinned
     /// workers migrate and stack on SMT siblings on shared cloud runners.
     pub fn spawn_pinned(workers: usize, worker_cpus: &[usize]) -> Box<Self> {
+        // R12: the descriptor format is a per-RUN constant (the sink and the
+        // workers must agree; the env is read once, here, outside every
+        // window). Default: compact Desc8 ON.
+        let desc8 = std::env::var("HFT_DESC8").as_deref() != Ok("0");
+        Self::spawn_pinned_desc8(workers, worker_cpus, desc8)
+    }
+
+    /// R12: `spawn_pinned` with an explicit descriptor format (the
+    /// in-process form serves the both-format parity tests; the env form
+    /// serves CI sweeps).
+    pub fn spawn_pinned_desc8(workers: usize, worker_cpus: &[usize], desc8: bool) -> Box<Self> {
         let kernel = CrcKernel::detect();
         let shutdown = Arc::new(AtomicBool::new(false));
         let mut handles = Vec::with_capacity(workers);
@@ -700,6 +881,7 @@ impl HydraFabric {
             let kern = kernel;
             let stats = wstats[i].clone();
             let cpu = worker_cpus.get(i % worker_cpus.len().max(1)).copied();
+            let fmt8 = desc8;
             let h = std::thread::Builder::new()
                 .stack_size(512 * 1024)
                 .name("hydra-worker".to_string())
@@ -707,7 +889,7 @@ impl HydraFabric {
                     if let Some(c) = cpu {
                         let _ = crate::affinity::pin_current_to(c);
                     }
-                    lane_worker(lane, sd, kern, stats)
+                    lane_worker(lane, sd, kern, stats, fmt8)
                 })
                 .expect("hydra worker spawn");
             handles.push(h);
@@ -720,6 +902,7 @@ impl HydraFabric {
             worker_cpus: worker_cpus.to_vec(),
             workers,
             kernel,
+            desc8,
         })
     }
 
@@ -886,6 +1069,9 @@ pub struct HydraSpanSink<'a> {
     pending_lane: usize,
     /// desc_head cursor value at the start of the current chunk.
     pending_head: u64,
+    /// R12 Desc8: the current chunk opened at a grid boundary (its first
+    /// desc carries the block-start flag; set by open_chunk).
+    pending_block_start: bool,
     /// H6: division-free lane tracking. `lane = (span/CHUNK) mod W` needs a
     /// runtime `idiv` (~20-40c) per call — called twice per span that is
     /// ~40-80c/span of pure main-thread fat. Incremental advance + wrap
@@ -921,6 +1107,13 @@ pub struct HydraSpanSink<'a> {
     force_inline: bool,
     /// Chunks taken through the assist path (telemetry).
     assist_chunks: u64,
+    // ── R12: compact Desc8 state ──
+    /// The fabric's descriptor format (per-run constant).
+    desc8: bool,
+    /// This sink's blob base — the FIRST submitted body's pointer (0 =
+    /// unset). All span bodies of a run live in one contiguous blob, so
+    /// every later body's Desc8 offset is `ptr - blob_base` (u32-ranged).
+    blob_base: usize,
     // ── GIGAHFT Lever 4: cross-pass double buffering ──
     /// Span ids are GLOBAL across the sink's life; each pass records its
     /// boundary so the ordered fold snapshots the pass's hash exactly at
@@ -961,6 +1154,7 @@ impl<'a> HydraSpanSink<'a> {
             pending_len: 0,
             pending_lane: 0,
             pending_head: 0,
+            pending_block_start: true,
             n_lanes: fabric.map(|f| f.lanes.len()).unwrap_or(0),
             // Chunk 0 → lane 0; advance on chunk completion (after-use).
             submit_lane: 0,
@@ -978,6 +1172,8 @@ impl<'a> HydraSpanSink<'a> {
             inline_fold_seq: 0,
             cur_inline: None,
             assist_chunks: 0,
+            desc8: fabric.map(|f| f.desc8).unwrap_or(false),
+            blob_base: 0,
             force_inline: std::env::var("HFT_INLINE_FORCE").as_deref() == Ok("1"),
             passes: [PassRec {
                 end_span: 0,
@@ -1030,6 +1226,9 @@ impl<'a> HydraSpanSink<'a> {
             *c = InlineChunk::free();
         }
         self.cur_inline = None;
+        // R12 Desc8: no reset handshake needed — the fresh sink's first
+        // grid-aligned chunk-open writes an ANCHOR desc (first span 0),
+        // re-anchoring every worker's derivation absolutely.
         self.hash = Self::SPAN_SEED;
         self.count = 0;
         self.last_gen = 0;
@@ -1226,6 +1425,12 @@ impl<'a> HydraSpanSink<'a> {
             Some(f) => f,
             None => unreachable!("submit_span called in inline mode"),
         };
+        // R12 Desc8: the run's blob base — the first submitted body's
+        // pointer (write-once; every body lives in the same contiguous
+        // THP-backed blob, so later offsets are positive and u32-ranged).
+        if self.blob_base == 0 {
+            self.blob_base = body.as_ptr() as usize;
+        }
         if self.pending_len == 0 {
             self.open_chunk(fabric);
         }
@@ -1237,20 +1442,45 @@ impl<'a> HydraSpanSink<'a> {
                 self.pending_lane,
                 "hydra pending buffer crossed a lane boundary"
             );
-            // In-place 128-bit store: (ptr | len<<64 | span_id<<96).
-            // SAFETY: the slot at (pending_head + pending_len) & DESC_MASK
-            // is producer-owned (space checked at chunk start for the full
-            // chunk) and unread by the worker until the Release publish
-            // below.
-            let slot = lane_slot_ptr(
-                &fabric.lanes[self.pending_lane],
-                self.pending_head + self.pending_len,
-            );
-            let packed = (body.as_ptr() as u128)
-                | ((body.len() as u128) << 64)
-                | ((self.next_span as u32 as u128) << 96);
-            unsafe {
-                std::ptr::write_unaligned(slot as *mut u128, packed);
+            let mut pos = self.pending_head + self.pending_len;
+            let lane = &fabric.lanes[self.pending_lane];
+            if self.desc8 {
+                // Grid-aligned chunk-open: ONE anchor desc first (carries
+                // the chunk's first span id; the space check reserved the
+                // +1 slot).
+                if self.pending_block_start && self.pending_len == 0 {
+                    lane.desc_words()[(pos & DESC_MASK) as usize] =
+                        desc8_pack_anchor(self.next_span as u32);
+                    self.pending_len += 1;
+                    pos += 1;
+                }
+                // Compact 8-byte span desc: offset | len. One aligned u64
+                // store — 8 descs per L1 line.
+                let off = (body.as_ptr() as usize).wrapping_sub(self.blob_base);
+                debug_assert!(off <= u32::MAX as usize, "Desc8 offset overflows u32");
+                debug_assert!(body.len() <= u16::MAX as usize, "Desc8 len overflows u16");
+                // The word at pos & DESC_MASK is producer-owned (space
+                // checked at chunk start) and unread by the worker until
+                // the Release publish below.
+                lane.desc_words()[(pos & DESC_MASK) as usize] =
+                    desc8_pack_span(off as u32, body.len() as u16);
+            } else {
+                // Legacy 16-byte desc at words [2i, 2i+1]: one unaligned
+                // 128-bit store (ptr | len<<64 | span_id<<96).
+                // SAFETY: the slot at pos & DESC_MASK is producer-owned
+                // (space checked at chunk start for the full chunk) and
+                // unread by the worker until the Release publish below.
+                let packed = (body.as_ptr() as u128)
+                    | ((body.len() as u128) << 64)
+                    | ((self.next_span as u32 as u128) << 96);
+                unsafe {
+                    let words = lane.desc_words();
+                    let base = words.as_mut_ptr();
+                    std::ptr::write_unaligned(
+                        base.add(((pos & DESC_MASK) * 2) as usize) as *mut u128,
+                        packed,
+                    );
+                }
             }
             self.pending_len += 1;
         }
@@ -1285,6 +1515,19 @@ impl<'a> HydraSpanSink<'a> {
         // Start a new chunk on the lane that owns this span id.
         self.pending_lane = self.submit_lane;
         let lane = &fabric.lanes[self.pending_lane];
+        // R12 Desc8: this chunk-open's grid alignment — a chunk starting at
+        // a 64-span grid boundary carries the block-start flag on its FIRST
+        // desc (re-anchoring the workers' span-id derivation); a chunk
+        // CONTINUED across a pass boundary (submit_rem < CHUNK after the
+        // end_pass flush) does not.
+        self.pending_block_start = self.submit_rem == CHUNK;
+        if self.desc8 && self.blob_base != 0 {
+            // Write-once-per-lane blob base (ordered before this chunk's
+            // publish; the worker reads it after its desc_head Acquire).
+            if lane.base.load(Ordering::Relaxed) == 0 {
+                lane.base.store(self.blob_base as u64, Ordering::Release);
+            }
+        }
         let h0 = lane.desc_head.load(Ordering::Relaxed);
         // R8 phase-5 / R10 — WORK-ASSIST on the deep ring: check space
         // once; if the lane is saturated, claim an assist-ring slot and
@@ -1296,7 +1539,10 @@ impl<'a> HydraSpanSink<'a> {
         // unconditionally — and NEVER falls back to a lane (the ring
         // drains by folding, so the wait is bounded and deadlock-free).
         let t = lane.desc_tail.load(Ordering::Acquire);
-        let lane_full = h0.saturating_sub(t) + CHUNK > DESC_CAP;
+        // R12: the desc8 format reserves one extra slot per chunk-open
+        // (the anchor desc).
+        let chunk_need = CHUNK + if self.desc8 { 1 } else { 0 };
+        let lane_full = h0.saturating_sub(t) + chunk_need > DESC_CAP;
         let take_inline = if self.force_inline {
             let mut sb = 0u32;
             while !self.try_claim_inline() {
@@ -1318,7 +1564,7 @@ impl<'a> HydraSpanSink<'a> {
             let mut sb = 0u32;
             loop {
                 let t = lane.desc_tail.load(Ordering::Acquire);
-                if h0.saturating_sub(t) + CHUNK <= DESC_CAP {
+                if h0.saturating_sub(t) + chunk_need <= DESC_CAP {
                     break;
                 }
                 self.pending_head = h0;
@@ -1806,6 +2052,8 @@ mod tests {
 
     /// H3 bit-parity, default MtuBound dual-feed schedule, fabric with 2
     /// workers + inline mode, all vs the sequential SpanConformanceSink.
+    /// R12: both descriptor formats (compact Desc8 + legacy) must be
+    /// bit-exact — the fold-order assert pins the Desc8 derivation.
     #[test]
     fn t_hydra_bitparity_default_schedule() {
         let gt = load_mini();
@@ -1816,28 +2064,30 @@ mod tests {
         };
         let sched = build_schedule(&gt, &cfg);
         let sess = *b"HYDRATEST1";
-        let fabric = HydraFabric::spawn(2);
-        let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
-        let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
+        for fmt in [true, false] {
+            let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
+            let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
+            let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
 
-        let want = seq_pass(&mut t1, sess);
-        assert_eq!(want.0, 505_849);
-        let got_inline = inline_pass(&mut t1, sess);
-        assert_eq!(got_inline, want, "inline mode diverged");
-        let got_fabric = hydra_pass(&mut t2, sess, &fabric);
-        assert_eq!(got_fabric, want, "fabric mode diverged");
-        // Determinism across passes (different worker interleavings).
-        let got_fabric2 = hydra_pass(&mut t2, sess, &fabric);
-        assert_eq!(got_fabric2, want, "fabric determinism diverged");
-        // R8 phase-5: FORCED work-assist — every chunk evaluated on the
-        // submitting core through the inline ring, folded in strict span
-        // order. Must produce the identical tuple (the assist path is a
-        // scheduling decision, never a semantic one).
-        let got_assist = assist_pass(&mut t2, sess, &fabric);
-        assert_eq!(got_assist, want, "forced work-assist diverged");
-        // Mixed mode after a forced run (the ring resets cleanly).
-        let got_fabric3 = hydra_pass(&mut t2, sess, &fabric);
-        assert_eq!(got_fabric3, want, "fabric-after-assist diverged");
+            let want = seq_pass(&mut t1, sess);
+            assert_eq!(want.0, 505_849);
+            let got_inline = inline_pass(&mut t1, sess);
+            assert_eq!(got_inline, want, "inline mode diverged");
+            let got_fabric = hydra_pass(&mut t2, sess, &fabric);
+            assert_eq!(got_fabric, want, "fabric mode diverged");
+            // Determinism across passes (different worker interleavings).
+            let got_fabric2 = hydra_pass(&mut t2, sess, &fabric);
+            assert_eq!(got_fabric2, want, "fabric determinism diverged");
+            // R8 phase-5: FORCED work-assist — every chunk evaluated on the
+            // submitting core through the inline ring, folded in strict span
+            // order. Must produce the identical tuple (the assist path is a
+            // scheduling decision, never a semantic one).
+            let got_assist = assist_pass(&mut t2, sess, &fabric);
+            assert_eq!(got_assist, want, "forced work-assist diverged");
+            // Mixed mode after a forced run (the ring resets cleanly).
+            let got_fabric3 = hydra_pass(&mut t2, sess, &fabric);
+            assert_eq!(got_fabric3, want, "fabric-after-assist diverged");
+        } // R12 both formats
     }
 
     /// R8 phase-5: a fabric pass with the work-assist FORCED on — every
@@ -1900,7 +2150,10 @@ mod tests {
         };
         let sched = build_schedule(&gt, &cfg);
         let sess = *b"CHAOSHYDRA";
-        let fabric = HydraFabric::spawn(2);
+        // R12: both descriptor formats (compact Desc8 + legacy) must be
+        // bit-exact — the fold-order assert pins the anchor-based derivation.
+        for fmt in [true, false] {
+        let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
         let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
         let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
 
@@ -1911,6 +2164,7 @@ mod tests {
         );
         let got = hydra_pass(&mut t2, sess, &fabric);
         assert_eq!(got, want, "chaos fabric mode diverged");
+        } // R12 both formats
     }
 
     /// Bit-parity at extreme span granularity: one message per packet
@@ -1925,13 +2179,17 @@ mod tests {
         };
         let sched = build_schedule(&gt, &cfg);
         let sess = *b"FIXED1HYDR";
-        let fabric = HydraFabric::spawn(2);
+        // R12: both descriptor formats (compact Desc8 + legacy) must be
+        // bit-exact — the fold-order assert pins the anchor-based derivation.
+        for fmt in [true, false] {
+        let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
         let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
         let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
 
         let want = seq_pass(&mut t1, sess);
         let got = hydra_pass(&mut t2, sess, &fabric);
         assert_eq!(got, want, "fixed(1) fabric mode diverged");
+        } // R12 both formats
     }
 
     /// Bit-parity with random packet sizes (mixed span lengths).
@@ -1944,13 +2202,17 @@ mod tests {
         };
         let sched = build_schedule(&gt, &cfg);
         let sess = *b"RANGEHYDRA";
-        let fabric = HydraFabric::spawn(2);
+        // R12: both descriptor formats (compact Desc8 + legacy) must be
+        // bit-exact — the fold-order assert pins the anchor-based derivation.
+        for fmt in [true, false] {
+        let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
         let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
         let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
 
         let want = seq_pass(&mut t1, sess);
         let got = hydra_pass(&mut t2, sess, &fabric);
         assert_eq!(got, want, "seeded-range fabric mode diverged");
+        } // R12 both formats
     }
 
     /// Backpressure path: 1 worker with a deliberately tiny consumer is
@@ -1966,13 +2228,17 @@ mod tests {
         };
         let sched = build_schedule(&gt, &cfg);
         let sess = *b"WRAPHYDRA1";
-        let fabric = HydraFabric::spawn(1);
+        // R12: both descriptor formats (compact Desc8 + legacy) must be
+        // bit-exact — the fold-order assert pins the anchor-based derivation.
+        for fmt in [true, false] {
+        let fabric = HydraFabric::spawn_pinned_desc8(1, &[], fmt);
         let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
         let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
 
         let want = seq_pass(&mut t1, sess);
         let got = hydra_pass(&mut t2, sess, &fabric);
         assert_eq!(got, want, "wraparound fabric mode diverged");
+        } // R12 both formats
     }
 
     /// GIGAHFT Lever 4: cross-pass double-buffered overlap bit-parity.
@@ -1999,7 +2265,10 @@ mod tests {
 
         // Overlapped fabric passes on one sink. Pass N+1's submission
         // overlaps pass N's residual tail (the whole point of Lever 4).
-        let fabric = HydraFabric::spawn(2);
+        // R12: both descriptor formats (compact Desc8 + legacy) must be
+        // bit-exact — the fold-order assert pins the anchor-based derivation.
+        for fmt in [true, false] {
+        let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
         let mut t = ReplayTransport::new(&gt, sched.clone(), sessions[0]);
         let mut sink = HydraSpanSink::new(&fabric);
         let mut harvested = [(0u64, 0u64, 0u64); PASS_RING];
@@ -2076,6 +2345,7 @@ mod tests {
             got2.push(*rec);
         }
         assert_eq!(got2, want, "inline cross-pass diverged");
+        } // R12 both formats
     }
 
     /// Fabric mode == inline mode == sequential on the full mini sample
@@ -2093,10 +2363,92 @@ mod tests {
         let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
         let want = seq_pass(&mut t1, sess);
         for w in 1..=3usize {
-            let fabric = HydraFabric::spawn(w);
-            let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
-            let got = hydra_pass(&mut t2, sess, &fabric);
-            assert_eq!(got, want, "worker count {} diverged", w);
+            // R12: both descriptor formats at every worker count.
+            for fmt in [true, false] {
+                let fabric = HydraFabric::spawn_pinned_desc8(w, &[], fmt);
+                let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
+                let got = hydra_pass(&mut t2, sess, &fabric);
+                assert_eq!(got, want, "worker count {} fmt8={} diverged", w, fmt);
+            }
         }
+    }
+
+    /// R12: the RX-PIPELINED transport + the SoA vectorized scan + the
+    /// fabric — the exact sustained-arm stack (auto-advance program,
+    /// cross-pass double buffering) under CHAOS (loss + jitter + session
+    /// change), pinned bit-exactly against the sequential reference. This
+    /// is the end-to-end law for the 8-entry vector ladder: every group it
+    /// proves must observably equal the scalar ladder's eight steps.
+    #[test]
+    fn t_hydra_pipeline_soa_chaos_bitparity() {
+        let gt = load_mini();
+        let cfg = ReplayConfig {
+            seed_a: 0xCAFE_0000_1111_2222,
+            seed_b: 0xBEEF_3333_4444_5555,
+            msgs_per_packet: Packetize::MtuBound(1200),
+            loss: [
+                crate::sched::LossModel::Bernoulli { p_pm: 80 },
+                crate::sched::LossModel::Bernoulli { p_pm: 140 },
+            ],
+            delay: [
+                crate::sched::DelayModel::GaussianApprox {
+                    mean_ns: 20_000,
+                    sigma_ns: 6_000,
+                },
+                crate::sched::DelayModel::GaussianApprox {
+                    mean_ns: 45_000,
+                    sigma_ns: 18_000,
+                },
+            ],
+            guarantee_coverage: true,
+            session_change_at_msg: Some(200_000),
+            ..Default::default()
+        };
+        let sched = build_schedule(&gt, &cfg);
+        let sessions: [[u8; 10]; 3] =
+            [*b"PIPECHAOS1", *b"PIPECHAOS2", *b"PIPECHAOS3"];
+        let ladder = crate::soa::ladder8_best();
+
+        // Reference: one sequential pass per session.
+        let mut want = Vec::new();
+        for sess in sessions {
+            let mut t = ReplayTransport::new(&gt, sched.clone(), sess);
+            want.push(seq_pass(&mut t, sess));
+        }
+
+        // The fabric + pipelined + SoA stack, one pass per session — under
+        // BOTH descriptor formats.
+        for fmt in [true, false] {
+        let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
+        let mut t = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce(
+            &gt,
+            sched.clone(),
+            sessions[0],
+            128,
+        );
+        let mut sink = HydraSpanSink::new(&fabric);
+        let mut harvested = [(0u64, 0u64, 0u64); PASS_RING];
+        let mut got = Vec::new();
+        for sess in sessions {
+            t.reset(sess);
+            let mut seq = Sequencer::new();
+            sink.begin_pass();
+            while t.next_batch() {
+                seq.ingest_entries_soa(t.entries(), &t.soa(), t.now_ns(), &mut sink, ladder);
+                sink.drain_ready();
+            }
+            sink.end_pass();
+            let n = sink.harvest_completed(&mut harvested);
+            for rec in &harvested[..n] {
+                got.push(*rec);
+            }
+        }
+        sink.finish();
+        let n = sink.harvest_completed(&mut harvested);
+        for rec in &harvested[..n] {
+            got.push(*rec);
+        }
+        assert_eq!(got, want, "pipeline+soa chaos fabric diverged from sequential");
+        } // R12 both formats
     }
 }
