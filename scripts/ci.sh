@@ -134,14 +134,13 @@ grep -q "FBENCH stage=P" /tmp/fbench.txt
 grep -q "FBENCH stage=F" /tmp/fbench.txt
 grep -q "FBENCH done" /tmp/fbench.txt
 
-echo "=== 11e. R9: Armed Prepatch Soak (evidence step) ==="
-# R9d: the prepatch is DEFAULT OFF — the first Intel draw refuted the
-# default-on flip (the aliasing-halved synchronous bake beats spreading
-# RFOs onto the RX render path; see pipeline.rs R9d note). The armed
-# soak keeps running on every push: bit-exactness under arm stays
-# proven, and a future runner class with real RX idle time may flip
-# the verdict. The default (unarmed) arm is 11b above.
-HFT_PREPATCH=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_prepatch.txt
+echo "=== 11e. R11: Unarmed Prepatch Soak (rollback evidence) ==="
+# R11: the prepatch is DEFAULT ON (7/7 armed-wins on the R10 stack across
+# Zen3 / 8573C / 8370C — see pipeline.rs R11 note); this arm keeps the
+# UNARMED side of the ledger running on every push (HFT_PREPATCH=0 is the
+# rollback). The default (armed) numbers are 11b above; the per-draw
+# comparison lands in the log summary either way.
+HFT_PREPATCH=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_prepatch.txt
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_prepatch.txt
 grep -q "allocs=0" /tmp/bench_prepatch.txt
 

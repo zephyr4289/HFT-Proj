@@ -169,3 +169,51 @@ window_sweep green; 17/17 matrix cells at golden `0xF6EF154EFDE905D8`.
   headers change), swap at reset — the 91 µs/pass handshake leaves the
   critical path and the 20% reset collapses.
 * **Target 3 (tail latency)** stays queued behind the throughput war.
+
+## 7. First verdicts — the 8370C draw (run 37106713045, attempt 15)
+
+The R11 push drew an **Intel Xeon Platinum 8370C (Ice Lake, 2793 MHz
+invariant TSC)** after 14 silicon-filter re-rolls — a DIFFERENT class from
+the 8573C record silicon, and a physics lesson in itself:
+
+| kbench row | 8370C (2793 MHz) | 8573C (2300 MHz, record draw) |
+|---|---|---|
+| fold512 1t | 27.48 GB/s = **9.84 B/cyc** | 32.84 GB/s = **14.28 B/cyc** |
+| fold512 2cpu_distinct | 52.26 | 61.74 |
+| fold512 2cpu_smt | **30.40 (> 1t!)** | 32.83 (= 1t) |
+| fold512_tri 1t / distinct / smt | 27.51 / 52.43 / 29.55 | — |
+| Front A pure ingest | 2.574B msg/s | 3.474B msg/s |
+
+The 8370C's VPCLMULQDQ pipeline is 31% less dense per cycle (single clmul
+port — SMT pairs genuinely help it: 2cpu_smt 30.40 EXCEEDS the 1-thread
+27.48), and its scalar side is weaker too (Front A −26%).
+
+**Sweep verdicts (all bit-exact, allocs=0, per-pass tuples green):**
+
+| arm | rate | note |
+|---|---|---|
+| 11b default | 901.6M | crc 24.93 GB/s = 82% of the SMT cap — **main-bound draw**, not worker-bound |
+| 11e armed | **930.5M (+3.2%)** | armed-wins now **7/7** across Zen3/8573C/8370C on the R10 stack |
+| 11k distinct | 895.1M (−0.7%) | workers DID land on (0,2); worker0's idle_iters jumped 64k→667k (main's SMT theft) — inconclusive on a main-bound draw |
+| 11l tri | 893.4M (−0.9%) | **dead — parity everywhere** |
+| 11i slots 4/256 | 750.0M / 907.3M | 64 stays default |
+| 11j pipe / 11g eval2 / 11f w3 | 862.3M / 822.2M / 755.8M | retired/dead |
+
+**Decisions executed:**
+1. **Tri-stream is DEAD as a rate lever** — the kernel is port-issue-bound,
+   not chain-bound: kbench parity on every placement (27.51 vs 27.48; 52.43
+   vs 52.26), sustained parity (−0.9%). The user's Target 1a premise (hide
+   the 3-cycle clmul latency) is refuted by measurement — the ports are the
+   wall, on both microarchitectures. The code, kbench rows and knob stay as
+   the documented refutation (the eval2 precedent).
+2. **Prepatch default flipped ON** (`HFT_PREPATCH=0` is the rollback; the
+   11e arm becomes the unarmed soak). The R9d reversal was measured on the
+   pre-R10 equilibrium; on the R10 stack every class says armed wins. The
+   mechanism the flip prices: the deep ring converts main's spin to CRC, so
+   the reset handshake's synchronous bake is now critical-path — exactly
+   what the prepatch removes.
+3. **11k distinct stays an open experiment** — this draw was supply-limited
+   (24.93 GB/s of a 30.40 cap; workers 99% busy but the fabric starved).
+   The verdict that matters is an **8573C draw** (where the default
+   placement runs the workers at 93.5% of their SMT cap and main has
+   headroom). Keep fishing.
