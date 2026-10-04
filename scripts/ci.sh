@@ -262,6 +262,54 @@ HFT_CRC_KERNEL=fold512 cargo run --release -p nf-engine --bin bench -- --hydra-o
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_mirror_kernel.txt
 grep -q "allocs=0" /tmp/bench_mirror_kernel.txt
 
+echo "=== 11s. R14: Vector Barrett Ending OFF (rollback attribution) ==="
+# The R14 ending diet: the reflect kernel's per-span ending replaces the
+# 16 chained crc32 u64 instructions + their store/reload round-trip with
+# an in-register vector Barrett (per zmm: 5 clmul + 2 vpalignr — the
+# cross-qword byte shifts 32/56/32 are the unique byte-aligned triple that
+# closes exactly; constants VR0/VH64/VM/VMU derived + basis-exhaustively
+# pinned by t_vend_constants_derivation, docs/27). The real-mix span pays
+# ~93 cyc/span over the packed loop's ~91 (endings + supply + ring, the
+# R13 record draw's worker telemetry) — this lever attacks the endings'
+# share. 11b runs vend ON by default; this arm runs the R13 crc-chain
+# ending for per-draw fabric attribution. kbench's fold512_r vs fold512_rc
+# rows give the kernel-level split on the same draw.
+HFT_CRC_VEND=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_vend_off.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_vend_off.txt
+grep -q "allocs=0" /tmp/bench_vend_off.txt
+
+echo "=== 11t. R15: Vectorized Tail (vtail) OFF (rollback attribution) ==="
+# The R15 vtail: lane 0's post-loop tail (the extra fold units + r0 bytes,
+# |R| = 8*(B%2)+tail bytes) is absorbed into the vend input field via the
+# length-indexed y-power tables G/KH/AT (scripts/r15_tail_derive.py; the
+# chain decomposition lane = Z_r(vend(V)) XOR rawCRC(R) with everything in
+# the ring GF(2)[y]/VM). The serial extract -> fold_extra chain -> 2-3
+# chained crc32 (~25-60 cyc for r >= 16) becomes 2 lift clmuls + <=9
+# INDEPENDENT data clmuls + vend_xmm (~22 cyc) — the r >= 16 gate skips
+# the cheap r <= 8 spans where the old path has no serial chain to
+# eliminate (the packed-loop evidence). 11b runs vtail ON by default
+# (SPR+); this arm runs the R14 tail shape for per-draw attribution (the
+# 11r/11s precedent). kbench's fold512_rv vs fold512_r rows give the
+# kernel-level split on the same draw.
+HFT_CRC_VTAIL=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_vtail_off.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_vtail_off.txt
+grep -q "allocs=0" /tmp/bench_vtail_off.txt
+
+echo "=== 11u. R15: Worker Drain Granularity Sweep (the supply-side rebalance) ==="
+# docs/27 §7's third queue item: with the R13/R14/R15 kernel gains the
+# workers drain faster, and the batch shape that paced the result
+# publications against main's ordered fold may want re-tuning per class.
+# HFT_WORKER_BATCH (a multiple of the 64-span CHUNK, clamped to [64, 256])
+# is read once per worker spawn; the default 128 is the R8 shape. Two
+# soaks per draw price the direction; the evidence ledger records whatever
+# the silicon says.
+HFT_WORKER_BATCH=64 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_wbatch_64.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_wbatch_64.txt
+grep -q "allocs=0" /tmp/bench_wbatch_64.txt
+HFT_WORKER_BATCH=256 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_wbatch_256.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_wbatch_256.txt
+grep -q "allocs=0" /tmp/bench_wbatch_256.txt
+
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)
@@ -345,51 +393,3 @@ print('ALL CONSTRAINTS PASSED')
 PYEOF
 
 echo "=== ALL CHECKS PASSED SUCCESSFULLY ==="
-
-echo "=== 11s. R14: Vector Barrett Ending OFF (rollback attribution) ==="
-# The R14 ending diet: the reflect kernel's per-span ending replaces the
-# 16 chained crc32 u64 instructions + their store/reload round-trip with
-# an in-register vector Barrett (per zmm: 5 clmul + 2 vpalignr — the
-# cross-qword byte shifts 32/56/32 are the unique byte-aligned triple that
-# closes exactly; constants VR0/VH64/VM/VMU derived + basis-exhaustively
-# pinned by t_vend_constants_derivation, docs/27). The real-mix span pays
-# ~93 cyc/span over the packed loop's ~91 (endings + supply + ring, the
-# R13 record draw's worker telemetry) — this lever attacks the endings'
-# share. 11b runs vend ON by default; this arm runs the R13 crc-chain
-# ending for per-draw fabric attribution. kbench's fold512_r vs fold512_rc
-# rows give the kernel-level split on the same draw.
-HFT_CRC_VEND=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_vend_off.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_vend_off.txt
-grep -q "allocs=0" /tmp/bench_vend_off.txt
-
-echo "=== 11t. R15: Vectorized Tail (vtail) OFF (rollback attribution) ==="
-# The R15 vtail: lane 0's post-loop tail (the extra fold units + r0 bytes,
-# |R| = 8*(B%2)+tail bytes) is absorbed into the vend input field via the
-# length-indexed y-power tables G/KH/AT (scripts/r15_tail_derive.py; the
-# chain decomposition lane = Z_r(vend(V)) XOR rawCRC(R) with everything in
-# the ring GF(2)[y]/VM). The serial extract -> fold_extra chain -> 2-3
-# chained crc32 (~25-60 cyc for r >= 16) becomes 2 lift clmuls + <=9
-# INDEPENDENT data clmuls + vend_xmm (~22 cyc) — the r >= 16 gate skips
-# the cheap r <= 8 spans where the old path has no serial chain to
-# eliminate (the packed-loop evidence). 11b runs vtail ON by default
-# (SPR+); this arm runs the R14 tail shape for per-draw attribution (the
-# 11r/11s precedent). kbench's fold512_rv vs fold512_r rows give the
-# kernel-level split on the same draw.
-HFT_CRC_VTAIL=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_vtail_off.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_vtail_off.txt
-grep -q "allocs=0" /tmp/bench_vtail_off.txt
-
-echo "=== 11u. R15: Worker Drain Granularity Sweep (the supply-side rebalance) ==="
-# docs/27 §7's third queue item: with the R13/R14/R15 kernel gains the
-# workers drain faster, and the batch shape that paced the result
-# publications against main's ordered fold may want re-tuning per class.
-# HFT_WORKER_BATCH (a multiple of the 64-span CHUNK, clamped to [64, 256])
-# is read once per worker spawn; the default 128 is the R8 shape. Two
-# soaks per draw price the direction; the evidence ledger records whatever
-# the silicon says.
-HFT_WORKER_BATCH=64 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_wbatch_64.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_wbatch_64.txt
-grep -q "allocs=0" /tmp/bench_wbatch_64.txt
-HFT_WORKER_BATCH=256 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_wbatch_256.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_wbatch_256.txt
-grep -q "allocs=0" /tmp/bench_wbatch_256.txt
