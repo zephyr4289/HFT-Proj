@@ -110,6 +110,14 @@ Measured on GitHub Actions reference hardware (**Intel Xeon Platinum 8573C Sapph
 
 ---
 
+### Phase 8. R14 Program (The Vector Barrett Ending)
+* **Documentation**: [`docs/27-r14-vend.md`](docs/27-r14-vend.md)
+* **The Ending Wall**: the R13 record draw's workers ran 98.5% busy at ~17 GB/s each — 50% of their own 33.94 GB/s packed ceiling; the real-mix span costs ~184 cyc vs the packed loop's ~91. The kernel-owned share: the per-span ending stack — 2 stores + 16 u64 reloads + **16 chained `crc32_u64` on p1** + the serial FNV chain.
+* **The Vector Barrett ("vend")**: the ending's value is the linear map `raw = (V ⊗ VR0) mod VM` over the empirically-identified LFSR ring `VM = y³² ⊕ 0x05ec76f1` (the monomial recurrence of the 16-byte CRC family; `VR0 = 0xf20c0dfe`; `VR0·y⁶⁴ mod VM = 0x493c7d27` — RKHI re-emerging from independent algebra). The in-register reduction: per zmm **5 clmul + 2 `vpalignr`** (the cross-qword byte shifts 32/56/32 are the unique byte-aligned triple that closes exactly) — replacing the 16 chained crc32 + their extract storm. Verified **0/128 basis, 0/300k random** under exact vector semantics; `t_vend_constants_derivation` re-derives every constant at test time; the differential sweep pins BOTH ending paths.
+* **CI-Confirmed with a class split — the silicon-conditional default**: 4 target draws. The 8573C (SPR): sustained **+4.45%** (draw 1, strong instance: 1,185,343,147 msg/s vs the same-draw crc-chain rollback) and **+0.32%** (draw 2), kernel-level 3/3 positive. The 8370C (Ice Lake): **−2.92% sustained / −13.8% packed** — its single clmul-issue structure serializes the ending's +10 clmul/span against the fold's. Per the R9c→R9d law (no default that hurts a class), the default is **CPUID-conditional**: ON for Intel family-6 model ≥ 0x8F (SPR+), OFF elsewhere; `HFT_CRC_VEND=1|0` overrides; kbench `fold512_r`/`fold512_rc` is the controlled attribution pair on every class; CI **11s** soaks the OFF path. Bit-exact goldens and `ALLOC_DELTA=0` on every draw and arm.
+
+---
+
 ## 3. Engineering Documentation Directory
 
 Every architectural phase, design thesis, failure ledger, and benchmark record is cataloged in the repository:
@@ -140,6 +148,7 @@ Every architectural phase, design thesis, failure ledger, and benchmark record i
 | [`docs/24-r11-phase4.md`](docs/24-r11-phase4.md) | **Phase 6a: R11 Record** (1.2348B Sustained Record & Topology Resolution) |
 | [`docs/25-r12-ladder.md`](docs/25-r12-ladder.md) | **Phase 6b: R12 Compact Descriptors** (Desc8 Shipped, Ladder Ledger, R13) |
 | [`docs/26-r13-p5-wall.md`](docs/26-r13-p5-wall.md) | **Phase 7: R13 Port-5 Wall** (Natural-Domain Fold, Port Decomposition, Refuted Designs) |
+| [`docs/27-r14-vend.md`](docs/27-r14-vend.md) | **Phase 8: R14 Vector Barrett Ending** (In-Register Lane Reduction, LFSR Ring Algebra) |
 
 ---
 

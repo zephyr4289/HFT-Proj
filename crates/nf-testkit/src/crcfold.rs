@@ -80,8 +80,80 @@ pub const RKHI: u64 = 0x493C_7D27;
 /// (33-bit: carries the polynomial's y^32 term). Same ISA-L pair.
 pub const RKLO: u64 = 0x0EC10_68C5_0;
 
+/// R14: the vector ending's seed constant — the value of the 16-byte
+/// monomial family at degree 0 (empirically pinned: `crc32_u64(crc32_u64(
+/// 0, 1), 0)`), and the multiplier that turns the reflect state into the
+/// lane CRC: `out = (V_lo ⊗ VR0) ⊕ (V_hi ⊗ VH64)  (mod VM)` (docs/27).
+pub const VR0: u64 = 0xF20C_0DFE;
+/// R14: the vector ending's HIGH-qword multiplier `r0·y^64 mod VM` —
+/// numerically identical to [`RKHI`] (the R13 fold constant re-emerging
+/// from independent algebra: the fold's unit-lift and the ending's
+/// y^64-shift are the same ring operation).
+pub const VH64: u64 = 0x493C_7D27;
+/// R14: the ending ring's LFSR overflow polynomial Q, where
+/// VM = y^32 ⊕ VQ. Empirically pinned as the monomial recurrence
+/// R_{j+1} = (R_j << 1) ^ (VQ if R_j >= 2^31) over the 16-byte CRC
+/// family (docs/27 §2).
+pub const VQ: u64 = 0x05EC_76F1;
+/// R14: the full ending modulus VM = y^32 ⊕ VQ (33-bit).
+pub const VM: u64 = 0x1_05EC_76F1;
+/// R14: the Barrett quotient constant `floor(y^88 / VM)` (57-bit). With
+/// the field-wide byte shifts (32, 56, 32 bits = vpalignr 4/7/4) it
+/// completes the in-register reduction of the ≤95-bit representative to
+/// the 32-bit lane CRC (docs/27 §3). The byte alignment is load-bearing:
+/// the shifts are cross-qword (a per-qword vpsrlq would corrupt them),
+/// and 32/56/32 is the unique byte-aligned triple that closes exactly
+/// (the solver's only verified solution).
+pub const VMU: u64 = 0x0105_FD79_BDAB_A560;
+
 /// Bodies shorter than this many bytes evaluate on the scalar kernel.
 pub const FOLD_MIN_LEN: usize = 192;
+
+/// R14: the vector ending's master switch. `HFT_CRC_VEND=1|0` overrides;
+/// otherwise the default is SILICON-CONDITIONAL (the R14 CI verdicts —
+/// docs/27 §5): ON where the 512-bit ports absorb the ending's
+/// +10 clmul/span (Intel Sapphire Rapids and newer — the 8573C measured
+/// +4.45%/+0.32% sustained across draws), OFF on Ice Lake and everything
+/// unproven (the 8370C measured −2.9% sustained / −13.8% packed — its
+/// single clmul port serializes the ending's clmuls against the fold's).
+/// Read once per span (OnceLock), never inside a step loop.
+pub fn vend_enabled() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| match std::env::var("HFT_CRC_VEND").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => vend_supported_cpu(),
+    })
+}
+
+/// The class table behind `vend_enabled`'s default: true only on Intel
+/// family-6 model >= 0x8F (Sapphire Rapids and newer server cores — the
+/// class the R14 draw evidence covers). Ice Lake (0x6A) and every other
+/// vendor/model stay OFF until a draw certifies them (the ladder-refuted
+/// precedent: a default that hurts ANY class does not ship; the knob
+/// overrides for experiments).
+#[cfg(target_arch = "x86_64")]
+fn vend_supported_cpu() -> bool {
+    let f = std::arch::x86_64::__cpuid(0);
+    let is_intel = f.ebx == 0x756e_6547 && f.edx == 0x4965_6e69 && f.ecx == 0x6c65_746e;
+    if !is_intel || f.eax < 1 {
+        return false;
+    }
+    let f1 = std::arch::x86_64::__cpuid(1);
+    let base_family = (f1.eax >> 8) & 0xf;
+    let model = ((f1.eax >> 4) & 0xf) | (((f1.eax >> 12) & 0xf) << 4);
+    let family = if base_family == 0xf {
+        base_family + ((f1.eax >> 20) & 0xff)
+    } else {
+        base_family
+    };
+    family == 6 && model >= 0x8f
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn vend_supported_cpu() -> bool {
+    false
+}
 
 /// Span-verification kernel selection. `Copy` + no allocation; detected
 /// once at startup (fabric spawn / harness setup), never in-window.
@@ -220,6 +292,23 @@ impl CrcKernel {
             Self::Reflect => imp::span_fold_eval_r(body),
         }
     }
+
+    /// R14: evaluate the REFLECT kernel with an explicit ENDING path — the
+    /// kbench attribution twin (`fold512_r` runs the HFT_CRC_VEND default,
+    /// i.e. the vector Barrett ending; `vend = false` forces the R13
+    /// crc-chain ending). Values identical on every input (the sweeps
+    /// assert it); only the ending's uop mix differs.
+    ///
+    /// # Safety
+    /// Same feature contract as [`Self::eval`].
+    #[inline(always)]
+    pub unsafe fn eval_rpath(&self, body: &[u8], vend: bool) -> u64 {
+        match self {
+            Self::Scalar => span_crc32c_8lane(body),
+            Self::Fold512 => imp::span_fold_eval(body),
+            Self::Reflect => imp::span_fold_eval_r_forced(body, vend),
+        }
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -228,7 +317,9 @@ impl CrcKernel {
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod imp {
-    use super::{KP128, KP192, FOLD_MIN_LEN, KP256, KP320, KP384, KP448, RKHI, RKLO};
+    use super::{
+        KP128, KP192, FOLD_MIN_LEN, KP256, KP320, KP384, KP448, RKHI, RKLO, VH64, VM, VMU, VR0,
+    };
     use crate::sink::span_crc32c_8lane;
     use std::arch::x86_64::*;
 
@@ -997,6 +1088,46 @@ pub(crate) mod imp {
         st
     }
 
+    /// R14: the vector Barrett ending — reduce each 128-bit field's
+    /// reflect state to its 32-bit lane CRC entirely in-register:
+    ///
+    /// ```text
+    /// W  = (V_lo ⊗ VR0) ⊕ (V_hi ⊗ VH64)     ≤ 95 bits  (2 clmul + xor)
+    /// X  = field >> 32                     = vpalignr(W, W, 4)  (p5)
+    /// P  = X.field.lo ⊗ VMU                ≤ 121 bits  (1 clmul)
+    /// qh = field >> 56                     = vpalignr(P, P, 7)  (p5)
+    /// R  = W ⊕ (qh.field.lo ⊗ VM)          ≤ 98 bits   (1 clmul + xor)
+    /// r  = R ⊕ ((field>>32).lo ⊗ VM)       ≤ 32 bits*  (1 clmul + alignr + xor)
+    /// out = low32(r) — the q̂−1 correction leaves bits ≥ 32 exact
+    /// ```
+    ///
+    /// The shifts are FIELD-WIDE (cross-qword) — `vpalignr` per 128-bit
+    /// lane, not `vpsrlq`; the byte alignment (4/7/4) is the unique
+    /// verified triple. Per zmm: 5 clmul + 2 alignr + 3 logic for FOUR
+    /// lanes — replacing, per lane, a store/reload + two chained `crc32`
+    /// (16 total per span, all on p1) and their extract traffic. The math
+    /// is pinned by `t_vend_constants_derivation` (basis-exhaustive over
+    /// the software model) and the differential sweeps (both ending paths
+    /// vs the scalar kernel on every body).
+    #[inline(always)]
+    unsafe fn vend_zmm(v: __m512i) -> __m512i {
+        let kr0 = _mm512_set1_epi64(VR0 as i64);
+        let kh64 = _mm512_set1_epi64(VH64 as i64);
+        let km = _mm512_set1_epi64(VM as i64);
+        let kmu = _mm512_set1_epi64(VMU as i64);
+        let w = _mm512_xor_si512(
+            _mm512_clmulepi64_epi128(v, kr0, 0x00),
+            _mm512_clmulepi64_epi128(v, kh64, 0x01),
+        );
+        let x = _mm512_alignr_epi8(w, w, 4);
+        let p = _mm512_clmulepi64_epi128(x, kmu, 0x00);
+        let qh = _mm512_alignr_epi8(p, p, 7);
+        let r = _mm512_xor_si512(w, _mm512_clmulepi64_epi128(qh, km, 0x00));
+        _mm512_xor_si512(
+            r,
+            _mm512_clmulepi64_epi128(_mm512_alignr_epi8(r, r, 4), km, 0x00),
+        )
+    }
     /// R13: scalar 128-bit natural-domain fold step (lane-0 tail units).
     /// V <- (V_hi ⊗ RKHI) ⊕ (V_lo ⊗ RKLO) ⊕ U with U in natural order.
     #[inline(always)]
@@ -1020,8 +1151,17 @@ pub(crate) mod imp {
     /// and the odd-block last words follow the SAME stream decomposition
     /// as [`finish_span`] (the value definition fixes it); only the fold
     /// math and the ending differ.
+    ///
+    /// R14: the ending rides the `HFT_CRC_VEND` switch — vend (the vector
+    /// Barrett, default) replaces the 16 chained `crc32` + their
+    /// store/reload round-trip with 2×(5 clmul + 2 alignr) in-register.
     #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
     unsafe fn finish_span_r(body: &[u8], st: FoldStates) -> u64 {
+        finish_span_r_inner(body, st, super::vend_enabled())
+    }
+
+    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
+    unsafe fn finish_span_r_inner(body: &[u8], st: FoldStates, vend: bool) -> u64 {
         let len = body.len();
         let p = body.as_ptr();
         let blocks = len / 64;
@@ -1102,7 +1242,22 @@ pub(crate) mod imp {
 
         // ---- endings: all lanes (natural order, no rev64) ----
         let mut lanes = [0u32; 8];
-        {
+        if vend {
+            // R14: the vector Barrett ending. Lane CRCs land in the low 32
+            // bits of each 128-bit field's LOW qword: even field j = lane
+            // 2j (field 0 = lane 0, finished separately below), odd field
+            // j = lane 2j+1.
+            let mut e = [0u64; 8];
+            let mut o = [0u64; 8];
+            _mm512_storeu_si512(e.as_mut_ptr() as *mut _, vend_zmm(st.even));
+            _mm512_storeu_si512(o.as_mut_ptr() as *mut _, vend_zmm(st.odd));
+            for j in 1..4usize {
+                lanes[2 * j] = e[2 * j] as u32;
+            }
+            for j in 0..4usize {
+                lanes[2 * j + 1] = o[2 * j] as u32;
+            }
+        } else {
             let mut e = [0u64; 8];
             let mut o = [0u64; 8];
             _mm512_storeu_si512(e.as_mut_ptr() as *mut _, st.even);
@@ -1176,6 +1331,22 @@ pub(crate) mod imp {
         finish_span_r(body, st)
     }
 
+    /// R14: the reflect kernel with an EXPLICIT ending path (the kbench
+    /// attribution twin + the differential suite's pin of BOTH paths).
+    ///
+    /// # Safety
+    /// Same feature contract as [`span_fold_eval_r`].
+    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
+    pub unsafe fn span_fold_eval_r_forced(body: &[u8], vend: bool) -> u64 {
+        if body.len() < FOLD_MIN_LEN {
+            return span_crc32c_8lane(body);
+        }
+        let wp = body.len() / 64 / 2;
+        // SAFETY: 128*wp <= len (feature contract + caller bounds).
+        let st = fold_word_pairs_r(body.as_ptr(), wp);
+        finish_span_r_inner(body, st, vend)
+    }
+
     /// R13: the production two-span path on the natural-domain kernel —
     /// the same software-pipelined structure as [`span_fold_eval_pair`]
     /// (A's vector fold, B's vector fold, A's endings, B's endings).
@@ -1215,6 +1386,11 @@ pub(crate) mod imp {
 
     #[inline(always)]
     pub unsafe fn span_fold_eval_r(body: &[u8]) -> u64 {
+        span_crc32c_8lane(body)
+    }
+
+    #[inline(always)]
+    pub unsafe fn span_fold_eval_r_forced(body: &[u8], _vend: bool) -> u64 {
         span_crc32c_8lane(body)
     }
 
@@ -1370,6 +1546,12 @@ mod tests {
             );
             let gr = unsafe { imp::span_fold_eval_r(body) };
             assert_eq!(want, gr, "reflect diverged at len={}", body.len());
+            // R14: BOTH ending paths on every body (vector Barrett + the
+            // R13 crc-chain), independent of the HFT_CRC_VEND default.
+            let grv = unsafe { imp::span_fold_eval_r_forced(body, true) };
+            assert_eq!(want, grv, "reflect vend ending diverged at len={}", body.len());
+            let grc = unsafe { imp::span_fold_eval_r_forced(body, false) };
+            assert_eq!(want, grc, "reflect crc-chain ending diverged at len={}", body.len());
             let (g2a, g2b) = unsafe { imp::span_fold_eval2(body, body) };
             assert_eq!(want, g2a, "eval2 primary diverged at len={}", body.len());
             assert_eq!(want, g2b, "eval2 mirror diverged at len={}", body.len());
@@ -1535,5 +1717,143 @@ mod tests {
         assert_eq!(ypow(320), KP320, "KP320 re-derivation");
         assert_eq!(ypow(384), KP384, "KP384 re-derivation");
         assert_eq!(ypow(448), KP448, "KP448 re-derivation");
+    }
+
+    /// R14: pin the vector ending's constants and its exactness, from the
+    /// ground up. The software model re-derives, independently of the
+    /// shipped kernel:
+    ///
+    /// 1. `VQ` — the monomial recurrence of the 16-byte CRC family
+    ///    (`R_{j+1} = (R_j << 1) ^ VQ if R_j >= 2^31`), probed through a
+    ///    table-driven reference;
+    /// 2. `VR0` — the family's degree-0 seed (`crc32_u64(crc32_u64(0, 1), 0)`);
+    /// 3. `VH64` — `VR0 * y^64 mod VM`;
+    /// 4. `VMU` — `floor(y^88 / VM)`;
+    /// 5. the composed vend structure vs the true double-crc-chain ending
+    ///    on ALL 128 basis vectors (linearity closes the proof) and random
+    ///    states — with vpalignr's per-field byte semantics emulated
+    ///    exactly (the cross-qword shifts are the load-bearing part).
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn t_vend_constants_derivation() {
+        fn table() -> [u32; 256] {
+            let mut t = [0u32; 256];
+            for (i, e) in t.iter_mut().enumerate() {
+                let mut c = i as u32;
+                for _ in 0..8 {
+                    c = if c & 1 != 0 {
+                        (c >> 1) ^ 0x82F6_3B78
+                    } else {
+                        c >> 1
+                    };
+                }
+                *e = c;
+            }
+            t
+        }
+        static TABLE: std::sync::OnceLock<[u32; 256]> = std::sync::OnceLock::new();
+        let t = TABLE.get_or_init(table);
+        fn crc_u64(t: &[u32; 256], c: u32, v: u64) -> u32 {
+            let mut c = c;
+            for i in 0..8 {
+                let b = ((v >> (8 * i)) & 0xFF) as u32;
+                c = (c >> 8) ^ t[((c ^ b) & 0xFF) as usize];
+            }
+            c
+        }
+        // 1. VQ via the monomial recurrence (16-byte family, degree 0..95).
+        let r_at = |j: u32| -> u64 {
+            // crc of the 16-byte message with a single bit at degree j
+            let mut buf = [0u8; 16];
+            buf[(j / 8) as usize] |= 1 << (j % 8);
+            crc_u64(t, crc_u64(t, 0, u64::from_le_bytes(buf[..8].try_into().unwrap())), u64::from_le_bytes(buf[8..].try_into().unwrap())) as u64
+        };
+        let r0 = r_at(0);
+        let r1 = r_at(1);
+        let r2 = r_at(2);
+        assert_eq!(r0, VR0, "VR0 re-derivation (the 16-byte seed)");
+        let vq = if (r0 >> 31) & 1 == 0 {
+            // r1 = r0 << 1 (no overflow): no info; probe further
+            r2 ^ ((r1 << 1) & 0xFFFF_FFFF)
+        } else {
+            r1 ^ ((r0 << 1) & 0xFFFF_FFFF)
+        };
+        assert_eq!(vq, VQ, "VQ re-derivation (the LFSR overflow poly)");
+        // the recurrence must hold for the family (spot check)
+        let l = |x: u64| -> u64 { ((x << 1) & 0xFFFF_FFFF) ^ if (x >> 31) & 1 == 1 { VQ } else { 0 } };
+        for j in 0..90 {
+            assert_eq!(l(r_at(j)), r_at(j + 1), "monomial recurrence at j={j}");
+        }
+        // 2-4. the ring constants.
+        fn clmul(a: u128, b: u128) -> u128 {
+            let mut r = 0u128;
+            let mut a = a;
+            let mut b = b;
+            while b != 0 {
+                if b & 1 != 0 {
+                    r ^= a;
+                }
+                a <<= 1;
+                b >>= 1;
+            }
+            r
+        }
+        fn clmod(mut v: u128) -> u128 {
+            let m = VM as u128;
+            while v >= (1u128 << 32) {
+                let sh = (128 - v.leading_zeros()) - 33;
+                v ^= m << sh;
+            }
+            v
+        }
+        assert_eq!(clmod(clmul(VR0 as u128, 1u128 << 64)), VH64 as u128, "VH64 = r0*y^64 mod VM");
+        // VMU = floor(y^88 / VM)
+        {
+            let mut num = 1u128 << 88;
+            let mut q = 0u128;
+            let m = VM as u128;
+            while num >= m {
+                let sh = (128 - num.leading_zeros()) - 33;
+                q |= 1u128 << sh;
+                num ^= m << sh;
+            }
+            assert_eq!(q, VMU as u128, "VMU = floor(y^88 / VM)");
+        }
+        // 5. the composed structure (vpalignr per-field byte semantics
+        //    emulated: X = field >> 32; qh = field >> 56; corr = field >> 32)
+        //    vs the true ending crc_u64(crc_u64(0, V_lo), V_hi).
+        fn vend_model(vlo: u64, vhi: u64) -> u64 {
+            let w = clmul(vlo as u128, VR0 as u128) ^ clmul(vhi as u128, VH64 as u128);
+            let x = w >> 32; // only the low qword feeds the clmul (imm 0x00)
+            let x_lo = x & 0xFFFF_FFFF_FFFF_FFFF;
+            let p = clmul(x_lo, VMU as u128);
+            let qh = (p >> 56) & 0xFFFF_FFFF_FFFF_FFFF;
+            let r = w ^ clmul(qh, VM as u128);
+            let corr = (r >> 32) & 0xFFFF_FFFF_FFFF_FFFF;
+            ((r ^ clmul(corr, VM as u128)) & 0xFFFF_FFFF) as u64
+        }
+        // basis-exhaustive (linearity closes the proof)
+        for k in 0..64 {
+            assert_eq!(vend_model(1 << k, 0), crc_u64(t, crc_u64(t, 0, 1 << k), 0) as u64, "vend basis lo {k}");
+            assert_eq!(vend_model(0, 1 << k), crc_u64(t, crc_u64(t, 0, 0), 1 << k) as u64, "vend basis hi {k}");
+        }
+        // randoms
+        let mut s = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = s;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        };
+        for _ in 0..4096 {
+            let vlo = next();
+            let vhi = next();
+            assert_eq!(
+                vend_model(vlo, vhi),
+                crc_u64(t, crc_u64(t, 0, vlo), vhi) as u64,
+                "vend random"
+            );
+        }
     }
 }
