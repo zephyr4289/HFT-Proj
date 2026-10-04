@@ -47,6 +47,28 @@ pub const PR1_R8_PURE_INGEST_MIN_MSG_PER_SEC: u64 = 2_000_000_000;
 // GIGAHFT milestone carried to its 1B sustained level on the runner fabric.
 pub const PR1_R8_FULL_VERIFY_MIN_MSG_PER_SEC: u64 = 1_000_000_000;
 
+// R16: PR-1 full-verification target — >= 2,000,000,000 msg/s sustained on
+// the SAME 4-vCPU standard-runner fabric (2 physical cores + SMT — the R12
+// target ruling confines the claim to this shape; larger runners do not
+// count) with the SAME invariant set (bit-exact, every byte verified
+// in-window, ALLOC_DELTA = 0, no memoization across passes). The program
+// that carries it is docs/29 (Double Helix): the array-driven submission
+// (rxdesc — R16b) removes the main-side per-span wall, the distinct-core
+// worker placement (R16d) unlocks the 2cpu_distinct fold pool, and the
+// claim follows the R12 protocol (median of >= 3 healthy same-class draws,
+// kbench fold512_r 1t >= 30.0 GB/s each). The 1B R8 gate above stays the
+// CI-hard floor; this 2B verdict is REPORTED per draw (elevating it to an
+// assert happens only when the median healthy draw crosses it — the same
+// submission-time elevation rule the R8 2B pure-ingest gate used).
+pub const PR1_R16_FULL_VERIFY_MIN_MSG_PER_SEC: u64 = 2_000_000_000;
+
+// R16: PR-1 pure-ingest target — >= 5,000,000,000 msg/s on the pinned-core
+// span arm (the Front A shape: full ingest pipeline live, no byte-level
+// verification claimed). Reported per draw alongside the R8 2B hard gate;
+// the lever is Lever B (rxbuild — docs/29 §5). Non-asserting until the
+// median healthy draw crosses it (the R12 protocol).
+pub const PR1_R16_PURE_INGEST_MIN_MSG_PER_SEC: u64 = 5_000_000_000;
+
 // Strict Tier 3 Bare-Metal / Reference Target (doc 00)
 pub const PR2_TARGET_P50_CYCLES: u64 = 60;
 pub const PR2_TARGET_P99_CYCLES: u64 = 150;
@@ -134,6 +156,28 @@ pub fn evaluate_pr1_r8_pure_ingest(span_rate_msg_per_sec: u64) -> GateVerdict {
 #[inline]
 pub fn evaluate_pr1_r8_full_verify(sustained_rate_msg_per_sec: u64) -> GateVerdict {
     if sustained_rate_msg_per_sec >= PR1_R8_FULL_VERIFY_MIN_MSG_PER_SEC {
+        GateVerdict::Pass
+    } else {
+        GateVerdict::Fail
+    }
+}
+
+/// R16: PR-1 full-verification verdict — the 2B msg/s sustained fabric
+/// target (see PR1_R16_FULL_VERIFY_MIN_MSG_PER_SEC), same invariant set.
+#[inline]
+pub fn evaluate_pr1_r16_full_verify(sustained_rate_msg_per_sec: u64) -> GateVerdict {
+    if sustained_rate_msg_per_sec >= PR1_R16_FULL_VERIFY_MIN_MSG_PER_SEC {
+        GateVerdict::Pass
+    } else {
+        GateVerdict::Fail
+    }
+}
+
+/// R16: PR-1 pure-ingest verdict — the 5B msg/s pinned-core span-arm
+/// target (see PR1_R16_PURE_INGEST_MIN_MSG_PER_SEC).
+#[inline]
+pub fn evaluate_pr1_r16_pure_ingest(span_rate_msg_per_sec: u64) -> GateVerdict {
+    if span_rate_msg_per_sec >= PR1_R16_PURE_INGEST_MIN_MSG_PER_SEC {
         GateVerdict::Pass
     } else {
         GateVerdict::Fail
@@ -242,5 +286,14 @@ mod tests {
         assert_eq!(evaluate_pr1_r8_full_verify(0), GateVerdict::Fail);
         assert_eq!(evaluate_pr1_r8_full_verify(1_000_000_000), GateVerdict::Pass);
         assert_eq!(evaluate_pr1_r8_full_verify(1_400_000_000), GateVerdict::Pass);
+
+        // R16 tripwires: 2B full-verify / 5B pure-ingest — FAIL below,
+        // PASS exactly at the threshold.
+        assert_eq!(evaluate_pr1_r16_full_verify(1_999_999_999), GateVerdict::Fail);
+        assert_eq!(evaluate_pr1_r16_full_verify(0), GateVerdict::Fail);
+        assert_eq!(evaluate_pr1_r16_full_verify(2_000_000_000), GateVerdict::Pass);
+        assert_eq!(evaluate_pr1_r16_pure_ingest(4_999_999_999), GateVerdict::Fail);
+        assert_eq!(evaluate_pr1_r16_pure_ingest(5_000_000_000), GateVerdict::Pass);
+        assert_eq!(evaluate_pr1_r16_pure_ingest(6_000_000_000), GateVerdict::Pass);
     }
 }

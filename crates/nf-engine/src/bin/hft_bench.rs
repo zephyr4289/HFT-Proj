@@ -411,6 +411,15 @@ fn main() {
         nf_protocol::gates::PR1_R8_PURE_INGEST_MIN_MSG_PER_SEC,
         r8_verdict
     );
+    // R16: the 5B target — REPORTED per draw (non-asserting until the
+    // median healthy draw crosses it; the lever is rxbuild, docs/29 §5).
+    let r16_verdict = nf_protocol::gates::evaluate_pr1_r16_pure_ingest(span_rate).as_str();
+    eprintln!(
+        "PR1_R16_PURE_INGEST_VERDICT rate={} target={} -> {} (R16: 5B msg/s pure ingest — the Double Helix program, docs/29)",
+        span_rate,
+        nf_protocol::gates::PR1_R16_PURE_INGEST_MIN_MSG_PER_SEC,
+        r16_verdict
+    );
 
     if output_format == "json" {
         let cpu = get_cpu_model().replace('"', " ");
@@ -421,10 +430,11 @@ fn main() {
             "x86_64-unknown-linux-gnu"
         };
         println!(
-            "{{\n  \"median_cycles\": {:.4},\n  \"p95_cycles\": {:.4},\n  \"p99_cycles\": {:.4},\n  \"stddev\": {:.4},\n  \"cv_percent\": {:.4},\n  \"runs\": {},\n  \"warmup\": {},\n  \"cpu_model\": \"{}\",\n  \"freq_mhz\": {:.2},\n  \"target\": \"{}\",\n  \"sink\": \"count+span\",\n  \"sample\": \"{}\",\n  \"span_median_cycles\": {:.4},\n  \"span_p95_cycles\": {:.4},\n  \"span_p99_cycles\": {:.4},\n  \"span_stddev\": {:.4},\n  \"span_cv_percent\": {:.4},\n  \"span_rate_msg_per_sec\": {},\n  \"r8_pure_ingest_target\": {},\n  \"r8_pure_ingest_verdict\": \"{}\"\n}}",
+            "{{\n  \"median_cycles\": {:.4},\n  \"p95_cycles\": {:.4},\n  \"p99_cycles\": {:.4},\n  \"stddev\": {:.4},\n  \"cv_percent\": {:.4},\n  \"runs\": {},\n  \"warmup\": {},\n  \"cpu_model\": \"{}\",\n  \"freq_mhz\": {:.2},\n  \"target\": \"{}\",\n  \"sink\": \"count+span\",\n  \"sample\": \"{}\",\n  \"span_median_cycles\": {:.4},\n  \"span_p95_cycles\": {:.4},\n  \"span_p99_cycles\": {:.4},\n  \"span_stddev\": {:.4},\n  \"span_cv_percent\": {:.4},\n  \"span_rate_msg_per_sec\": {},\n  \"r8_pure_ingest_target\": {},\n  \"r8_pure_ingest_verdict\": \"{}\",\n  \"r16_pure_ingest_target\": {},\n  \"r16_pure_ingest_verdict\": \"{}\"\n}}",
             median, p95, p99, stddev, cv, n, warmup, cpu, cal.freq_mhz, target, sample,
             span_median, span_p95, span_p99, span_stddev, span_cv, span_rate,
-            nf_protocol::gates::PR1_R8_PURE_INGEST_MIN_MSG_PER_SEC, r8_verdict
+            nf_protocol::gates::PR1_R8_PURE_INGEST_MIN_MSG_PER_SEC, r8_verdict,
+            nf_protocol::gates::PR1_R16_PURE_INGEST_MIN_MSG_PER_SEC, r16_verdict
         );
     } else {
         println!(

@@ -1,6 +1,7 @@
 pub mod render;
 pub mod pipeline;
 pub mod replay;
+pub mod rxdesc;
 pub mod sched_types;
 pub mod xdp;
 

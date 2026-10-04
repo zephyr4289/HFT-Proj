@@ -559,7 +559,7 @@ fn run_hydra_sustained_5s(
     let t_start_mono = read_monotonic_raw_ns();
 
     let mut sess = *b"HYDRASUST1";
-    let mut harvested = [(0u64, 0u64, 0u64); 8];
+    let mut harvested = [(0u64, 0u64, 0u64); nf_testkit::hydra::PASS_RING];
     // Auto-advance pass cursor: the ref pass was 1; each loop pass targets
     // pass+1 with counter 998 + pass (f: pass 2 -> 1000).
     let mut pass: u64 = 1;
@@ -705,6 +705,19 @@ fn run_hydra_sustained_5s(
         sustained_rate,
         nf_protocol::gates::PR1_R8_FULL_VERIFY_MIN_MSG_PER_SEC,
         nf_protocol::gates::evaluate_pr1_r8_full_verify(sustained_rate).as_str()
+    );
+    // R16: the 2B target — REPORTED per draw (non-asserting until the
+    // median healthy draw crosses it; the R12 protocol decides claims).
+    println!(
+        "PR1_R16_FULL_VERIFY_VERDICT rate={} target={} -> {} (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)",
+        sustained_rate,
+        nf_protocol::gates::PR1_R16_FULL_VERIFY_MIN_MSG_PER_SEC,
+        nf_protocol::gates::evaluate_pr1_r16_full_verify(sustained_rate).as_str()
+    );
+    println!(
+        "R16B_RXDESC_VERDICT rx_fixes={} assist_chunks={} (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)",
+        sink.rx_fixes(),
+        sink.assist_chunks()
     );
     assert_eq!(alloc_delta, 0, "ALLOC_DELTA must be 0 in hydra sustained loop");
     sustained_rate

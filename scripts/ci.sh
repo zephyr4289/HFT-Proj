@@ -105,6 +105,8 @@ grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_hydra.txt
 # (the 1B sustained target is OPEN — measured 288M on the Zen5 runner;
 # enforcement lands when the fabric reaches it; see docs/22 §Physics).
 grep -q "PR1_R8_FULL_VERIFY_VERDICT rate=" /tmp/bench_hydra.txt
+grep -q "PR1_R16_FULL_VERIFY_VERDICT rate=" /tmp/bench_hydra.txt
+grep -q "R16B_RXDESC_VERDICT rx_fixes=" /tmp/bench_hydra.txt
 
 # R10b: the blob's THP backing line is a first-class CI artifact — a draw
 # that lost the hugepage grant must be VISIBLE, not silent (the 1.867B gate
@@ -199,19 +201,21 @@ HFT_WORKER_PIPE=1 cargo run --release -p nf-engine --bin bench -- --hydra-only |
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_pipe.txt
 grep -q "allocs=0" /tmp/bench_pipe.txt
 
-echo "=== 11k. R11: Distinct-Core Worker Placement Sweep (the SMT ceiling unlock) ==="
-# THE PLACEMENT CEILING: on the 2-physical-core SMT draws the default
-# (siblings) strategy stacks BOTH workers on one physical core's two
-# hyperthreads — their combined fold is capped at the kbench 2cpu_smt
-# ceiling (32.83 GB/s on the 1.109B draw) while 2cpu_distinct sat unused
-# at 61.74 GB/s. HFT_FABRIC_PLACE=distinct gives each worker a physical
-# core and demotes main+rx to the SMT siblings (each steals issue slots
-# from exactly one worker). The worker DIAG lines echo the new pins;
-# kbench's fold512 2cpu_distinct row prices the ceiling it chases.
-# Diagnostics only — bit-exactness asserted by the arm's per-pass checks.
-HFT_FABRIC_PLACE=distinct cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_place_distinct.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_place_distinct.txt
-grep -q "allocs=0" /tmp/bench_place_distinct.txt
+echo "=== 11k. R16d: Siblings Placement Soak (the rollback attribution) ==="
+# THE DEFAULT FLIP: on the 2-physical-core SMT draws the R8 default
+# (siblings) stacked BOTH workers on one physical core's hyperthreads —
+# their combined fold capped at the kbench 2cpu_smt ceiling (~32.8 GB/s)
+# while 2cpu_distinct sat unused at ~61 GB/s — and the R11 distinct
+# experiment proved the system MAIN-bound (workers +15% spans, sustained
+# flat). R16b's array-driven submission (rxdesc, arm 11w's rollback)
+# removed the main-side wall, so R16d flips the 2-worker 2-core SMT
+# default to DISTINCT (workers own physical cores; main+rx become the
+# SMT siblings). 11b runs the new default; THIS arm soaks the R8
+# rollback shape for per-draw attribution. The worker DIAG lines echo
+# the pins; kbench's 2cpu_smt vs 2cpu_distinct rows price both ceilings.
+HFT_FABRIC_PLACE=siblings cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_place_siblings.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_place_siblings.txt
+grep -q "allocs=0" /tmp/bench_place_siblings.txt
 
 echo "=== 11l. R11: Tri-Stream Fold Sweep (3-way interleave ILP) ==="
 # The fold kernel's two state chains run one clmul->xor->clmul->xor
@@ -326,6 +330,25 @@ HFT_CRC_DFOLD=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | t
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_dfold.txt
 grep -q "allocs=0" /tmp/bench_dfold.txt
 
+echo "=== 11w. R16b: Array-Driven Submission (rxdesc) OFF (rollback attribution) ==="
+# THE MAIN-SIDE WALL REMOVED: the sustained record (1.2348B) was
+# main-thread-bound — the per-span descriptor submission into the
+# per-lane SPSC rings (~0.4-0.6 cyc/msg: the desc store, the anchor
+# write, the space checks, the backpressure spin). rxdesc replaces the
+# rings with per-window span arrays: the submitting core's steady-state
+# per-span cost is ONE 8-byte load + compare (the check-and-fix guard
+# over the warm-started entries — the deterministic schedule replays
+# the same span sequence every pass, so each window opens by copying
+# the previous one's entries), and workers read descriptors directly
+# from the arrays (nf-transport/src/rxdesc.rs documents the protocol).
+# 11b runs rxdesc ON (with the R16d distinct placement — the Double
+# Helix: neither strand alone moves the number); THIS arm runs the
+# pre-R16 ring submission for per-draw attribution. The R16B_RXDESC
+# telemetry line reports the fix/assist counts on the default arm.
+HFT_RXDESC=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_rxdesc_off.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_rxdesc_off.txt
+grep -q "allocs=0" /tmp/bench_rxdesc_off.txt
+
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)
@@ -374,7 +397,8 @@ import json, sys
 with open('/tmp/bench_results.json') as f:
     r = json.load(f)
 required = ['median_cycles', 'p95_cycles', 'p99_cycles', 'stddev', 'cv_percent',
-            'span_median_cycles', 'span_rate_msg_per_sec']
+            'span_median_cycles', 'span_rate_msg_per_sec',
+            'r16_pure_ingest_verdict']
 for k in required:
     if k not in r:
         print(f'MISSING METRIC: {k}')

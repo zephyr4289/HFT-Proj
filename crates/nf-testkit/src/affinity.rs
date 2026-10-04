@@ -354,8 +354,34 @@ pub fn fabric_placement(workers: usize) -> (Option<usize>, Option<usize>, Vec<us
     // R11: experiment override — read once per arm at setup (outside every
     // measurement window; the env::var allocation is setup-only).
     match std::env::var("HFT_FABRIC_PLACE").as_deref() {
+        Ok("siblings") => fabric_placement_siblings(workers),
         Ok("distinct") => fabric_placement_distinct(workers),
-        _ => fabric_placement_siblings(workers),
+        _ => {
+            // R16d: THE DEFAULT FLIP for the 2-physical-core SMT draws
+            // (the 8573C/8370C 4-vCPU shape). The R8 default stacked BOTH
+            // workers on one physical core's hyperthreads, capping their
+            // combined fold at the kbench `2cpu_smt` ceiling (~32.8 GB/s)
+            // while the `2cpu_distinct` pool (~61 GB/s) sat unused — and
+            // the R11 `distinct` experiment proved the system main-bound
+            // (workers folded +15% more spans, sustained flat). R16b's
+            // array-driven submission (rxdesc) removes the main-side wall;
+            // with it, workers on DISTINCT physical cores is the correct
+            // default — the scalar threads (main, RX) become the SMT
+            // siblings, stealing issue slots from one worker each instead
+            // of stacking both folders on one core. Every other shape
+            // (≥3 workers, non-SMT hosts, ≥4 physical cores) keeps the
+            // R8 default — the flip is exactly the 2-worker 2-core SMT
+            // case the 2B target runs on. HFT_FABRIC_PLACE=siblings is
+            // the rollback (CI arm 11k).
+            let n_phys = physical_core_count();
+            let order = cpu_order();
+            let smt = !order.is_empty() && order.len() > n_phys.max(1);
+            if workers == 2 && n_phys == 2 && smt {
+                fabric_placement_distinct(workers)
+            } else {
+                fabric_placement_siblings(workers)
+            }
+        }
     }
 }
 

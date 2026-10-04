@@ -155,44 +155,119 @@ Verdict:   record-class draws close with margin; median healthy draws are
            knife-edge — exactly what the ≥3-draw class protocol prices.
 ```
 
-## 5. Front A: Lever B "rxbuild" (the 5B program — design frozen, build next)
+## 5. R16b "rxdesc" — the array-driven submission (SHIPPED — this revision)
+
+### 5.1 The main-side wall, measured
+
+The sustained record (1,234,801,472) was MAIN-THREAD-BOUND: the R11
+`distinct` placement experiment moved the workers to their own physical
+cores (they folded +15% more spans) and the sustained rate stayed flat —
+the submitting core could not feed them faster. Its budget (~1.86
+cyc/msg) decomposes as the ladder (~0.63), the ordered fold (~0.15), and
+the per-span descriptor submission into the per-lane SPSC rings
+(~0.4-0.6: the desc store, the chunk-open anchor write, the space
+checks, the backpressure spin). The 2B demand at 2.3 GHz allows ≤ 1.15
+cyc/msg — the submission cost had to go.
+
+### 5.2 The design that shipped (and the one that did not)
+
+The first design — the RX thread PREFILLS a frame-indexed descriptor
+array while slicing — was **refuted by the parity matrix within hours**:
+the canonical schedule is DUAL-FEED, half its frames are duplicates the
+ladder skips, so the frame index and the span index diverge immediately
+(measured: fixes == span count == 8,640 on the "steady" schedule — every
+entry wrong). The shipped design is the **WARM START**: the schedule is
+deterministic — every pass replays the SAME span sequence over the SAME
+blob — so each submission window opens by COPYING the previous window's
+8-byte span descriptors `(offset:u32 | len:u16)` into its array slot (one
+memcpy of the previous window's span count, ~1µs/pass). The untimed
+reference pass pays the full check-and-fix once; every measured pass
+finds every entry already correct. **The check is the correctness**: each
+span's entry is compared against the actual body (one 8-byte load +
+compare on the steady path) and fixed in place on divergence — the ring
+protocol's cost and semantics on the slow path, zero stores on the fast
+path. Measured on the local smoke: rx_fixes = 5,184 TOTAL across
+thousands of passes (vs 8,640 PER PASS without the warm start).
+
+The protocol (nf-transport/src/rxdesc.rs — the full ownership proof):
+8 array slots circulate sink-driven (`last_slot + 1`); a slot is reused
+only after this sink's fold drained its earlier window (the reuse gate);
+workers poll one `spans_ready` cursor, walk their chunk-grid chunks
+(THE SAME GRID as the ring protocol — the fold's chunk-ordered drain and
+the fold-order assert are unchanged), resolve each span's pass record
+and read descriptors straight from the arrays. The work-assist survives:
+chunks taken inline are marked in a chunk-state ring (the mark stores
+`chunk_id + 1` — the value check makes wrap aliasing impossible; the
+ring is cleared at each sink's ACTIVATION — chunk ids restart at 0 per
+generation), and the fold waits at marked chunks (the lane's results
+hold only later chunks there). The straddling window boundary (the pass
+span count is not chunk-aligned) seals a partial inline chunk and the
+next window's open re-claims the continuation.
+
+Three hard-won protocol laws, each caught by the parity suites:
+1. **The gen-activation clear**: sink CONSTRUCTION order does not match
+   consumption order (the sustained bench builds its main sink before
+   its ref sink) — marks must clear at the first window OPEN, not at
+   construction.
+2. **PASS_RING 8 → 32**: the array protocol removed the desc-ring
+   backpressure, so the fold may lag up to the 8-window array gate when
+   the workers are throughput-bound — the harvest ring must hold that
+   lag (the ring protocol capped it at ~1 pass).
+3. **The fold's inline wait**: the worker skips marked chunks and
+   publishes BEYOND them — the fold must not drain the lane while
+   `fold_pos` sits inside a marked chunk (the ring protocol never had
+   later chunks' results ahead of the cursor).
+
+Rollback: `HFT_RXDESC=0` (CI arm 11w; the default IS the new path).
+Attribution: the `R16B_RXDESC_VERDICT rx_fixes=... assist_chunks=...`
+telemetry line on every sustained run. Validation: the 3-way parity
+matrix (sequential == check+fix == forced-inline == pipelined ×
+steady/chaos × worker counts 1-3, plus the zero-fixes fast-path assert
+on the warm-started second pass), a 400-pass multipass soak (the record
+ring wraps 50x, the reuse gate binds, chunks straddle every boundary),
+and the full existing hydra suite on the legacy path.
+
+### 5.3 The 2B arithmetic (post-R16b/R16d)
+
+```text
+Main budget:  ladder 0.63 + fold 0.15 + rxdesc (load+cmp/span ≈ 0.03
+              amortized) + poll ≈ 0.85 cyc/msg  → ceiling ~2.7B @ 2.3 GHz
+Worker pool:  2cpu_distinct 59-61 GB/s on healthy draws (kbench 30.7)
+              × ~0.95 (scalar-sibling theft, R8's <4.5% class)
+              ≈ 56-58 GB/s  → 2.03-2.10B msg/s of CRC capacity
+Demand:       2.0B × 27.66 B/msg = 55.32 GB/s
+Verdict:      the strands close together — median healthy draws pass with
+              single-digit-percent margin, record-class draws (kbench 34.9
+              → pool ~66 GB/s) with ~20%. The fleet prices it per draw.
+```
+
+### 5.4 Front A (the 5B program — Lever B remainder)
 
 The 0.6346 cyc/msg Front A wall is the RX thread's per-frame work: poll()
-frame slicing + the per-frame `FrameEntry` construction (bytes/blocks
-re-slicing, elig computes, 9-field store). The current design already
-builds each entry exactly once (per-turn buffers, one Release publish) —
-the remaining lever is to **stop constructing entries on the RX thread at
-all**: publish frame-level descriptors by reference and let the workers
-walk the frames in place:
+frame slicing + the per-frame `FrameEntry` construction. R16b's arrays
+are the SPAN side; the FRAME side (publish frame-level descriptors by
+reference + the consumer's VPADDQ prefix-sum message-boundary walk,
+< 0.15 cyc/msg) remains the Front A lever — the next installment.
+Constraints unchanged: the tombstone/reset arithmetic, the prepatch
+windows, `ALLOC_DELTA == 0`, the D-oracle parity, and
+`#![forbid(unsafe_code)]` on nf-protocol/nf-arbitrator.
 
-* the RX publishes (per turn) only the blob window + frame-slot metadata —
-  the per-frame entry build moves into the consumer's scan (which touches
-  every field anyway);
-* the workers' message-boundary walk vectorizes with the VPADDQ prefix-sum
-  scan (4 length prefixes → displacements → parallel addresses,
-  < 0.15 cyc/msg — the R10 prior art);
-* budget: RX per-frame → ~0.2 cyc/frame; consumer walk stays ≤ 0.46
-  cyc/msg — the 5B line at 2.3 GHz.
+## 6. R16d — the placement flip (SHIPPED with R16b — the Double Helix)
 
-Constraints that the design must hold: the tombstone/reset turn
-arithmetic, the prepatch session-baking windows (never over-patch frames
-the consumer has not freed), `ALLOC_DELTA == 0`, identical FrameEntry
-stream to the consumer (the D-oracle parity), and `#![forbid(unsafe_code)]`
-stays on nf-protocol/nf-arbitrator (the shared-slot machinery lives in
-nf-transport as today).
-
-## 6. Route S (the efficiency hedge — partially deployed)
-
-The RX thread already runs as the workers' SMT sibling (the R11/R13
-fabric), and the R10 assist ring already converts spare sibling cycles
-into fold work (assist_chunks ≈ 5.4% at equilibrium). The Route S
-extension for the 2B push: move the workers' serial ITCH parse + FNV
-epilogue into the sibling's assist path (bounded < 4.5% p5 penalty per
-R8), so the physical cores approach pure fold. This is a hydra.rs
-restructure — gated, armed, and priced per draw exactly like 11v. The
+Neither strand moves the number alone: rxdesc without the flip leaves
+the workers SMT-stacked at the ~32.8 GB/s `2cpu_smt` ceiling; the flip
+without rxdesc leaves the system main-bound at ~1.23B (the R11
+refutation). Together: `fabric_placement` now defaults to DISTINCT on
+exactly the 2-worker / 2-physical-core / SMT shape (the 4-vCPU draws)
+— workers own physical cores, the scalar threads (main, RX) become the
+SMT siblings, each stealing issue slots from one worker (the R8 class
+bound: < 4.5% if no p5 vector shuffles and no L1D pressure). Every
+other shape keeps the R8 default (≥3 workers, non-SMT hosts, ≥4
+physical cores). Rollback: `HFT_FABRIC_PLACE=siblings` (CI arm 11k,
+repurposed from the R11 experiment — distinct IS the default now). The
 supply watch stays: on contended draws the L3 ceiling binds before the
-p5 floor does, and no scheduling can fix that (R9) — draw selection is
-the mitigation.
+p5 floor does (R9) — draw selection per the R12 protocol is the
+mitigation, and the kbench `2cpu_distinct` row prices each draw's pool.
 
 ## 7. The Record-Claim Protocol (R12-encoded)
 
@@ -211,8 +286,9 @@ the mitigation.
 | Revision | Change | Verdict |
 |---|---|---|
 | R16a | dfold (this doc): T=2 dual-stream fold, class endings forced, `HFT_CRC_DFOLD`, arm 11v, kbench `fold512_rd` | shipped default-OFF; draw 6 neutral (supply-bound host); healthy-draw pricing pending |
-| R16b | rxbuild (Front A Lever B): publish-by-reference frame descriptors + worker in-place walk + VPADDQ prefix-sum scan | design frozen (§5); build next |
-| R16c | Route S extension: serial/FNV absorption into the sibling assist path | scoped (§6); after R16a draw data |
+| R16b | rxdesc — the array-driven submission: warm-started span arrays + check-and-fix + the chunk-state assist (§5) | SHIPPED default-ON (HFT_RXDESC=0 rollback, arm 11w, R16B_RXDESC telemetry); the RX-frame-prefill variant REFUTED by the parity matrix (dual-feed divergence — §5.2) |
+| R16d | the distinct-placement default flip for the 2-worker 2-core SMT draws (§6) | SHIPPED (HFT_FABRIC_PLACE=siblings rollback, arm 11k repurposed) |
+| R16c | Route S extension: serial/FNV absorption into the sibling assist path | scoped; superseded in priority by R16b+R16d (the efficiency now comes from the placement flip) |
 | — | Route F (larger runners) | TERMINATED (R12 + R5) |
 | — | Stage B unpack-free census-4 kernel | REFUTED (§2 — the zero-divisor proof) |
 | — | GFNI CRC hybrid, PMC instrumentation, ymm dual-chain | REFUTED earlier (Task 7 report verdicts) |
