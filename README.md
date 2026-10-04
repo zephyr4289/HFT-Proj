@@ -110,6 +110,14 @@ Measured on GitHub Actions reference hardware (**Intel Xeon Platinum 8573C Sapph
 
 ---
 
+### Phase 8. R14 Program (The Vector Barrett Ending)
+* **Documentation**: [`docs/27-r14-vend.md`](docs/27-r14-vend.md)
+* **The Ending Wall**: the R13 record draw's workers ran 98.5% busy at ~17 GB/s each — 50% of their own 33.94 GB/s packed ceiling; the real-mix span costs ~184 cyc vs the packed loop's ~91. The per-span ending stack (2 stores + 16 u64 reloads + **16 chained `crc32` on p1** + the serial FNV) is the kernel-owned share of that gap — the R13 verdict's explicitly queued follow-up.
+* **The Vector Barrett ("vend")**: the ending's value is the linear map `raw = (V ⊗ r0) mod VM` over the empirically-identified LFSR ring `VM = y^32 ⊕ 0x05ec76f1` (the monomial recurrence of the 16-byte CRC family; `r0 = 0xf20c0dfe`; `r0·y^64 mod VM = 0x493c7d27` — RKHI re-emerging from independent algebra). The in-register reduction: per zmm **5 clmul + 2 `vpalignr`** (the cross-qword byte shifts 32/56/32 are the unique byte-aligned triple that closes exactly) — replacing the 16 chained crc32 + their extract storm. Verified **0/128 basis, 0/300k random** under exact vector semantics; `t_vend_constants_derivation` re-derives every constant from the table reference at test time; the differential sweep pins BOTH ending paths on every body.
+* **Attribution & rollback**: kbench `fold512_rc` rows (crc-chain forced) vs `fold512_r` (vend default) per draw; ci.sh **11s** = `HFT_CRC_VEND=0` fabric soak. Local A/B: **+4.8%** (23.96 vs 22.85 GB/s, identical sinks). Rate claims wait for ≥3 target-class CI draws; the honest projection is **1.32–1.37 B msg/s sustained** (+7–11% over R13) — Bronze (≥1.40B) stays open pending the supply-side and lane-0-tail levers (the R15 queue in docs/27 §7).
+
+---
+
 ## 3. Engineering Documentation Directory
 
 Every architectural phase, design thesis, failure ledger, and benchmark record is cataloged in the repository:
@@ -140,6 +148,7 @@ Every architectural phase, design thesis, failure ledger, and benchmark record i
 | [`docs/24-r11-phase4.md`](docs/24-r11-phase4.md) | **Phase 6a: R11 Record** (1.2348B Sustained Record & Topology Resolution) |
 | [`docs/25-r12-ladder.md`](docs/25-r12-ladder.md) | **Phase 6b: R12 Compact Descriptors** (Desc8 Shipped, Ladder Ledger, R13) |
 | [`docs/26-r13-p5-wall.md`](docs/26-r13-p5-wall.md) | **Phase 7: R13 Port-5 Wall** (Natural-Domain Fold, Port Decomposition, Refuted Designs) |
+| [`docs/27-r14-vend.md`](docs/27-r14-vend.md) | **Phase 8: R14 Vector Barrett Ending** (In-Register Lane Reduction, LFSR Ring Algebra) |
 
 ---
 
