@@ -302,6 +302,68 @@ Constraints unchanged: the tombstone/reset arithmetic, the prepatch
 windows, `ALLOC_DELTA == 0`, the D-oracle parity, and
 `#![forbid(unsafe_code)]` on nf-protocol/nf-arbitrator.
 
+### 5.5 R16e — the RX Desc Diet (SHIPPED — this revision)
+
+Draw 11's build order, executed. The ~21% rxdesc-vs-ring gap decomposed
+50/50; the diet fixes the WORKER side only (the sink is untouched — the
+attribution stays clean against 11w/11x):
+
+* **STRAND A — the depth batch** (`lane_worker_rxdesc_diet`, the
+  default; `HFT_RXDIET=0` is the rollback to the pre-diet worker
+  VERBATIM — CI arm 11x): the batch no longer terminates at the
+  publication frontier. A frontier hit PUBLISHES the partial run first
+  (liveness: the sink's pending pace and the window-reuse gate spin on
+  the FOLD, which cannot pass results still buffered in the worker),
+  then waits at the frontier in bounded pause laps
+  (`HFT_FRONTIER_LAPS`, default 16, fleet-sweepable, clamped [0,64]; 0
+  disarms strand A — CI arm 11y) instead of exiting through the outer
+  loop's deep-pause escalation: no re-entry, no yield escalation, no
+  scheduler wake latency per publication gap. The wait is counted
+  (`frontier_waits` / `frontier_ns` → the DIAG's `fw=`/`fw_ms=`) and
+  EXCLUDED from `eval_ns` — busy% stays honest. A fresh generation
+  landing mid-wait publishes and bails to the outer re-anchor.
+* **STRAND B — per-chunk record resolution**: the per-span pass-record
+  probe becomes a NEXT-BOUNDARY cache; the per-span cost is one register
+  compare. Soundness: the record for a window base rb is published
+  (Release on records[slot]) BEFORE the window's first span is
+  submitted, hence before any spans_ready store exceeding rb — the
+  worker's ready Acquire that exposes spans ≥ rb also exposes the
+  record (release sequencing). The cache is refreshed at EVERY ready
+  advance (the outer load and each frontier-wait break), so a boundary
+  below the current ready is in the cache by the time the span loop
+  reaches it; the compare fires the resolve (which walks any number of
+  windows in one pass) exactly at the boundary. An 8-window overwrite
+  of the probed slot is unreachable while the boundary matters: the
+  reuse gate requires the fold to have drained that window, and the
+  fold cannot pass results this worker has not yet evaluated.
+* **STRAND C — the division-free grid**: the chunk walk (eval + spray)
+  tracks `(chunk_id, chunk_lo)` by addition (the lane grid's own
+  stride); the spray's per-SPAN division/modulo/is_inline/probe moves
+  to per-chunk sections — one is_inline + (at most) one resolve per 64
+  spans, no idiv anywhere.
+
+**Validation**: the 3-way parity matrix extended to BOTH worker shapes
+(the diet runs the full chaos × w1-3 × (a)(b)(c) matrix; the pre-diet
+pin runs w=2 steady+chaos, all three cells), the 400-pass multipass
+soak under both shapes, the full existing suite, clippy `-D warnings`,
+`HYDRA_BITPARITY` bit-exact + `allocs=0` on every local leg (diet /
+laps=0 / pre-diet / ring).
+
+**The honest local economics** (the latency-blind sandbox, 1-worker
+main-bound shape — NOT the CI regime): system 5s sustained — pre-diet
+424.2M / diet-B+C (laps=0) 399.7M / full diet 387.6M / ring 399.8M
+msg/s; worker-level eval rate +9-12% in BOTH diet shapes (11.1K vs
+9.9K spans/ms — the dilution reduction is real); the regression
+mechanism is the fold-lag feedback: the wait's deferred result
+publishes let the fold lag (pending_max 7,040 vs 4,496; the pre-diet's
+res-ring fullness — 20.9K res-blocks — was pacing the worker to the
+fold), and the reuse-gate spin ate +455ms of main's wall
+(reset_ms 985 vs 530). Draw 11's DIAG (the CI regime: workers 86%/79%
+busy at ~220 cyc/span vs the ring's 96.2% at 189) is where both halves
+bind — the fleet prices the diet per draw via 11b vs 11y vs 11x vs 11w,
+and the class protocol decides the default exactly as vend/vtail were
+priced per class.
+
 ## 6. R16d — the placement flip (SHIPPED with R16b — the Double Helix)
 
 Neither strand moves the number alone: rxdesc without the flip leaves
@@ -337,6 +399,7 @@ mitigation, and the kbench `2cpu_distinct` row prices each draw's pool.
 |---|---|---|
 | R16a | dfold (this doc): T=2 dual-stream fold, class endings forced, `HFT_CRC_DFOLD`, arm 11v, kbench `fold512_rd` | shipped default-OFF; draw 6 neutral (supply-bound host); healthy-draw pricing pending |
 | R16b | rxdesc — the array-driven submission: warm-started span arrays + check-and-fix + the chunk-state assist (§5) | SHIPPED default-ON (HFT_RXDESC=0 rollback, arm 11w, R16B_RXDESC telemetry); the RX-frame-prefill variant REFUTED by the parity matrix (dual-feed divergence — §5.2) |
+| R16e | the RX Desc Diet — the worker-eval fix for the draw-11 decomposition: the depth batch (strand A, HFT_FRONTIER_LAPS) + per-chunk record resolution (B) + the division-free grid (C) (§5.5) | SHIPPED default-ON (HFT_RXDIET=0 rollback to the pre-diet worker verbatim, arm 11x; arm 11y isolates strand A; the worker DIAG gains fw=/fw_ms=); parity extended to both worker shapes |
 | R16d | the distinct-placement default flip for the 2-worker 2-core SMT draws (§6) | SHIPPED (HFT_FABRIC_PLACE=siblings rollback, arm 11k repurposed) |
 | R16c | Route S extension: serial/FNV absorption into the sibling assist path | scoped; superseded in priority by R16b+R16d (the efficiency now comes from the placement flip) |
 | — | Route F (larger runners) | TERMINATED (R12 + R5) |

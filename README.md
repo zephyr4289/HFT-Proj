@@ -134,7 +134,7 @@ Every architectural phase, design thesis, failure ledger, and benchmark record i
 | [`docs/26-r13-p5-wall.md`](docs/26-r13-p5-wall.md) | **Phase 7a: R13 Reflect Kernel** (The Natural-Domain Fold — the p5 Fix) |
 | [`docs/27-r14-vend.md`](docs/27-r14-vend.md) | **Phase 7b: R14 Vend Ending** (The Vector Barrett, Class-Conditional) |
 | [`docs/28-r15-vtail.md`](docs/28-r15-vtail.md) | **Phase 8a: R15 Vtail** (The Vectorized Lane-0 Tail, r≥16-Gated) |
-| [`docs/29-r16-double-helix.md`](docs/29-r16-double-helix.md) | **Phase 9b: R16 Double Helix** (rxdesc Array Submission + the Distinct Placement Flip — the 2B/5B Program) |
+| [`docs/29-r16-double-helix.md`](docs/29-r16-double-helix.md) | **Phase 9b: R16 Double Helix** (rxdesc Array Submission + the Distinct Placement Flip + the R16e RX Desc Diet — the 2B/5B Program) |
 
 ---
 

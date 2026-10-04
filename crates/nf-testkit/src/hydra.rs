@@ -365,12 +365,7 @@ fn desc_read(
 /// Read one desc's kind: None for a span desc (ptr, len), Some(first_span)
 /// for an anchor. Legacy descs are always span descs.
 #[inline(always)]
-fn desc_peek(
-    words: &[u64; DESC_CAP as usize * 2],
-    pos: u64,
-    desc8: bool,
-    base: u64,
-) -> Desc8Word {
+fn desc_peek(words: &[u64; DESC_CAP as usize * 2], pos: u64, desc8: bool, base: u64) -> Desc8Word {
     if desc8 {
         let w = words[(pos & DESC_MASK) as usize];
         let (off, len, anchor) = desc8_unpack(w);
@@ -466,9 +461,52 @@ const WORKER_BATCH_DEFAULT: u64 = 128;
 /// publications against main's ordered fold may want re-tuning per class.
 /// Read once per worker spawn, outside every window (the PfCfg precedent).
 fn worker_batch() -> u64 {
-    match std::env::var("HFT_WORKER_BATCH").ok().and_then(|v| v.parse::<u64>().ok()) {
+    match std::env::var("HFT_WORKER_BATCH")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
         Some(b) => (b / CHUNK).clamp(1, 4) * CHUNK,
         None => WORKER_BATCH_DEFAULT,
+    }
+}
+
+/// R16e (the RX Desc Diet): the strand-A wait's default depth. The wait
+/// lives INSIDE the drain batch: on a publication-frontier hit it
+/// publishes the partial run (liveness — the sink's pending pace and the
+/// window-reuse gate spin on the fold, which cannot pass results still
+/// buffered in the worker), then pause-bursts (2^min(lap,7) PAUSEs per
+/// lap, one spans_ready reload per lap) until the frontier advances.
+/// The default bridges every regular publication gap hot (the assist
+/// chunk ~1.4µs, the window open + warm memcpy ~1µs, the RX's burst
+/// cadence) without an outer-loop re-entry; beyond it the wait hands
+/// TRUE idleness (a stalled RX, an EOS tail) to the outer loop's deep
+/// pause, which yields only after ~100µs — the same design point the
+/// deep pause was tuned for. Draw 11 measured the pre-diet shape at
+/// 620-806K idle iters/worker (14-21% idle) paying scheduler wake
+/// latency on every gap; `HFT_FRONTIER_LAPS` re-prices it per draw (see
+/// frontier_laps below for the full economics).
+const FRONTIER_LAPS_DEFAULT: u32 = 16;
+
+/// R16e: the strand-A wait depth, fleet-sweepable (`HFT_FRONTIER_LAPS`,
+/// clamped [0, 64]; the default is FRONTIER_LAPS_DEFAULT). `0` disarms
+/// strand A entirely — the frontier hit publishes its partial and bails
+/// to the outer loop's deep pause immediately, i.e. the pre-diet's wake
+/// cadence with strands B+C (per-chunk resolution + the division-free
+/// grid) still armed — the isolation arm for attributing A vs B+C. The
+/// local latency-blind sandbox priced the FULL depth (16) at −9% vs the
+/// pre-diet on the 1-worker shape (the wait's deferred result publishes
+/// let the fold lag; the res-ring fullness that paced the pre-diet's
+/// worker — 20.9K res-blocks — is the mechanism the wait replaces); the
+/// CI draws (real silicon, workers 86%/79% busy — the wait's home
+/// regime) decide the default per the class protocol, exactly as
+/// vend/vtail were priced per class.
+fn frontier_laps() -> u32 {
+    match std::env::var("HFT_FRONTIER_LAPS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+    {
+        Some(v) => v.min(64),
+        None => FRONTIER_LAPS_DEFAULT,
     }
 }
 
@@ -566,6 +604,14 @@ pub struct WorkerStats {
     pub idle_iters: AtomicU64,
     /// Result-space defensive waits taken.
     pub res_waits: AtomicU64,
+    /// R16e (the diet): frontier-wait EPISODES — batch-internal publication
+    /// gaps bridged hot (each publishes a partial run first). The draw-11
+    /// decomposition's wake-cadence signal: these replace the pre-diet's
+    /// 620-806K outer idle iters; the DIAG prints both for the contrast.
+    pub frontier_waits: AtomicU64,
+    /// R16e: total nanoseconds spent in those waits (the DIAG's fw_ms) —
+    /// the strand-A wall cost, kept OUT of eval_ns (busy% stays honest).
+    pub frontier_ns: AtomicU64,
     /// This worker's pinned cpu (usize::MAX when unpinned).
     pub cpu: AtomicU64,
 }
@@ -578,6 +624,8 @@ impl WorkerStats {
             eval_ns: AtomicU64::new(0),
             idle_iters: AtomicU64::new(0),
             res_waits: AtomicU64::new(0),
+            frontier_waits: AtomicU64::new(0),
+            frontier_ns: AtomicU64::new(0),
             cpu: AtomicU64::new(u64::MAX),
         }
     }
@@ -631,9 +679,9 @@ fn lane_worker(
     let batch = worker_batch();
     let mut tail: u64 = 0; // desc cursor (worker-owned)
     let mut rhead: u64 = 0; // result cursor (worker-owned)
-    // Prefetch cursor (GLOBAL desc positions; masked on access). Sprays
-    // whole spans ahead of the CRC cursor; caps at `head` — slots beyond
-    // the published head are producer-owned and must not be read.
+                            // Prefetch cursor (GLOBAL desc positions; masked on access). Sprays
+                            // whole spans ahead of the CRC cursor; caps at `head` — slots beyond
+                            // the published head are producer-owned and must not be read.
     let mut pf_span: u64 = 0;
     let mut pf_line: usize = 0;
     // R12 Desc8: the running span-id derivation, re-anchored by anchor
@@ -770,32 +818,39 @@ fn lane_worker(
                             continue;
                         }
                     }
-                    if pipe && !null && i + 1 < n && !desc8_anchor_ahead(slots, tail + i + 1, desc8) {
+                    if pipe && !null && i + 1 < n && !desc8_anchor_ahead(slots, tail + i + 1, desc8)
+                    {
                         // R10: the pipelined pair — same two descriptors, same
                         // values, same emission order as two single-span evals;
                         // only the instruction schedule differs (A's endings
                         // issue behind B's vector fold).
-                        let (p0, l0, s0) =
-                            desc_read(slots, tail + i, desc8, lane_base, &mut deriv);
+                        let (p0, l0, s0) = desc_read(slots, tail + i, desc8, lane_base, &mut deriv);
                         let (p1, l1, s1) =
                             desc_read(slots, tail + i + 1, desc8, lane_base, &mut deriv);
                         // SAFETY: published descriptor slots (Acquire above);
                         // body slices per the HydraLane contract.
-                        let b0 = unsafe { std::slice::from_raw_parts(p0 as *const u8, l0 as usize) };
-                        let b1 = unsafe { std::slice::from_raw_parts(p1 as *const u8, l1 as usize) };
+                        let b0 =
+                            unsafe { std::slice::from_raw_parts(p0 as *const u8, l0 as usize) };
+                        let b1 =
+                            unsafe { std::slice::from_raw_parts(p1 as *const u8, l1 as usize) };
                         // SAFETY: feature contract verified at spawn.
                         let (v0, v1) = unsafe { kernel.eval_pair(b0, b1) };
                         emit(res_slots, &mut nres, s0, v0);
                         emit(res_slots, &mut nres, s1, v1);
                         i += 2;
-                    } else if eval2 && !null && i + 1 < n && !desc8_anchor_ahead(slots, tail + i + 1, desc8) {
-                        let (p0, l0, s0) =
-                            desc_read(slots, tail + i, desc8, lane_base, &mut deriv);
+                    } else if eval2
+                        && !null
+                        && i + 1 < n
+                        && !desc8_anchor_ahead(slots, tail + i + 1, desc8)
+                    {
+                        let (p0, l0, s0) = desc_read(slots, tail + i, desc8, lane_base, &mut deriv);
                         let (p1, l1, s1) =
                             desc_read(slots, tail + i + 1, desc8, lane_base, &mut deriv);
                         // SAFETY: as the single-span path, twice.
-                        let b0 = unsafe { std::slice::from_raw_parts(p0 as *const u8, l0 as usize) };
-                        let b1 = unsafe { std::slice::from_raw_parts(p1 as *const u8, l1 as usize) };
+                        let b0 =
+                            unsafe { std::slice::from_raw_parts(p0 as *const u8, l0 as usize) };
+                        let b1 =
+                            unsafe { std::slice::from_raw_parts(p1 as *const u8, l1 as usize) };
                         // SAFETY: feature contract verified at spawn.
                         let (v0, v1) = unsafe { kernel.eval2(b0, b1) };
                         emit(res_slots, &mut nres, s0, v0);
@@ -811,13 +866,15 @@ fn lane_worker(
                         } else if tri {
                             // R11: the tri-stream fold — same value as eval
                             // (D11-pinned), different ILP structure.
-                            let body =
-                                unsafe { std::slice::from_raw_parts(dptr as *const u8, dlen as usize) };
+                            let body = unsafe {
+                                std::slice::from_raw_parts(dptr as *const u8, dlen as usize)
+                            };
                             // SAFETY: feature contract verified at spawn.
                             unsafe { kernel.eval_tri(body) }
                         } else {
-                            let body =
-                                unsafe { std::slice::from_raw_parts(dptr as *const u8, dlen as usize) };
+                            let body = unsafe {
+                                std::slice::from_raw_parts(dptr as *const u8, dlen as usize)
+                            };
                             // SAFETY: feature contract verified at spawn.
                             unsafe { kernel.eval(body) }
                         };
@@ -851,6 +908,11 @@ fn lane_worker(
 ///   chunk-ordered drain and the fold-order assert are unchanged);
 /// * per-span pass-record resolution + an 8-byte array descriptor read
 ///   (sequential within chunks — better L1 behavior than the ring).
+///
+/// R16e: this shape is preserved VERBATIM as the `HFT_RXDIET=0` rollback
+/// (CI arm 11x) — the diet worker (lane_worker_rxdesc_diet, the default)
+/// is its draw-11 follow-up; keeping this copy bit-identical keeps the
+/// attribution arm honest.
 ///
 /// GENERATION RE-ANCHORING: a fresh sink (or a reset sink) publishes
 /// under a new generation; spans restart at 0 and the chunk grid
@@ -958,9 +1020,7 @@ fn lane_worker_rxdesc(
                 }
                 // ready > 0 without the record is a protocol violation —
                 // fail loud, never fold wrong descriptors.
-                panic!(
-                    "rxdesc worker: generation {gen} has spans but no base-0 record"
-                );
+                panic!("rxdesc worker: generation {gen} has spans but no base-0 record");
             }
             pf_gid = eval;
             pf_line = 0;
@@ -1058,8 +1118,7 @@ fn lane_worker_rxdesc(
                         let c = pf_gid / CHUNK;
                         if c % n_lanes != lane_idx {
                             // Jump to this lane's next chunk in the grid.
-                            let skip =
-                                n_lanes - ((c % n_lanes) + n_lanes - lane_idx) % n_lanes;
+                            let skip = n_lanes - ((c % n_lanes) + n_lanes - lane_idx) % n_lanes;
                             pf_gid = (c + skip) * CHUNK;
                             pf_line = 0;
                             continue;
@@ -1147,6 +1206,446 @@ fn lane_worker_rxdesc(
     }
 }
 
+/// R16e: the RX DESC DIET worker — the draw-11 decomposition's fix (docs/29
+/// §5.5). Draw 11 priced the array protocol at -20.6% vs the ring on the
+/// healthy class (-21.2% record-class, draw 10) and decomposed the gap
+/// 50/50: WAKE-CADENCE IDLE (the batched drain exiting at the publication
+/// frontier — 2.7x the ring's batch iterations, 620-806K idle iters, the
+/// deep-pause escalation paying scheduler wake latency on every
+/// publication gap) and PER-SPAN EVAL DILUTION (~+31 cyc/span: the
+/// per-span record probe, the per-span division/is_inline in the spray,
+/// the chunk-grid walk). Three strands, ALL worker-side (the sink is
+/// untouched — the attribution stays clean):
+///
+/// * STRAND A — THE DEPTH BATCH: the batch no longer terminates at the
+///   frontier. A frontier hit PUBLISHES the partial run first (liveness:
+///   the sink's pending pace and the window-reuse gate spin on the FOLD,
+///   and the fold cannot pass results still buffered in this worker),
+///   then WAITS AT THE FRONTIER in bounded pause laps — hot: no
+///   outer-loop re-entry (no gen walk, no res-space re-check), no yield
+///   escalation until the bound expires (see FRONTIER_LAPS). The wait is
+///   counted (`frontier_waits`) and excluded from eval_ns — busy% stays
+///   honest. A fresh generation landing mid-wait bails to the outer
+///   loop's re-anchor (the partial results are old-gen; the old sink's
+///   finish() drain consumes them — the standing contract).
+/// * STRAND B — PER-CHUNK RECORD RESOLUTION: the per-span pass-record
+///   probe becomes a NEXT-BOUNDARY cache (`next_wb`); the per-span cost
+///   is one register compare (`gid >= next_wb`). Soundness: the record
+///   for a window base rb is published (Release on records[slot]) BEFORE
+///   the window's first span is submitted, hence before any spans_ready
+///   store exceeding rb — the worker's ready Acquire that exposes spans
+///   ≥ rb also exposes the record (release sequencing). The cache is
+///   refreshed at EVERY ready advance (the outer load and each
+///   frontier-wait break), so a boundary below the current ready is in
+///   the cache by the time the span loop reaches it; the compare then
+///   fires the resolve (which walks any number of windows in one pass)
+///   exactly at the boundary. An 8-window overwrite of the probed slot
+///   is unreachable while the boundary matters: the reuse gate requires
+///   the fold to have drained that window, and the fold cannot pass
+///   results this worker has not yet evaluated.
+/// * STRAND C — THE DIVISION-FREE GRID: the chunk walk (eval + spray)
+///   tracks `(chunk_id, chunk_lo)` by addition (the lane grid's own
+///   stride, n_lanes*CHUNK) — the per-chunk idiv is gone. The spray's
+///   per-SPAN division/modulo/is_inline/record-probe moves to per-chunk
+///   sections: one is_inline + (at most) one resolve per 64 spans, no
+///   idiv anywhere; the per-span residue in BOTH loops is the single
+///   `>= *_wb` compare. The spray keeps its own resolution state (it
+///   walks ahead and would corrupt the eval's).
+///
+/// Rollback: `HFT_RXDIET=0` selects the pre-diet worker verbatim (the
+/// spawn-time per-run constant; the read is outside every window —
+/// law #9).
+fn lane_worker_rxdesc_diet(
+    lane: Arc<HydraLane>,
+    shutdown: Arc<AtomicBool>,
+    kernel: CrcKernel,
+    stats: Arc<WorkerStats>,
+    rx: Arc<RxdescState>,
+    lane_idx: u64,
+    n_lanes: u64,
+) {
+    stats
+        .cpu
+        .store(crate::affinity::current_cpu() as u64, Ordering::Relaxed);
+    let null = null_mode();
+    let pf = PfCfg::detect(kernel);
+    // The drain batch (read ONCE at worker start — outside every window;
+    // worker_batch() parses an env var, which ALLOCATES).
+    let wbatch = worker_batch();
+    // R16e: the strand-A wait depth (HFT_FRONTIER_LAPS; 0 = strand A
+    // off — the pre-diet wake cadence with B+C armed). Read once here,
+    // outside every window (law #9).
+    let flaps = frontier_laps();
+    // Result cursor — per-LANE lifetime, continuing across generations
+    // (the fresh sink's fold starts from the lane's res_tail).
+    let mut rhead: u64 = 0;
+    // Eval cursor — gen-relative span id of this lane's next span.
+    let mut eval: u64 = 0;
+    // Generation + pass-record resolution state.
+    let mut gen: u64 = 0; // the pre-first-sink state (ready packs gen 0)
+    let mut rec_slot: u8 = 0;
+    let mut rec_base: u64 = 0;
+    let mut blob_base: u64 = 0;
+    // STRAND B: the next window boundary — the span id where the current
+    // record goes stale (u64::MAX = none visible). Carried across chunks;
+    // refreshed at every ready advance and every resolve (the refresh runs
+    // unconditionally before every batch — the initializer and the
+    // re-anchor need no assignment of their own).
+    let mut next_wb: u64;
+    // STRAND C: the division-free grid cursors — the chunk containing
+    // `eval` (chunk_lo == chunk_id * CHUNK, maintained by addition).
+    let mut chunk_id: u64 = 0;
+    let mut chunk_lo: u64 = 0;
+    // The spray's own grid + resolution state (MUST stay independent of
+    // the eval's — the spray walks ahead and would corrupt the eval's).
+    let mut pf_gid: u64 = 0;
+    let mut pf_line: usize = 0;
+    let mut pf_chunk_id: u64 = 0;
+    let mut pf_chunk_lo: u64 = 0;
+    let mut pf_slot: u8 = 0;
+    let mut pf_base: u64 = 0;
+    let mut pf_wb: u64;
+    let mut backoff: u32 = 0;
+
+    // Per-span pass-record resolution (identical semantics to the
+    // pre-diet worker's probe; the diet calls it per boundary crossing
+    // instead of per span).
+    #[inline(always)]
+    fn resolve_rec(rx: &RxdescState, gen: u64, slot: &mut u8, base: &mut u64, gid: u64) {
+        loop {
+            let s = (*slot + 1) % RX_NARR as u8;
+            let (rg, rb) = rx.read_record(s);
+            if rg == gen && rb > *base && rb <= gid {
+                *slot = s;
+                *base = rb;
+            } else {
+                return;
+            }
+        }
+    }
+
+    /// STRAND B: the next boundary beyond the CURRENT record — the next
+    /// window's base if its record is visible, u64::MAX otherwise (the
+    /// soundness proof is in the function doc above).
+    #[inline(always)]
+    fn probe_wb(rx: &RxdescState, gen: u64, slot: u8, base: u64) -> u64 {
+        let s = (slot + 1) % RX_NARR as u8;
+        let (rg, rb) = rx.read_record(s);
+        if rg == gen && rb > base {
+            rb
+        } else {
+            u64::MAX
+        }
+    }
+
+    loop {
+        let (g, mut ready) = rx.load_ready();
+        if g != gen {
+            // Fresh generation: re-anchor (the pre-diet worker's protocol,
+            // plus the diet's grid/boundary cursors).
+            gen = g;
+            eval = lane_idx * CHUNK;
+            rec_base = 0;
+            blob_base = 0;
+            chunk_id = lane_idx;
+            chunk_lo = eval;
+            // (next_wb / pf_wb need no reset: the ready-advance refresh
+            // below overwrites both before any read.)
+            let mut found = false;
+            for s in 0..RX_NARR as u8 {
+                let (rg, rb) = rx.read_record(s);
+                if rg == gen && rb == 0 {
+                    rec_slot = s;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                // A (gen, ready>0) publication implies the base-0 record
+                // exists; ready==0 with a new gen means the sink has not
+                // opened a window yet — wait for it.
+                if ready == 0 {
+                    if shutdown.load(Ordering::Acquire) {
+                        return;
+                    }
+                    stats.idle_iters.fetch_add(1, Ordering::Relaxed);
+                    crate::affinity::polite_spin(&mut backoff);
+                    continue;
+                }
+                // ready > 0 without the record is a protocol violation —
+                // fail loud, never fold wrong descriptors.
+                panic!("rxdesc worker: generation {gen} has spans but no base-0 record");
+            }
+            pf_gid = eval;
+            pf_line = 0;
+            pf_chunk_id = lane_idx;
+            pf_chunk_lo = eval;
+            pf_slot = rec_slot;
+            pf_base = 0;
+            backoff = 0;
+        }
+        if blob_base == 0 {
+            // Ordered before the first ready Release of this generation —
+            // but NEVER dereference a null base: spin until it lands.
+            blob_base = rx.blob_base();
+            if blob_base == 0 {
+                if shutdown.load(Ordering::Acquire) {
+                    return;
+                }
+                stats.idle_iters.fetch_add(1, Ordering::Relaxed);
+                crate::affinity::polite_spin(&mut backoff);
+                continue;
+            }
+        }
+        if eval >= ready {
+            if shutdown.load(Ordering::Acquire) {
+                return;
+            }
+            stats.idle_iters.fetch_add(1, Ordering::Relaxed);
+            // The deep pause now serves ONLY true idleness (the batch's
+            // bounded frontier wait handles publication gaps hot).
+            crate::affinity::polite_spin_deep(&mut backoff);
+            continue;
+        }
+        backoff = 0;
+        // STRAND B: refresh the boundary caches at every ready advance —
+        // a boundary below `ready` was published before the ready store
+        // that exposed it, so the probes see it (the function-doc proof).
+        next_wb = probe_wb(&rx, gen, rec_slot, rec_base);
+        pf_wb = probe_wb(&rx, gen, pf_slot, pf_base);
+        let mut n_total: u64 = 0;
+        let t_eval = std::time::Instant::now();
+        let mut wait_ns: u64 = 0;
+        // Result-space check: once per batch for the FULL wbatch (the
+        // same bound class as the pre-diet worker; partial publishes
+        // mid-batch only shrink the outstanding reservation).
+        {
+            let mut rb = 0u32;
+            loop {
+                let rt = lane.res_tail.load(Ordering::Acquire);
+                if rhead.saturating_sub(rt) + wbatch <= (RES_CAP as u64) - CHUNK {
+                    break;
+                }
+                if shutdown.load(Ordering::Acquire) {
+                    return;
+                }
+                stats.res_waits.fetch_add(1, Ordering::Relaxed);
+                crate::affinity::polite_spin(&mut rb);
+            }
+        }
+        // Evaluate + buffer the batch's results, then publish with ONE
+        // Release store (slot writes stay invisible until the store).
+        // SAFETY: res slots in [rhead, rhead+n_total) are owned by this
+        // worker (the space check above bounded the batch).
+        let res_slots = lane.res_slots();
+        let mut nres: u64 = 0;
+        'batch: while n_total < wbatch {
+            if eval >= ready {
+                // STRAND A — the frontier hit: publish the partial run
+                // FIRST (liveness), then wait at the frontier hot.
+                if nres > 0 {
+                    std::hint::black_box(&res_slots[(rhead & RES_MASK) as usize]);
+                    // SAFETY: slots [rhead, rhead+nres) fully written
+                    // before this Release store; the fold Acquires it.
+                    lane.res_head.store(rhead + nres, Ordering::Release);
+                    rhead += nres;
+                    nres = 0;
+                }
+                stats.frontier_waits.fetch_add(1, Ordering::Relaxed);
+                let t_wait = std::time::Instant::now();
+                let mut fw: u32 = 0;
+                let mut bailed = false;
+                while eval >= ready {
+                    let (g2, r2) = rx.load_ready();
+                    if g2 != gen {
+                        // A fresh generation landed mid-batch: bail to the
+                        // outer loop's re-anchor. The partial results are
+                        // old-gen — the old sink's finish() drain consumes
+                        // them (the standing fabric contract).
+                        bailed = true;
+                        break;
+                    }
+                    if r2 > eval {
+                        ready = r2;
+                        // STRAND B: the ready-advance refresh.
+                        next_wb = probe_wb(&rx, gen, rec_slot, rec_base);
+                        pf_wb = probe_wb(&rx, gen, pf_slot, pf_base);
+                        break;
+                    }
+                    if shutdown.load(Ordering::Acquire) {
+                        return; // nothing unpublished (published above)
+                    }
+                    fw += 1;
+                    if fw > flaps {
+                        // True idleness (a stalled RX, an EOS tail) — or
+                        // strand A disarmed (flaps == 0): hand the wait to
+                        // the outer loop's deep pause.
+                        bailed = true;
+                        break;
+                    }
+                    let n = 1u32 << fw.min(7);
+                    for _ in 0..n {
+                        std::hint::spin_loop();
+                    }
+                }
+                wait_ns = wait_ns.saturating_add(t_wait.elapsed().as_nanos() as u64);
+                if bailed {
+                    break 'batch;
+                }
+                continue 'batch;
+            }
+            // The chunk section — grid-aligned FIRST entry only (a
+            // mid-chunk resume after a frontier hit skips it: the record
+            // state is carried and stays valid for the rest of the chunk
+            // up to the next boundary, which the per-span compare guards).
+            if eval == chunk_lo {
+                debug_assert_eq!(
+                    chunk_id % n_lanes,
+                    lane_idx,
+                    "eval cursor left the lane grid"
+                );
+                // The inline-claim check at the chunk's first entry (the
+                // claim store precedes the exposing spans_ready Release).
+                // The claim is decided at the chunk's open, before any of
+                // its spans are published — by the time we can see the
+                // chunk, its state byte is final.
+                if rx.is_inline(chunk_id) {
+                    eval = chunk_lo + n_lanes * CHUNK;
+                    chunk_id += n_lanes;
+                    chunk_lo += n_lanes * CHUNK;
+                    continue 'batch;
+                }
+            }
+            let chunk_hi = (chunk_lo + CHUNK).min(ready);
+            let mut gid = eval;
+            let mut idx = (eval - rec_base) as usize;
+            while gid < chunk_hi && n_total < wbatch {
+                // STRAND B: the boundary crossing — one register compare
+                // per span; the resolve (with re-probe) only at crossings.
+                if gid >= next_wb {
+                    resolve_rec(&rx, gen, &mut rec_slot, &mut rec_base, gid);
+                    next_wb = probe_wb(&rx, gen, rec_slot, rec_base);
+                    idx = (gid - rec_base) as usize;
+                }
+                // STRAND C: the spray — per-chunk sections, division-free.
+                if pf.lines > 0 && pf.burst > 0 {
+                    if pf_gid < gid {
+                        // Rare realignment (the spray fell behind the eval).
+                        pf_gid = gid;
+                        pf_line = 0;
+                        pf_slot = rec_slot;
+                        pf_base = rec_base;
+                        pf_wb = next_wb;
+                        pf_chunk_id = chunk_id;
+                        pf_chunk_lo = chunk_lo;
+                    }
+                    let target = gid + pf.ahead + 1;
+                    let mut issued = 0usize;
+                    while pf_gid < target && pf_gid < ready && issued < pf.burst {
+                        // The spray's grid advance (a `while` — the inline
+                        // JUMP below also lands exactly on a this-lane
+                        // chunk start; the advance is idempotent).
+                        while pf_gid >= pf_chunk_lo + CHUNK {
+                            pf_chunk_id += n_lanes;
+                            pf_chunk_lo += n_lanes * CHUNK;
+                        }
+                        if pf_gid == pf_chunk_lo {
+                            // First touch of this pf chunk: the inline
+                            // claim, once per chunk (the claim store
+                            // precedes the exposing spans_ready Release).
+                            if rx.is_inline(pf_chunk_id) {
+                                pf_gid = pf_chunk_lo + n_lanes * CHUNK;
+                                pf_line = 0;
+                                continue;
+                            }
+                        }
+                        if pf_gid >= pf_wb {
+                            resolve_rec(&rx, gen, &mut pf_slot, &mut pf_base, pf_gid);
+                            pf_wb = probe_wb(&rx, gen, pf_slot, pf_base);
+                        }
+                        let w = rx.get_arr(pf_slot, (pf_gid - pf_base) as usize);
+                        let (off, dlen) = rxdesc_unpack_span(w);
+                        let dptr = blob_base.wrapping_add(off as u64);
+                        let span_lines = (((dlen as usize) + 63) >> 6).min(pf.lines);
+                        let end = span_lines.min(pf_line + (pf.burst - issued));
+                        // SAFETY: prefetch never faults and never
+                        // dereferences; the entry is published (below
+                        // ready).
+                        for l in pf_line..end {
+                            prefetch_line(dptr as *const u8, l);
+                        }
+                        issued += end - pf_line;
+                        if end >= span_lines {
+                            pf_gid += 1;
+                            pf_line = 0;
+                        } else {
+                            pf_line = end;
+                        }
+                    }
+                }
+                let w = rx.get_arr(rec_slot, idx);
+                let (off, dlen) = rxdesc_unpack_span(w);
+                // SAFETY: the entry was published by the sink's ready
+                // store (Acquire above); the body slice per the
+                // HydraLane contract — immutable bytes, valid until the
+                // owning pass's drain.
+                let value = if null {
+                    // Diagnostic: constant work, wrong value by design.
+                    (dlen as u64) | (gid << 32)
+                } else {
+                    let body = unsafe {
+                        std::slice::from_raw_parts(
+                            blob_base.wrapping_add(off as u64) as *const u8,
+                            dlen as usize,
+                        )
+                    };
+                    // SAFETY: feature contract verified at spawn.
+                    unsafe { kernel.eval(body) }
+                };
+                debug_assert!(gid <= u32::MAX as u64, "span id exceeds u32");
+                res_slots[((rhead + nres) & RES_MASK) as usize] = Res {
+                    span_id: gid as u32,
+                    _pad: 0,
+                    value,
+                };
+                nres += 1;
+                gid += 1;
+                n_total += 1;
+                idx += 1;
+            }
+            // Advance: a batch-limited stop mid-chunk resumes IN PLACE; a
+            // fully-consumed chunk moves to this lane's NEXT grid chunk
+            // (the other lanes' chunks in between are never this worker's
+            // to evaluate); a ready-limited partial chunk resumes at
+            // chunk_hi (== ready, which grows before the next pass over
+            // it). The cursors advance only on full consumption.
+            if gid < chunk_hi {
+                eval = gid;
+            } else if chunk_hi == chunk_lo + CHUNK {
+                eval = chunk_lo + n_lanes * CHUNK;
+                chunk_id += n_lanes;
+                chunk_lo += n_lanes * CHUNK;
+            } else {
+                eval = chunk_hi;
+            }
+        }
+        std::hint::black_box(&res_slots[(rhead & RES_MASK) as usize]);
+        stats.spans.fetch_add(n_total, Ordering::Relaxed);
+        stats.batches.fetch_add(1, Ordering::Relaxed);
+        stats.eval_ns.fetch_add(
+            (t_eval.elapsed().as_nanos() as u64).saturating_sub(wait_ns),
+            Ordering::Relaxed,
+        );
+        stats.frontier_ns.fetch_add(wait_ns, Ordering::Relaxed);
+        // SAFETY: slots [rhead, rhead+nres) fully written before this
+        // Release store; the fold Acquires it and owns them after.
+        if nres > 0 {
+            lane.res_head.store(rhead + nres, Ordering::Release);
+            rhead += nres;
+        }
+    }
+}
+
 /// The parallel verification fabric: N lanes + N worker threads + a
 /// shutdown flag. Construct ONCE (startup), reused across every benchmark
 /// pass; dropped (joining workers) after the last pass.
@@ -1197,7 +1696,12 @@ impl HydraFabric {
         // R16b: the array-driven submission path (requires desc8 — the
         // HFT_DESC8=0 rollback implies the pre-R12 ring world).
         let rxdesc = desc8 && std::env::var("HFT_RXDESC").as_deref() != Ok("0");
-        Self::spawn_pinned_full(workers, worker_cpus, desc8, rxdesc)
+        // R16e: the RX Desc Diet — the draw-11 worker-eval fix. The default
+        // IS the diet; `HFT_RXDIET=0` is the rollback (CI arm 11x — the
+        // pre-diet rxdesc worker verbatim). Read once here, outside every
+        // window (law #9: env parsing is allocation).
+        let diet = std::env::var("HFT_RXDIET").as_deref() != Ok("0");
+        Self::spawn_pinned_full(workers, worker_cpus, desc8, rxdesc, diet)
     }
 
     /// R12: `spawn_pinned` with an explicit descriptor format (the
@@ -1205,10 +1709,12 @@ impl HydraFabric {
     /// serves CI sweeps). The R16b rxdesc path stays OFF in this form —
     /// the legacy ring path is what the existing parity suite pins.
     pub fn spawn_pinned_desc8(workers: usize, worker_cpus: &[usize], desc8: bool) -> Box<Self> {
-        Self::spawn_pinned_full(workers, worker_cpus, desc8, false)
+        Self::spawn_pinned_full(workers, worker_cpus, desc8, false, true)
     }
 
     /// R16b: the full-control spawn (descriptor format + submission path).
+    /// R16e: + the diet flag (the rxdesc worker-eval shape; `false` = the
+    /// pre-diet worker verbatim — the parity suite pins both shapes).
     /// All allocation (rings, arrays, threads) happens here — outside
     /// every measurement window.
     pub fn spawn_pinned_full(
@@ -1216,6 +1722,7 @@ impl HydraFabric {
         worker_cpus: &[usize],
         desc8: bool,
         rxdesc: bool,
+        diet: bool,
     ) -> Box<Self> {
         let kernel = CrcKernel::detect();
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -1255,7 +1762,13 @@ impl HydraFabric {
                     }
                     match rxs {
                         Some(rx) => {
-                            lane_worker_rxdesc(lane, sd, kern, stats, rx, lane_idx, n_lanes)
+                            if diet {
+                                lane_worker_rxdesc_diet(
+                                    lane, sd, kern, stats, rx, lane_idx, n_lanes,
+                                )
+                            } else {
+                                lane_worker_rxdesc(lane, sd, kern, stats, rx, lane_idx, n_lanes)
+                            }
                         }
                         None => lane_worker(lane, sd, kern, stats, fmt8),
                     }
@@ -1302,12 +1815,14 @@ impl HydraFabric {
             };
             let placement = &self.worker_cpus;
             eprintln!(
-                "DIAG worker[{i}] {label}: {pin} placement={placement:?} batches={} spans={} eval_ms={:.1} idle_iters={} res_waits={}",
+                "DIAG worker[{i}] {label}: {pin} placement={placement:?} batches={} spans={} eval_ms={:.1} idle_iters={} res_waits={} fw={} fw_ms={:.1}",
                 ws.batches.load(Ordering::Relaxed),
                 ws.spans.load(Ordering::Relaxed),
                 ws.eval_ns.load(Ordering::Relaxed) as f64 / 1e6,
                 ws.idle_iters.load(Ordering::Relaxed),
                 ws.res_waits.load(Ordering::Relaxed),
+                ws.frontier_waits.load(Ordering::Relaxed),
+                ws.frontier_ns.load(Ordering::Relaxed) as f64 / 1e6,
             );
         }
     }
@@ -2113,7 +2628,9 @@ impl<'a> HydraSpanSink<'a> {
                 }
                 true
             } else {
-                self.rx_assist_wm > 0 && self.pending() > self.rx_assist_wm && self.try_claim_inline()
+                self.rx_assist_wm > 0
+                    && self.pending() > self.rx_assist_wm
+                    && self.try_claim_inline()
             };
             if take_inline {
                 self.assist_chunks += 1;
@@ -2133,7 +2650,10 @@ impl<'a> HydraSpanSink<'a> {
             // span body's descriptor; fix on mismatch (divergent
             // schedules drift the frame index past the span index).
             let idx = (self.next_span - self.rx_win_base) as usize;
-            assert!(idx < st.cap(), "rxdesc window exceeds array cap (HFT_RXDESC_CAP)");
+            assert!(
+                idx < st.cap(),
+                "rxdesc window exceeds array cap (HFT_RXDESC_CAP)"
+            );
             debug_assert!(body.len() <= u16::MAX as usize, "Desc8 len overflows u16");
             let off = (body.as_ptr() as usize).wrapping_sub(self.blob_base);
             debug_assert!(off <= u32::MAX as usize, "Desc8 offset overflows u32");
@@ -2858,17 +3378,17 @@ mod tests {
         // R12: both descriptor formats (compact Desc8 + legacy) must be
         // bit-exact — the fold-order assert pins the anchor-based derivation.
         for fmt in [true, false] {
-        let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
-        let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
-        let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
+            let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
+            let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
+            let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
 
-        let want = seq_pass(&mut t1, sess);
-        assert_eq!(
-            want.0, 505_849,
-            "chaos must still cover the full population"
-        );
-        let got = hydra_pass(&mut t2, sess, &fabric);
-        assert_eq!(got, want, "chaos fabric mode diverged");
+            let want = seq_pass(&mut t1, sess);
+            assert_eq!(
+                want.0, 505_849,
+                "chaos must still cover the full population"
+            );
+            let got = hydra_pass(&mut t2, sess, &fabric);
+            assert_eq!(got, want, "chaos fabric mode diverged");
         } // R12 both formats
     }
 
@@ -2887,13 +3407,13 @@ mod tests {
         // R12: both descriptor formats (compact Desc8 + legacy) must be
         // bit-exact — the fold-order assert pins the anchor-based derivation.
         for fmt in [true, false] {
-        let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
-        let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
-        let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
+            let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
+            let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
+            let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
 
-        let want = seq_pass(&mut t1, sess);
-        let got = hydra_pass(&mut t2, sess, &fabric);
-        assert_eq!(got, want, "fixed(1) fabric mode diverged");
+            let want = seq_pass(&mut t1, sess);
+            let got = hydra_pass(&mut t2, sess, &fabric);
+            assert_eq!(got, want, "fixed(1) fabric mode diverged");
         } // R12 both formats
     }
 
@@ -2910,13 +3430,13 @@ mod tests {
         // R12: both descriptor formats (compact Desc8 + legacy) must be
         // bit-exact — the fold-order assert pins the anchor-based derivation.
         for fmt in [true, false] {
-        let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
-        let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
-        let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
+            let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
+            let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
+            let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
 
-        let want = seq_pass(&mut t1, sess);
-        let got = hydra_pass(&mut t2, sess, &fabric);
-        assert_eq!(got, want, "seeded-range fabric mode diverged");
+            let want = seq_pass(&mut t1, sess);
+            let got = hydra_pass(&mut t2, sess, &fabric);
+            assert_eq!(got, want, "seeded-range fabric mode diverged");
         } // R12 both formats
     }
 
@@ -2936,13 +3456,13 @@ mod tests {
         // R12: both descriptor formats (compact Desc8 + legacy) must be
         // bit-exact — the fold-order assert pins the anchor-based derivation.
         for fmt in [true, false] {
-        let fabric = HydraFabric::spawn_pinned_desc8(1, &[], fmt);
-        let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
-        let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
+            let fabric = HydraFabric::spawn_pinned_desc8(1, &[], fmt);
+            let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
+            let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
 
-        let want = seq_pass(&mut t1, sess);
-        let got = hydra_pass(&mut t2, sess, &fabric);
-        assert_eq!(got, want, "wraparound fabric mode diverged");
+            let want = seq_pass(&mut t1, sess);
+            let got = hydra_pass(&mut t2, sess, &fabric);
+            assert_eq!(got, want, "wraparound fabric mode diverged");
         } // R12 both formats
     }
 
@@ -2973,83 +3493,83 @@ mod tests {
         // R12: both descriptor formats (compact Desc8 + legacy) must be
         // bit-exact — the fold-order assert pins the anchor-based derivation.
         for fmt in [true, false] {
-        let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
-        let mut t = ReplayTransport::new(&gt, sched.clone(), sessions[0]);
-        let mut sink = HydraSpanSink::new(&fabric);
-        let mut harvested = [(0u64, 0u64, 0u64); PASS_RING];
-        let mut got = Vec::new();
-        for (pi, sess) in sessions.iter().enumerate() {
-            t.reset(*sess);
-            let mut seq = Sequencer::new();
-            sink.begin_pass();
-            let mut batch = FrameBatch::new();
-            let mut poll_no: u32 = 0;
-            while t.poll(&mut batch) > 0 {
-                let now = t.now_ns();
-                for (pos, frame) in batch.frames().iter().enumerate() {
-                    seq.ingest_auto(
-                        frame.bytes(),
-                        frame.feed,
-                        now,
-                        &mut sink,
-                        t.batch_blocks(pos),
-                        t.batch_memo(pos),
-                    );
+            let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
+            let mut t = ReplayTransport::new(&gt, sched.clone(), sessions[0]);
+            let mut sink = HydraSpanSink::new(&fabric);
+            let mut harvested = [(0u64, 0u64, 0u64); PASS_RING];
+            let mut got = Vec::new();
+            for (pi, sess) in sessions.iter().enumerate() {
+                t.reset(*sess);
+                let mut seq = Sequencer::new();
+                sink.begin_pass();
+                let mut batch = FrameBatch::new();
+                let mut poll_no: u32 = 0;
+                while t.poll(&mut batch) > 0 {
+                    let now = t.now_ns();
+                    for (pos, frame) in batch.frames().iter().enumerate() {
+                        seq.ingest_auto(
+                            frame.bytes(),
+                            frame.feed,
+                            now,
+                            &mut sink,
+                            t.batch_blocks(pos),
+                            t.batch_memo(pos),
+                        );
+                    }
+                    poll_no = poll_no.wrapping_add(1);
+                    if poll_no % 2 == 0 {
+                        sink.drain_ready();
+                    }
                 }
-                poll_no = poll_no.wrapping_add(1);
-                if poll_no % 2 == 0 {
-                    sink.drain_ready();
+                sink.end_pass();
+                // Harvest whatever completed (older passes close during this
+                // pass's polling); the LAST pass closes at finish().
+                let n = sink.harvest_completed(&mut harvested);
+                for rec in &harvested[..n] {
+                    got.push(*rec);
                 }
+                let _ = pi;
             }
-            sink.end_pass();
-            // Harvest whatever completed (older passes close during this
-            // pass's polling); the LAST pass closes at finish().
+            sink.finish();
             let n = sink.harvest_completed(&mut harvested);
             for rec in &harvested[..n] {
                 got.push(*rec);
             }
-            let _ = pi;
-        }
-        sink.finish();
-        let n = sink.harvest_completed(&mut harvested);
-        for rec in &harvested[..n] {
-            got.push(*rec);
-        }
-        assert_eq!(got, want, "cross-pass overlap diverged from sequential");
-        // And the same structure once more with inline mode (no threads).
-        let mut t = ReplayTransport::new(&gt, sched.clone(), sessions[0]);
-        let mut sink = HydraSpanSink::new_inline();
-        let mut got2 = Vec::new();
-        for sess in sessions {
-            t.reset(sess);
-            let mut seq = Sequencer::new();
-            sink.begin_pass();
-            let mut batch = FrameBatch::new();
-            while t.poll(&mut batch) > 0 {
-                let now = t.now_ns();
-                for (pos, frame) in batch.frames().iter().enumerate() {
-                    seq.ingest_auto(
-                        frame.bytes(),
-                        frame.feed,
-                        now,
-                        &mut sink,
-                        t.batch_blocks(pos),
-                        t.batch_memo(pos),
-                    );
+            assert_eq!(got, want, "cross-pass overlap diverged from sequential");
+            // And the same structure once more with inline mode (no threads).
+            let mut t = ReplayTransport::new(&gt, sched.clone(), sessions[0]);
+            let mut sink = HydraSpanSink::new_inline();
+            let mut got2 = Vec::new();
+            for sess in sessions {
+                t.reset(sess);
+                let mut seq = Sequencer::new();
+                sink.begin_pass();
+                let mut batch = FrameBatch::new();
+                while t.poll(&mut batch) > 0 {
+                    let now = t.now_ns();
+                    for (pos, frame) in batch.frames().iter().enumerate() {
+                        seq.ingest_auto(
+                            frame.bytes(),
+                            frame.feed,
+                            now,
+                            &mut sink,
+                            t.batch_blocks(pos),
+                            t.batch_memo(pos),
+                        );
+                    }
+                }
+                sink.end_pass();
+                let n = sink.harvest_completed(&mut harvested);
+                for rec in &harvested[..n] {
+                    got2.push(*rec);
                 }
             }
-            sink.end_pass();
+            sink.finish();
             let n = sink.harvest_completed(&mut harvested);
             for rec in &harvested[..n] {
                 got2.push(*rec);
             }
-        }
-        sink.finish();
-        let n = sink.harvest_completed(&mut harvested);
-        for rec in &harvested[..n] {
-            got2.push(*rec);
-        }
-        assert_eq!(got2, want, "inline cross-pass diverged");
+            assert_eq!(got2, want, "inline cross-pass diverged");
         } // R12 both formats
     }
 
@@ -3110,8 +3630,7 @@ mod tests {
             ..Default::default()
         };
         let sched = build_schedule(&gt, &cfg);
-        let sessions: [[u8; 10]; 3] =
-            [*b"PIPECHAOS1", *b"PIPECHAOS2", *b"PIPECHAOS3"];
+        let sessions: [[u8; 10]; 3] = [*b"PIPECHAOS1", *b"PIPECHAOS2", *b"PIPECHAOS3"];
         let ladder = crate::soa::ladder8_best();
 
         // Reference: one sequential pass per session.
@@ -3124,36 +3643,39 @@ mod tests {
         // The fabric + pipelined + SoA stack, one pass per session — under
         // BOTH descriptor formats.
         for fmt in [true, false] {
-        let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
-        let mut t = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce(
-            &gt,
-            sched.clone(),
-            sessions[0],
-            128,
-        );
-        let mut sink = HydraSpanSink::new(&fabric);
-        let mut harvested = [(0u64, 0u64, 0u64); PASS_RING];
-        let mut got = Vec::new();
-        for sess in sessions {
-            t.reset(sess);
-            let mut seq = Sequencer::new();
-            sink.begin_pass();
-            while t.next_batch() {
-                seq.ingest_entries_ladder(t.entries(), t.now_ns(), &mut sink, ladder);
-                sink.drain_ready();
+            let fabric = HydraFabric::spawn_pinned_desc8(2, &[], fmt);
+            let mut t = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce(
+                &gt,
+                sched.clone(),
+                sessions[0],
+                128,
+            );
+            let mut sink = HydraSpanSink::new(&fabric);
+            let mut harvested = [(0u64, 0u64, 0u64); PASS_RING];
+            let mut got = Vec::new();
+            for sess in sessions {
+                t.reset(sess);
+                let mut seq = Sequencer::new();
+                sink.begin_pass();
+                while t.next_batch() {
+                    seq.ingest_entries_ladder(t.entries(), t.now_ns(), &mut sink, ladder);
+                    sink.drain_ready();
+                }
+                sink.end_pass();
+                let n = sink.harvest_completed(&mut harvested);
+                for rec in &harvested[..n] {
+                    got.push(*rec);
+                }
             }
-            sink.end_pass();
+            sink.finish();
             let n = sink.harvest_completed(&mut harvested);
             for rec in &harvested[..n] {
                 got.push(*rec);
             }
-        }
-        sink.finish();
-        let n = sink.harvest_completed(&mut harvested);
-        for rec in &harvested[..n] {
-            got.push(*rec);
-        }
-        assert_eq!(got, want, "pipeline+soa chaos fabric diverged from sequential");
+            assert_eq!(
+                got, want,
+                "pipeline+soa chaos fabric diverged from sequential"
+            );
         } // R12 both formats
     }
 
@@ -3189,108 +3711,124 @@ mod tests {
     /// counts. Every cell must be bit-exact vs the sequential reference;
     /// the STEADY pipelined cell must additionally need ZERO fixes (the
     /// RX prefill landed every entry exactly — the fast path is real).
+    /// R16e: the diet flag sweeps BOTH worker shapes — the default (diet)
+    /// runs the full chaos × w1-3 × (a)(b)(c) matrix; the pre-diet pin
+    /// (the HFT_RXDIET=0 rollback arm's parity) runs the essential shape:
+    /// w=2, steady + chaos, all three cells. Both must reproduce the
+    /// sequential reference bit-exact — the diet restructures the worker's
+    /// record resolution (per-boundary, not per-span) and its wake cadence
+    /// (depth batches with hot frontier waits); any drift is a fail-stop.
     #[test]
     fn t_rxdesc_parity_matrix() {
         let gt = load_mini();
-        for chaos in [false, true] {
-            let cfg = if chaos {
-                ReplayConfig {
-                    seed_a: 0xCAFE_0000_1111_2222,
-                    seed_b: 0xBEEF_3333_4444_5555,
-                    msgs_per_packet: Packetize::MtuBound(1200),
-                    loss: [
-                        LossModel::Bernoulli { p_pm: 80 },
-                        LossModel::Bernoulli { p_pm: 140 },
-                    ],
-                    delay: [
-                        DelayModel::GaussianApprox {
-                            mean_ns: 20_000,
-                            sigma_ns: 6_000,
-                        },
-                        DelayModel::GaussianApprox {
-                            mean_ns: 45_000,
-                            sigma_ns: 18_000,
-                        },
-                    ],
-                    guarantee_coverage: true,
-                    session_change_at_msg: Some(200_000),
-                    ..Default::default()
-                }
-            } else {
-                ReplayConfig {
-                    msgs_per_packet: Packetize::MtuBound(1400),
-                    guarantee_coverage: true,
-                    ..Default::default()
-                }
-            };
-            let sched = build_schedule(&gt, &cfg);
-            let sess = if chaos { *b"RXDESCHAOS" } else { *b"RXDESCSTED" };
+        for diet in [true, false] {
+            for chaos in [false, true] {
+                let cfg = if chaos {
+                    ReplayConfig {
+                        seed_a: 0xCAFE_0000_1111_2222,
+                        seed_b: 0xBEEF_3333_4444_5555,
+                        msgs_per_packet: Packetize::MtuBound(1200),
+                        loss: [
+                            LossModel::Bernoulli { p_pm: 80 },
+                            LossModel::Bernoulli { p_pm: 140 },
+                        ],
+                        delay: [
+                            DelayModel::GaussianApprox {
+                                mean_ns: 20_000,
+                                sigma_ns: 6_000,
+                            },
+                            DelayModel::GaussianApprox {
+                                mean_ns: 45_000,
+                                sigma_ns: 18_000,
+                            },
+                        ],
+                        guarantee_coverage: true,
+                        session_change_at_msg: Some(200_000),
+                        ..Default::default()
+                    }
+                } else {
+                    ReplayConfig {
+                        msgs_per_packet: Packetize::MtuBound(1400),
+                        guarantee_coverage: true,
+                        ..Default::default()
+                    }
+                };
+                let sched = build_schedule(&gt, &cfg);
+                let sess = if chaos {
+                    *b"RXDESCHAOS"
+                } else {
+                    *b"RXDESCSTED"
+                };
 
-            let mut t0 = ReplayTransport::new(&gt, sched.clone(), sess);
-            let want = seq_pass(&mut t0, sess);
-            assert_eq!(want.0, 505_849, "coverage must hold (chaos={chaos})");
+                let mut t0 = ReplayTransport::new(&gt, sched.clone(), sess);
+                let want = seq_pass(&mut t0, sess);
+                assert_eq!(want.0, 505_849, "coverage must hold (chaos={chaos})");
 
-            for w in 1..=3usize {
-                let fabric = HydraFabric::spawn_pinned_full(w, &[], true, true);
+                for w in 1..=3usize {
+                    if !diet && w != 2 {
+                        continue; // the pre-diet pin covers the essential shape only
+                    }
+                    let fabric = HydraFabric::spawn_pinned_full(w, &[], true, true, diet);
 
-                // (a) the check+fix path (single-threaded transport: no
-                // prefill — every array entry written by the sink itself).
-                let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
-                let got = hydra_pass(&mut t1, sess, &fabric);
-                assert_eq!(
-                    got, want,
-                    "rxdesc check+fix diverged (chaos={chaos}, w={w})"
-                );
-
-                // (b) forced-inline (every chunk on the submitting core;
-                // the workers' inline-skip path under the array protocol).
-                let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
-                let got_force = assist_pass(&mut t2, sess, &fabric);
-                assert_eq!(
-                    got_force, want,
-                    "rxdesc forced-inline diverged (chaos={chaos}, w={w})"
-                );
-
-                // (c) the full stack: pipelined transport + the
-                // array-driven submission (the sustained arm's shape).
-                // The FIRST pipelined pass may still pay check-and-fix
-                // stores (its warm-start source is the previous cells'
-                // windows); the SECOND must find every entry already
-                // correct via the warm start — zero fixes is the FAST
-                // PATH PROVEN (the deterministic schedule's span
-                // sequence carries across sinks).
-                let mut t3 = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce(
-                    &gt,
-                    sched.clone(),
-                    sess,
-                    128,
-                );
-                t3.reset(sess);
-                let (got3, _fixes, assists1) = hydra_pass_piped(&mut t3, &fabric);
-                assert_eq!(
-                    got3, want,
-                    "rxdesc pipelined diverged (chaos={chaos}, w={w})"
-                );
-                // Determinism + the warm start's fast path (a fresh sink
-                // — the generation re-anchor — warm-started from the
-                // previous pass's entries).
-                t3.reset(sess);
-                let (got4, fixes2, assists2) = hydra_pass_piped(&mut t3, &fabric);
-                assert_eq!(
-                    got4, want,
-                    "rxdesc pipelined determinism diverged (chaos={chaos}, w={w})"
-                );
-                if !chaos && assists1 + assists2 == 0 {
-                    // The warm start's FAST PATH: with no assist chunks
-                    // (inline evaluations leave array holes by design —
-                    // the assist trades array writes for in-window CRC),
-                    // the second pass must find EVERY entry already
-                    // correct: zero stores on the submitting core.
+                    // (a) the check+fix path (single-threaded transport: no
+                    // prefill — every array entry written by the sink itself).
+                    let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
+                    let got = hydra_pass(&mut t1, sess, &fabric);
                     assert_eq!(
+                        got, want,
+                        "rxdesc check+fix diverged (chaos={chaos}, w={w}, diet={diet})"
+                    );
+
+                    // (b) forced-inline (every chunk on the submitting core;
+                    // the workers' inline-skip path under the array protocol).
+                    let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
+                    let got_force = assist_pass(&mut t2, sess, &fabric);
+                    assert_eq!(
+                        got_force, want,
+                        "rxdesc forced-inline diverged (chaos={chaos}, w={w}, diet={diet})"
+                    );
+
+                    // (c) the full stack: pipelined transport + the
+                    // array-driven submission (the sustained arm's shape).
+                    // The FIRST pipelined pass may still pay check-and-fix
+                    // stores (its warm-start source is the previous cells'
+                    // windows); the SECOND must find every entry already
+                    // correct via the warm start — zero fixes is the FAST
+                    // PATH PROVEN (the deterministic schedule's span
+                    // sequence carries across sinks).
+                    let mut t3 = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce(
+                        &gt,
+                        sched.clone(),
+                        sess,
+                        128,
+                    );
+                    t3.reset(sess);
+                    let (got3, _fixes, assists1) = hydra_pass_piped(&mut t3, &fabric);
+                    assert_eq!(
+                        got3, want,
+                        "rxdesc pipelined diverged (chaos={chaos}, w={w}, diet={diet})"
+                    );
+                    // Determinism + the warm start's fast path (a fresh sink
+                    // — the generation re-anchor — warm-started from the
+                    // previous pass's entries).
+                    t3.reset(sess);
+                    let (got4, fixes2, assists2) = hydra_pass_piped(&mut t3, &fabric);
+                    assert_eq!(
+                        got4, want,
+                        "rxdesc pipelined determinism diverged (chaos={chaos}, w={w}, diet={diet})"
+                    );
+                    if !chaos && assists1 + assists2 == 0 {
+                        // The warm start's FAST PATH: with no assist chunks
+                        // (inline evaluations leave array holes by design —
+                        // the assist trades array writes for in-window CRC),
+                        // the second pass must find EVERY entry already
+                        // correct: zero stores on the submitting core.
+                        assert_eq!(
                         fixes2, 0,
-                        "steady second pass needed check-and-fix corrections (w={w}) — \
+                        "steady second pass needed check-and-fix corrections (w={w}, diet={diet}) — \
                          the warm start missed entries"
                     );
+                    }
                 }
             }
         }
@@ -3346,64 +3884,71 @@ mod tests {
             want.push(seq_pass(&mut t, sess));
         }
 
-        let fabric = HydraFabric::spawn_pinned_full(1, &[], true, true);
-        let mut t = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce_cpu_auto(
-            &gt,
-            sched.clone(),
-            sessions[0],
-            128,
-            None,
-            Some(prog),
-        );
-        // The ref pass (pass 1, sessions[0]) — a separate sink, drained
-        // (the sustained bench's shape; also the generation boundary).
-        t.reset_pass(1, sess_of(1));
-        {
-            let mut seq = Sequencer::new();
-            let mut ref_sink = HydraSpanSink::new(&fabric);
-            let ladder = crate::soa::ladder8_best();
-            while t.next_batch() {
-                seq.ingest_entries_ladder(t.entries(), t.now_ns(), &mut ref_sink, ladder);
-                ref_sink.drain_ready();
-            }
-            ref_sink.finish();
-            assert_eq!(
-                (ref_sink.count, ref_sink.hash, ref_sink.msg_hash),
-                want[0],
-                "rxdesc multipass ref diverged"
+        // R16e: BOTH worker shapes survive the soak — the diet default and
+        // the pre-diet rollback (the 11x arm's parity at the 400-pass
+        // slot-cycling scale: the reuse gate, the straddling boundaries,
+        // the frontier waits' partial publishes and the boundary cache's
+        // mid-chunk crossings all under load).
+        for diet in [true, false] {
+            let label = if diet { "diet" } else { "pre-diet" };
+            let fabric = HydraFabric::spawn_pinned_full(1, &[], true, true, diet);
+            let mut t = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce_cpu_auto(
+                &gt,
+                sched.clone(),
+                sessions[0],
+                128,
+                None,
+                Some(prog),
             );
-        }
-
-        // MANY passes on ONE sink (the record ring wraps at 8; hundreds
-        // of passes stress the slot cycling at the sustained arm's scale).
-        let mut seq = Sequencer::new();
-        let mut sink = HydraSpanSink::new(&fabric);
-        let ladder = crate::soa::ladder8_best();
-        let mut harvested = [(0u64, 0u64, 0u64); PASS_RING];
-        let mut got = Vec::new();
-        for pass in 2..=400u64 {
-            t.reset_pass(pass, sess_of(pass));
-            *seq = Sequencer::new_unboxed();
-            sink.begin_pass();
-            while t.next_batch() {
-                seq.ingest_entries_ladder(t.entries(), t.now_ns(), &mut sink, ladder);
-                sink.drain_ready();
+            // The ref pass (pass 1, sessions[0]) — a separate sink, drained
+            // (the sustained bench's shape; also the generation boundary).
+            t.reset_pass(1, sess_of(1));
+            {
+                let mut seq = Sequencer::new();
+                let mut ref_sink = HydraSpanSink::new(&fabric);
+                let ladder = crate::soa::ladder8_best();
+                while t.next_batch() {
+                    seq.ingest_entries_ladder(t.entries(), t.now_ns(), &mut ref_sink, ladder);
+                    ref_sink.drain_ready();
+                }
+                ref_sink.finish();
+                assert_eq!(
+                    (ref_sink.count, ref_sink.hash, ref_sink.msg_hash),
+                    want[0],
+                    "rxdesc multipass ref diverged ({label})"
+                );
             }
-            sink.end_pass();
+
+            // MANY passes on ONE sink (the record ring wraps at 8; hundreds
+            // of passes stress the slot cycling at the sustained arm's scale).
+            let mut seq = Sequencer::new();
+            let mut sink = HydraSpanSink::new(&fabric);
+            let ladder = crate::soa::ladder8_best();
+            let mut harvested = [(0u64, 0u64, 0u64); PASS_RING];
+            let mut got = Vec::new();
+            for pass in 2..=400u64 {
+                t.reset_pass(pass, sess_of(pass));
+                *seq = Sequencer::new_unboxed();
+                sink.begin_pass();
+                while t.next_batch() {
+                    seq.ingest_entries_ladder(t.entries(), t.now_ns(), &mut sink, ladder);
+                    sink.drain_ready();
+                }
+                sink.end_pass();
+                let n = sink.harvest_completed(&mut harvested);
+                for rec in &harvested[..n] {
+                    got.push(*rec);
+                }
+            }
+            sink.finish();
             let n = sink.harvest_completed(&mut harvested);
             for rec in &harvested[..n] {
                 got.push(*rec);
             }
+            // In-order harvest (harvest order == pass order).
+            let expect: Vec<(u64, u64, u64)> =
+                (2..=400u64).map(|p| want[((p - 1) % 4) as usize]).collect();
+            assert_eq!(got, expect, "rxdesc sustained multipass diverged ({label})");
         }
-        sink.finish();
-        let n = sink.harvest_completed(&mut harvested);
-        for rec in &harvested[..n] {
-            got.push(*rec);
-        }
-        // In-order harvest (harvest order == pass order).
-        let expect: Vec<(u64, u64, u64)> = (2..=400u64)
-            .map(|p| want[((p - 1) % 4) as usize])
-            .collect();
-        assert_eq!(got, expect, "rxdesc sustained multipass diverged");
     }
 }

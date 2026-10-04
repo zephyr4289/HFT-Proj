@@ -349,6 +349,53 @@ HFT_RXDESC=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee 
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_rxdesc_off.txt
 grep -q "allocs=0" /tmp/bench_rxdesc_off.txt
 
+echo "=== 11x. R16e: RX Desc Diet OFF (the pre-diet rxdesc worker verbatim) ==="
+# THE DRAW-11 DECOMPOSITION: rxdesc ran -20.6% vs the ring on the healthy
+# class (-21.2% record-class); the gap split 50/50 — wake-cadence idle
+# (2.7x the ring's batch iterations, 620-806K idle iters) and per-span
+# eval dilution (~+31 cyc/span: the per-span record probe, the per-span
+# division/is_inline in the spray, the grid walk). The diet (the default,
+# 11b) fixes the worker side only — the sink is untouched:
+#   STRAND A: the depth batch — a frontier hit publishes its partial run
+#   first (liveness: the sink's pending pace and the window-reuse gate
+#   spin on the fold), then waits at the frontier in bounded pause laps
+#   (HFT_FRONTIER_LAPS, default 16) instead of exiting through the outer
+#   loop's deep-pause escalation — no re-entry, no yield, no scheduler
+#   wake latency per publication gap.
+#   STRAND B: the per-span record probe becomes a next-boundary cache —
+#   one register compare per span; the resolve fires only at window
+#   boundaries (publication ordering proves the cache cannot miss: the
+#   record for base rb is published BEFORE any ready store exceeding rb,
+#   so the worker's ready Acquire exposes the record with the spans).
+#   STRAND C: the division-free grid — the chunk walk (eval + spray)
+#   tracks (chunk_id, chunk_lo) by addition; the spray's per-SPAN
+#   division/modulo/is_inline moves to per-chunk sections.
+# THIS arm runs the pre-diet worker VERBATIM (bit-identical to the
+# draw-10/11 stack) for per-draw attribution: 11b (diet) vs 11x (pre-
+# diet) vs 11w (ring) prices the diet and the four-coherence-laws stack
+# on the same draw. The worker DIAG line now carries fw=/fw_ms= (the
+# frontier-wait episodes and wall) — the wake-cadence signal; the draw
+# ledger's decomposition becomes directly readable from the artifacts.
+HFT_RXDIET=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_rxdiet_off.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_rxdiet_off.txt
+grep -q "allocs=0" /tmp/bench_rxdiet_off.txt
+
+echo "=== 11y. R16e: strand-A isolation (HFT_FRONTIER_LAPS=0 — the diet with B+C only) ==="
+# The depth wait disarmed: the frontier hit publishes its partial and
+# bails to the outer loop's deep pause immediately — the pre-diet's wake
+# cadence with strands B+C (per-chunk resolution + the division-free
+# grid) still armed. 11b (full diet) vs 11y (B+C) vs 11x (pre-diet)
+# prices STRAND A alone per draw; the local latency-blind sandbox priced
+# it negative on the 1-worker main-bound shape (the wait's deferred
+# result publishes let the fold lag — pending_max 7,040 vs 4,496, the
+# reuse-gate spin +455ms on main) while the worker-level eval rate rose
+# +9-12% in BOTH diet shapes — the CI's worker-bound regime (draw 11:
+# 86%/79% busy at ~220 cyc/span) is where the wake cadence binds; the
+# class protocol decides the default exactly as vend/vtail were priced.
+HFT_FRONTIER_LAPS=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_flaps0.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_flaps0.txt
+grep -q "allocs=0" /tmp/bench_flaps0.txt
+
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)
