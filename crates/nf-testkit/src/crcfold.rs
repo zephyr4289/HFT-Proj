@@ -109,13 +109,50 @@ pub const VMU: u64 = 0x0105_FD79_BDAB_A560;
 /// Bodies shorter than this many bytes evaluate on the scalar kernel.
 pub const FOLD_MIN_LEN: usize = 192;
 
-/// R14: the vector ending's master switch (default ON). `HFT_CRC_VEND=0`
-/// rolls the reflect kernel's ending back to the R13 crc-chain form
-/// (16 chained `crc32` + the store/reload round-trip). Read once per
-/// span (OnceLock), never inside a step loop.
+/// R14: the vector ending's master switch. `HFT_CRC_VEND=1|0` overrides;
+/// otherwise the default is SILICON-CONDITIONAL (the R14 CI verdicts —
+/// docs/27 §5): ON where the 512-bit ports absorb the ending's
+/// +10 clmul/span (Intel Sapphire Rapids and newer — the 8573C measured
+/// +4.45%/+0.32% sustained across draws), OFF on Ice Lake and everything
+/// unproven (the 8370C measured −2.9% sustained / −13.8% packed — its
+/// single clmul port serializes the ending's clmuls against the fold's).
+/// Read once per span (OnceLock), never inside a step loop.
 pub fn vend_enabled() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("HFT_CRC_VEND").as_deref() != Ok("0"))
+    *V.get_or_init(|| match std::env::var("HFT_CRC_VEND").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => vend_supported_cpu(),
+    })
+}
+
+/// The class table behind `vend_enabled`'s default: true only on Intel
+/// family-6 model >= 0x8F (Sapphire Rapids and newer server cores — the
+/// class the R14 draw evidence covers). Ice Lake (0x6A) and every other
+/// vendor/model stay OFF until a draw certifies them (the ladder-refuted
+/// precedent: a default that hurts ANY class does not ship; the knob
+/// overrides for experiments).
+#[cfg(target_arch = "x86_64")]
+fn vend_supported_cpu() -> bool {
+    let f = std::arch::x86_64::__cpuid(0);
+    let is_intel = f.ebx == 0x756e_6547 && f.edx == 0x4965_6e69 && f.ecx == 0x6c65_746e;
+    if !is_intel || f.eax < 1 {
+        return false;
+    }
+    let f1 = std::arch::x86_64::__cpuid(1);
+    let base_family = (f1.eax >> 8) & 0xf;
+    let model = ((f1.eax >> 4) & 0xf) | (((f1.eax >> 12) & 0xf) << 4);
+    let family = if base_family == 0xf {
+        base_family + ((f1.eax >> 20) & 0xff)
+    } else {
+        base_family
+    };
+    family == 6 && model >= 0x8f
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn vend_supported_cpu() -> bool {
+    false
 }
 
 /// Span-verification kernel selection. `Copy` + no allocation; detected

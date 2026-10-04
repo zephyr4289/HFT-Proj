@@ -306,7 +306,11 @@ fn mode_fold512_r(buf: &[u8], sink: &mut u64) -> usize {
     let mut acc = 0u64;
     while off + SPAN <= buf.len() {
         // SAFETY: main() only dispatches here when fold512_available().
-        acc ^= unsafe { kernel.eval(&buf[off..off + SPAN]) };
+        // R14: forced vend ON — the controlled twin of mode_fold512_rc
+        // (vend OFF); the pair stays comparable on every silicon class
+        // regardless of the CPUID-conditional default (the fabric arms
+        // carry the default's per-class behavior).
+        acc ^= unsafe { kernel.eval_rpath(&buf[off..off + SPAN], true) };
         off += SPAN;
     }
     *sink = acc;
