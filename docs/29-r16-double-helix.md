@@ -523,3 +523,44 @@ wake cadence (deeper drain batches / fewer publication-pair idles), (b)
 the per-span resolution cost (record probes per span → per-chunk), (c)
 the re-anchor path. Target: ring parity first (1.06B healthy / 1.21B
 record-class), then the §5.3 pool arithmetic re-opens the 2B path.
+
+**Draw 12 (8573C healthy + marginal, run 37231552516 — the R16e diet's
+first pricing; waves 1-2, shards 14/16/17; commit 44fc15b).** Shard 17
+(HEALTHY, kbench `fold512_r` 1t = 30.23, `2cpu_distinct` 60.62 GB/s):
+11b (diet) **862.3M** / 11y (B+C, laps=0) 851.6M / 11x (pre-diet)
+850.6M / 11w (ring) **1,054.5M** / 11n (legacy-desc ring) 1,036.9M;
+bit-exact + allocs=0 on every arm; all checks PASS. Shard 16 (marginal,
+29.56): 11b 835.9M / 11y 824.0M / 11x 818.7M / 11w 1,089.6M. Shard 14
+(8370C noisy, 25.33 — discard): 11b 660.3M — the uniformly-low band.
+Verdicts:
+1. **The diet is NEUTRAL-POSITIVE on the deciding class**: +1.4%
+   (healthy) / +2.1% (marginal) vs the pre-diet — inside the ±3.4%
+   arm-position noise, direction consistent on both 8573C draws. The
+   default stands; the ≥3-draw median rule accumulates.
+2. **The wake-cadence half IS fixed**: idle_iters 620-806K (draw 11) →
+   294K/worker; the wait is now VISIBLE and cheap — fw=1.41M hot
+   episodes, fw_ms=422 (8.4% of the wall), avg ~0.3µs/episode (the
+   frontier advances DURING the waits — the worker stays positioned).
+   Strand A prices +1.3% (11b vs 11y); strand B+C +0.1% on the rate but
+   **−8 cyc/span on the eval** (11x 226.7 → 11b 219.1 / 11y 218.7 —
+   the per-span probe + division removal is real at the worker level).
+3. **The ring gap moved −20.6% → −18.2%** (diet/ring 0.818) — the diet
+   bought ~2.4 points of it. The remaining gap is NOT the wake cadence
+   (fixed) and only partly the measured dilution: **the array protocol
+   runs 207-227 cyc/span where the ring runs 195-201** (both desc
+   formats), i.e. ~+24 cyc/span is structural to the array-path worker
+   (the R7 fabric-efficiency invariance breaks: 39.3% of the 60.62
+   pool under rxdesc vs 48.1% under the ring — the invariance held
+   only for the ring plumbing).
+4. The diet's flow control is healthier than the pre-diet's: pend_max
+   1,968 (the assist almost never fires — 1,317 chunks vs the pre-
+   diet's 27,102); main never enters the pace spin (wait_ms 46 vs the
+   ring's 704); the RX thread is 58% busy (the production side has
+   headroom — the consumption side binds).
+5. **The next decomposition needs an instrument, not a guess** (the
+   honest law): the remaining ~24 cyc/span candidates (the array read
+   path vs the ring's L1-resident desc stream, the per-chunk section
+   machinery, the 8-slot L2 cycling) must be priced before another
+   diet installment — the HFT_HYDRA_NULL diagnostic (protocol cost
+   without the CRC kernel) on a CI arm is the candidate instrument;
+   the draw-13+ fish continues for the ≥3-draw median.
