@@ -241,14 +241,29 @@ supply-bound. The fleet continues fishing.
 
 **Healthy 8573C draw statistics (the R12 protocol's counting pool):**
 
-| Draw | Stack | kbench 1t (GB/s) | Sustained (msg/s) | Counts |
-|---|---|---|---|---|
-| 4 | R15 (vend+vtail) | 30.00 | 1,061,800,000 | healthy |
-| 5 | R15 | 31.00 | 1,043,112,246 | healthy |
-| 6 | R16 (this) | 29.61 | 1,015,310,418 | marginal — no |
+| Draw | Stack | kbench 1t (GB/s) | Sustained (msg/s) | 11v dfold | Counts |
+|---|---|---|---|---|---|
+| 4 | R15 (vend+vtail) | 30.00 | 1,061,800,000 | — | healthy |
+| 5 | R15 | 31.00 | 1,043,112,246 | — | healthy |
+| 6 | R16 | 29.61 | 1,015,310,418 | 1,015.4M (+0.01%) | marginal — no |
+| 7 | R16 | 30.66 | 1,096,132,337 | 1,093.6M (−0.23%) | healthy |
 
-Healthy median 1.05B → the 2.0B demand is +91% over the healthy median:
-the full R16 program (dfold on healthy draws + Route S absorption + record-
-class hosts) carries the distance; no single lever does. Front A on this
-draw class stays in the historical contended band (the 5B program rides
-R16b, not the kernel).
+Healthy median 1.062B → the 2.0B demand is +88% over the healthy median:
+the full R16 program (dfold on record-class draws + Route S absorption)
+carries the distance; no single lever does. Front A on this draw class
+stays in the historical contended band (the 5B program rides R16b).
+
+**Draw 7 (healthy, run 37210847710, shard 11) — the reframe.** kbench 1t:
+`r 30.66 / rv 30.82 / rd 30.49` (−0.6% — parity perfect, sinks identical).
+11b 1,096.1M (the best healthy-draw number yet), 11v 1,093.6M (−0.23%,
+inside the ±3.4% arm noise). **Verdict so far: dfold NEUTRAL on contended
+AND healthy draws** — at 30.66 GB/s ≈ 12.8 B/cyc ≈ 10 cyc/step, the
+kbench-realistic span corpus is bound by span-level supply/endings, not
+step latency. The scaffold's honest decomposition anticipated the
+possibility; the fleet has now priced it on two draw classes. **The dfold's
+remaining open case is the record-class host** (kbench ≥ 34: there the
+9 cyc/step ≈ the pure-loop latency bound — the one regime where chain
+depth can bind). Record-class hosts are ~2% of shards — the fleet keeps
+fishing with the 11v arm armed. Consequence for the program ordering:
+**Route S (fabric efficiency 49% → 55%+) is promoted to the primary 2B
+lever** (docs/29 §6), with dfold as the record-class contingency.
