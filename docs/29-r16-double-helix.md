@@ -210,9 +210,45 @@ the mitigation.
 
 | Revision | Change | Verdict |
 |---|---|---|
-| R16a | dfold (this doc): T=2 dual-stream fold, class endings forced, `HFT_CRC_DFOLD`, arm 11v, kbench `fold512_rd` | shipped default-OFF; fleet pricing pending |
+| R16a | dfold (this doc): T=2 dual-stream fold, class endings forced, `HFT_CRC_DFOLD`, arm 11v, kbench `fold512_rd` | shipped default-OFF; draw 6 neutral (supply-bound host); healthy-draw pricing pending |
 | R16b | rxbuild (Front A Lever B): publish-by-reference frame descriptors + worker in-place walk + VPADDQ prefix-sum scan | design frozen (§5); build next |
 | R16c | Route S extension: serial/FNV absorption into the sibling assist path | scoped (§6); after R16a draw data |
 | — | Route F (larger runners) | TERMINATED (R12 + R5) |
 | — | Stage B unpack-free census-4 kernel | REFUTED (§2 — the zero-divisor proof) |
 | — | GFNI CRC hybrid, PMC instrumentation, ymm dual-chain | REFUTED earlier (Task 7 report verdicts) |
+
+## 9. Draw ledger (R16 stack, commit 8e95fe1 — run 37210099462)
+
+**Draw 6 — 8573C, contended band (kbench `fold512_r` 1t = 29.61 GB/s; below
+the 30.0 healthy line, above the 29.0 discard line → marginal, does NOT
+count toward the record protocol):**
+
+```text
+kbench 1t:   fold512_r 29.61 / rv 29.64 / rc 29.56 / rd 29.62 GB/s
+             (all four sink-identical 0xbedb8ba779de450f — the dfold is
+              BIT-EXACT on target silicon; dead even ±0.1% — the draw's
+              kernel sits ON the contended L3 supply ceiling, exactly the
+              R7 prediction: no compute lever can show on this host)
+2cpu:        distinct 59.17 / smt 29.41 GB/s (SMT adds nothing — consistent)
+11b default: 1,015,310,418 sustained (bit-exact, allocs=0, R8 1B gate PASS)
+11v dfold:   1,015,433,364 sustained (+0.01% — dead even, supply-bound)
+HYDRA_BITPARITY 0x881639cead506f25 BIT-EXACT; ALL CHECKS PASSED
+```
+
+Verdict: **dfold neutral on a contended draw** — the lever prices only on
+healthy draws (kbench ≥ 30) where the loop runs latency-bound instead of
+supply-bound. The fleet continues fishing.
+
+**Healthy 8573C draw statistics (the R12 protocol's counting pool):**
+
+| Draw | Stack | kbench 1t (GB/s) | Sustained (msg/s) | Counts |
+|---|---|---|---|---|
+| 4 | R15 (vend+vtail) | 30.00 | 1,061,800,000 | healthy |
+| 5 | R15 | 31.00 | 1,043,112,246 | healthy |
+| 6 | R16 (this) | 29.61 | 1,015,310,418 | marginal — no |
+
+Healthy median 1.05B → the 2.0B demand is +91% over the healthy median:
+the full R16 program (dfold on healthy draws + Route S absorption + record-
+class hosts) carries the distance; no single lever does. Front A on this
+draw class stays in the historical contended band (the 5B program rides
+R16b, not the kernel).
