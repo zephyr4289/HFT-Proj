@@ -89,6 +89,7 @@ fn main() {
         bench_1t("fold512_r", c0, mode_fold512_r);
         bench_1t("fold512_rv", c0, mode_fold512_rv);
         bench_1t("fold512_rc", c0, mode_fold512_rc);
+        bench_1t("fold512_rd", c0, mode_fold512_rd);
         bench_1t("fold512_r_pair", c0, mode_fold512_r_pair);
         bench_1t("fold512_eval2", c0, mode_fold512_eval2);
         bench_1t("fold512_pair", c0, mode_fold512_pair);
@@ -104,6 +105,7 @@ fn main() {
             bench_2t("fold512_r", "2cpu_distinct", a, b, mode_fold512_r);
             bench_2t("fold512_rv", "2cpu_distinct", a, b, mode_fold512_rv);
             bench_2t("fold512_rc", "2cpu_distinct", a, b, mode_fold512_rc);
+            bench_2t("fold512_rd", "2cpu_distinct", a, b, mode_fold512_rd);
             bench_2t("fold512_tri", "2cpu_distinct", a, b, mode_fold512_tri);
         }
     }
@@ -114,6 +116,7 @@ fn main() {
             bench_2t("fold512_r", "2cpu_smt", a, b, mode_fold512_r);
             bench_2t("fold512_rv", "2cpu_smt", a, b, mode_fold512_rv);
             bench_2t("fold512_rc", "2cpu_smt", a, b, mode_fold512_rc);
+            bench_2t("fold512_rd", "2cpu_smt", a, b, mode_fold512_rd);
             bench_2t("fold512_tri", "2cpu_smt", a, b, mode_fold512_tri);
         }
     }
@@ -333,6 +336,26 @@ fn mode_fold512_rv(buf: &[u8], sink: &mut u64) -> usize {
     while off + SPAN <= buf.len() {
         // SAFETY: main() only dispatches here when fold512_available().
         acc ^= unsafe { kernel.eval_rpath3(&buf[off..off + SPAN], true, true) };
+        off += SPAN;
+    }
+    *sink = acc;
+    off
+}
+
+/// R16: the reflect kernel with the DUAL-STREAM FOLD (dfold) forced ON —
+/// the T=2 block-parity shape (forced vend + vtail-all-r, the class
+/// endings). fold512_rd vs fold512_rv on the same draw IS the chain-depth
+/// effect at IDENTICAL census (4 VPCLMULQDQ + 2 VPUNPCK + 2 VPTERNLOG per
+/// 128 B; 4 chains instead of 2): if the kernel is latency-bound the row
+/// jumps toward the p5 floor; if supply-bound it stays put — the fleet
+/// decides per draw (the fold512_tri precedent).
+fn mode_fold512_rd(buf: &[u8], sink: &mut u64) -> usize {
+    let kernel = CrcKernel::Reflect;
+    let mut off = 0usize;
+    let mut acc = 0u64;
+    while off + SPAN <= buf.len() {
+        // SAFETY: main() only dispatches here when fold512_available().
+        acc ^= unsafe { kernel.eval_rpath4(&buf[off..off + SPAN], true, true, true) };
         off += SPAN;
     }
     *sink = acc;

@@ -80,6 +80,19 @@ pub const RKHI: u64 = 0x493C_7D27;
 /// (33-bit: carries the polynomial's y^32 term). Same ISA-L pair.
 pub const RKLO: u64 = 0x0EC10_68C5_0;
 
+/// R16: the M² step pair for the dual-stream fold (`dfold`,
+/// scripts/r16_ufold_derive.py). The R13 step is ring multiplication by
+/// K = RKLO mod VM — which IS [`VR0`] (the P1' class law: `RKHI == K ⊗
+/// y^64 mod VM`, verified on 500 randoms + the 1778-body differential) —
+/// so advancing TWO blocks per step multiplies by K², realized as ONE
+/// 2-clmul step with the reduced pair below. Both constants are <= 32
+/// bits: every state field's clmul products stay <= 96 bits (state hi
+/// <= 32 bits — strictly tighter than RKLO's 36-bit unreduced form).
+/// The dual-stream MERGE pair is (VR0, RKHI) itself — see
+/// [`fold_word_pairs_r2`].
+pub const DFOLD_K2_LO: u64 = 0x3DA6_D0CB;
+pub const DFOLD_K2_HI: u64 = 0xBA4F_C28E;
+
 /// R14: the vector ending's seed constant — the value of the 16-byte
 /// monomial family at degree 0 (empirically pinned: `crc32_u64(crc32_u64(
 /// 0, 1), 0)`), and the multiplier that turns the reflect state into the
@@ -191,6 +204,24 @@ pub fn vtail_enabled() -> bool {
         Ok("1") => true,
         Ok("0") => false,
         _ => vend_supported_cpu(),
+    })
+}
+
+/// R16: the dual-stream fold's master switch. `HFT_CRC_DFOLD=1|0`;
+/// default OFF on every class until >= 3 healthy-draw verdicts certify
+/// it (the house law — the 11r/11s/11t precedent; CI arm 11v is the
+/// attribution soak). dfold is CLASS-exact — the merged states are
+/// ring-congruent, not value-identical, to the sequential kernel's
+/// states — so it requires the class endings: dispatch forces vend + the
+/// vtail composed-field lane-0 path for ALL r, and resolves to OFF when
+/// vend is off. `HFT_CRC_DFOLD=0` is the documented rollback (the
+/// default IS the rollback until a class certifies).
+pub fn dfold_enabled() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| match std::env::var("HFT_CRC_DFOLD").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => false,
     })
 }
 
@@ -417,6 +448,22 @@ impl CrcKernel {
             Self::Reflect => imp::span_fold_eval_r_forced(body, vend, vtail),
         }
     }
+
+    /// R16: the FULL forced path + the dual-stream fold axis (the kbench
+    /// attribution quad's fourth entry: `fold512_rd` = dfold — the T=2
+    /// block-parity shape, forced vend+vtail-all-r). `dfold && !vend`
+    /// resolves as dfold OFF. Values identical on every input.
+    ///
+    /// # Safety
+    /// Same feature contract as [`Self::eval`].
+    #[inline(always)]
+    pub unsafe fn eval_rpath4(&self, body: &[u8], vend: bool, vtail: bool, dfold: bool) -> u64 {
+        match self {
+            Self::Scalar => span_crc32c_8lane(body),
+            Self::Fold512 => imp::span_fold_eval(body),
+            Self::Reflect => imp::span_fold_eval_r_forced_d(body, vend, vtail, dfold),
+        }
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -426,7 +473,8 @@ impl CrcKernel {
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod imp {
     use super::{
-        KP128, KP192, FOLD_MIN_LEN, KP256, KP320, KP384, KP448, RKHI, RKLO, VH64, VM, VMU, VR0,
+        DFOLD_K2_HI, DFOLD_K2_LO, KP128, KP192, FOLD_MIN_LEN, KP256, KP320, KP384, KP448, RKHI,
+        RKLO, VH64, VM, VMU, VR0,
     };
     use crate::sink::span_crc32c_8lane;
     use std::arch::x86_64::*;
@@ -1196,6 +1244,115 @@ pub(crate) mod imp {
         st
     }
 
+    /// R16: the dual-stream (T=2 block-parity) block-pair loop. Set A
+    /// consumes the EVEN blocks, set B the ODD; every state is stepped
+    /// every OTHER block, so the four chains (A.even/A.odd/B.even/B.odd)
+    /// each get a two-block latency budget — the loop converts from the
+    /// measured latency-bound ~9 cyc/step (2 chains vs the 6-cyc clmul
+    /// latency) toward the p5-throughput floor (6 p5 uops per 128 B).
+    /// The step advances each state by TWO blocks, i.e. multiplies by
+    /// K² in the ending ring (K = RKLO mod VM = VR0 — the P1' class
+    /// law), realized with the reduced pair (DFOLD_K2_HI, DFOLD_K2_LO).
+    ///
+    /// The MERGE: the block-parity split leaves the early set deficient
+    /// by exactly ONE single-block advance M (ring-mult by K), whose
+    /// reduced pair is (VR0, RKHI) — so the merge is literally ONE
+    /// [`fold_step_r`] with the OTHER set's states as the injected
+    /// units (4 clmul + 2 ternlog, once per span, off the hot loop).
+    /// The merged states are ring-CONGRUENT to the sequential kernel's
+    /// states (P2: 1778-body differential, scripts/r16_ufold_derive.py),
+    /// so the entire vend/vtail ending stack runs unchanged — but the
+    /// equality is CLASS-only, which is why dfold dispatch forces the
+    /// class endings (see [`super::dfold_enabled`]).
+    ///
+    /// SAFETY: `p` must hold >= 128*wp bytes; requires the AVX-512 +
+    /// VPCLMULQDQ feature contract (callers gate it). `wp >= 1` by the
+    /// FOLD_MIN_LEN dispatcher gate.
+    #[inline(always)]
+    unsafe fn fold_word_pairs_r2(p: *const u8, wp: usize) -> FoldStates {
+        let khi2 = _mm512_set1_epi64(DFOLD_K2_HI as i64);
+        let klo2 = _mm512_set1_epi64(DFOLD_K2_LO as i64);
+        debug_assert!(wp >= 1);
+        // Prologue: seed set A with block 0's raw units (the sequential
+        // kernel's prologue verbatim).
+        // SAFETY: 128*1 <= 128*wp bytes are in bounds (wp >= 1).
+        let n0 = _mm512_loadu_si512(p as *const _);
+        let n1 = _mm512_loadu_si512(p.add(64) as *const _);
+        let mut a = FoldStates {
+            even: _mm512_unpacklo_epi64(n0, n1),
+            odd: _mm512_unpackhi_epi64(n0, n1),
+            units: 1,
+        };
+        if wp == 1 {
+            return a;
+        }
+        // SAFETY: 128*2 <= 128*wp bytes are in bounds (wp >= 2).
+        let n0 = _mm512_loadu_si512(p.add(128) as *const _);
+        let n1 = _mm512_loadu_si512(p.add(192) as *const _);
+        let mut b = FoldStates {
+            even: _mm512_unpacklo_epi64(n0, n1),
+            odd: _mm512_unpackhi_epi64(n0, n1),
+            units: 1,
+        };
+        // Main loop: two blocks per iteration, A takes the even one, B
+        // the odd — four independent chains, no per-iteration branch.
+        let mut j = 2usize;
+        while j + 1 < wp {
+            // SAFETY: 128*(j+2) <= 128*wp bytes are in bounds.
+            let n0 = _mm512_loadu_si512(p.add(128 * j) as *const _);
+            let n1 = _mm512_loadu_si512(p.add(128 * j + 64) as *const _);
+            fold_step_r(
+                &mut a,
+                _mm512_unpacklo_epi64(n0, n1),
+                _mm512_unpackhi_epi64(n0, n1),
+                khi2,
+                klo2,
+            );
+            // SAFETY: 128*(j+2) <= 128*wp bytes are in bounds.
+            let n0 = _mm512_loadu_si512(p.add(128 * (j + 1)) as *const _);
+            let n1 = _mm512_loadu_si512(p.add(128 * (j + 1) + 64) as *const _);
+            fold_step_r(
+                &mut b,
+                _mm512_unpacklo_epi64(n0, n1),
+                _mm512_unpackhi_epi64(n0, n1),
+                khi2,
+                klo2,
+            );
+            j += 2;
+        }
+        if j < wp {
+            // wp odd: the last block is even-indexed -> set A (A holds
+            // ceil(wp/2) blocks, B floor(wp/2) — the parity bookkeeping
+            // the merge below resolves).
+            // SAFETY: 128*(j+1) <= 128*wp bytes are in bounds.
+            let n0 = _mm512_loadu_si512(p.add(128 * j) as *const _);
+            let n1 = _mm512_loadu_si512(p.add(128 * j + 64) as *const _);
+            fold_step_r(
+                &mut a,
+                _mm512_unpacklo_epi64(n0, n1),
+                _mm512_unpackhi_epi64(n0, n1),
+                khi2,
+                klo2,
+            );
+        }
+        // Merge (once per span). The set whose LAST block sits at global
+        // index wp-1 is exact; the other is one M short:
+        //   wp even: A's blocks end at wp-2 -> V = M(A) ⊕ B
+        //   wp odd:  B's blocks end at wp-2 -> V = A ⊕ M(B)
+        // The reduced M pair is (khi = RKHI, klo = VR0) — P1'-verified.
+        let khim = _mm512_set1_epi64(RKHI as i64);
+        let klom = _mm512_set1_epi64(VR0 as i64);
+        if wp % 2 == 0 {
+            fold_step_r(&mut a, b.even, b.odd, khim, klom);
+            a.units = wp;
+            a
+        } else {
+            fold_step_r(&mut b, a.even, a.odd, khim, klom);
+            b.units = wp;
+            b
+        }
+    }
+
     /// R14: the vector Barrett ending — reduce each 128-bit field's
     /// reflect state to its 32-bit lane CRC entirely in-register:
     ///
@@ -1288,8 +1445,10 @@ pub(crate) mod imp {
     /// * lane 0: 2 lift clmuls + ≤9 independent data clmuls + `vend_xmm`
     ///   (replacing the serial extract → fold_extra chain → 2-3 chained
     ///   crc32 ≈ 15-25 serial cyc — the R15 target's ~15-20 cyc).
-    /// * r == 0 (len an exact 128-multiple): the old 2-crc ending (the
-    ///   vtail would only add uops — no tail to absorb).
+    /// * r == 0 (len an exact 128-multiple): no tail terms — F0 is the
+    ///   pure state lift (R15 shipped the 2-crc ending here for economy;
+    ///   the R16 dfold dispatch routes ALL r through this path because
+    ///   its states are class-exact only — see `dfold_enabled`).
     /// * lanes 1..7: the R14 path verbatim.
     #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
     unsafe fn finish_span_r_vtail(body: &[u8], st: FoldStates) -> u64 {
@@ -1303,9 +1462,11 @@ pub(crate) mod imp {
         let r = 8 * (blocks % 2) + tail;
 
         // ---- lane 0: F0 = (V0_lo ⊗ G[r]) ⊕ (V0_hi ⊗ KH[r]) ⊕ Σ data ----
-        // (r >= 16 by the dispatcher's gate — the serial fold_extra chain
-        // the vtail exists to eliminate.)
-        debug_assert!(r >= 16);
+        // (r <= 71 by construction — the table bounds. The R15 ship gate
+        // kept this path at r >= 16 for ECONOMY; the dfold dispatch uses
+        // it for all r because the formula is exact on every r — the R15
+        // V5 differential verified it below 16 too.)
+        debug_assert!(r <= 71);
         let v0 = _mm512_castsi512_si128(st.even);
         let mut f0 = _mm_xor_si128(
             _mm_clmulepi64_si128(v0, _mm_set1_epi64x(super::VTAIL_G[r] as i64), 0x00),
@@ -1394,22 +1555,6 @@ pub(crate) mod imp {
         std::hint::black_box(h)
     }
 
-    /// R13: finish one span on the natural-domain states. The ending per
-    /// lane is TWO chained `crc32` instructions over the state's qwords in
-    /// natural order — `c = crc32_u64(crc32_u64(0, V_lo), V_hi)` — no
-    /// `rev64` unmirroring, no per-qword fixups. Lane-0 tail continuation
-    /// and the odd-block last words follow the SAME stream decomposition
-    /// as [`finish_span`] (the value definition fixes it); only the fold
-    /// math and the ending differ.
-    ///
-    /// R14: the ending rides the `HFT_CRC_VEND` switch — vend (the vector
-    /// Barrett, default) replaces the 16 chained `crc32` + their
-    /// store/reload round-trip with 2×(5 clmul + 2 alignr) in-register.
-    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
-    unsafe fn finish_span_r(body: &[u8], st: FoldStates) -> u64 {
-        finish_span_r_inner3(body, st, super::vend_enabled(), super::vtail_enabled())
-    }
-
     /// R15: the full attribution/rollback dispatch. `vend && vtail` takes
     /// the vectorized-tail path (the default on SPR+); `vend` alone is the
     /// R14 shape (the scalar lane-0 continuation + crc-chain odd words);
@@ -1421,17 +1566,23 @@ pub(crate) mod imp {
     /// fold_extra) beat the composed vend_xmm chain (~22 cyc) AND keep
     /// p1 (not the fold-saturated p5) busy — the measured packed-loop and
     /// sandbox-fabric evidence behind the gate.
+    ///
+    /// R16: `dfold` overrides the economics gate — the dual-stream states
+    /// are CLASS-exact only, so their lane-0 ending MUST be the composed
+    /// vtail field (a class formula) for every r; the value-based R13/R14
+    /// continuations would read wrong representatives.
     #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
     unsafe fn finish_span_r_inner3(
         body: &[u8],
         st: FoldStates,
         vend: bool,
         vtail: bool,
+        dfold: bool,
     ) -> u64 {
-        if vend && vtail {
+        if vend && (vtail || dfold) {
             let blocks = body.len() / 64;
             let r = 8 * (blocks % 2) + body.len() % 64;
-            if r >= 16 {
+            if dfold || r >= 16 {
                 return finish_span_r_vtail(body, st);
             }
         }
@@ -1600,32 +1751,57 @@ pub(crate) mod imp {
     /// Requires AVX-512F/BW, VPCLMULQDQ, GFNI, SSE4.2.
     #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
     pub unsafe fn span_fold_eval_r(body: &[u8]) -> u64 {
-        if body.len() < FOLD_MIN_LEN {
-            return span_crc32c_8lane(body);
-        }
-        let wp = body.len() / 64 / 2;
-        // SAFETY: 128*wp <= len (feature contract + caller bounds).
-        let st = fold_word_pairs_r(body.as_ptr(), wp);
-        finish_span_r(body, st)
+        span_fold_eval_r_forced_d(
+            body,
+            super::vend_enabled(),
+            super::vtail_enabled(),
+            super::dfold_enabled(),
+        )
     }
 
     /// R14: the reflect kernel with an EXPLICIT ending path (the kbench
     /// attribution twin + the differential suite's pin of BOTH paths).
     /// R15: `vtail` adds the third axis — `vend && vtail` runs the
     /// vectorized-tail path, `vend && !vtail` the R14 shape, `!vend` the
-    /// R13 crc-chain ending.
+    /// R13 crc-chain ending. R16: the dfold axis rides the env gate
+    /// (this entry is the back-compat shim; see `_forced_d`).
     ///
     /// # Safety
     /// Same feature contract as [`span_fold_eval_r`].
     #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
     pub unsafe fn span_fold_eval_r_forced(body: &[u8], vend: bool, vtail: bool) -> u64 {
+        span_fold_eval_r_forced_d(body, vend, vtail, super::dfold_enabled())
+    }
+
+    /// R16: the FULL forced path — vend, vtail AND the dual-stream fold
+    /// axis explicit (the kbench attribution quad: `fold512_r` =
+    /// vend/no-vtail (the R14 shape), `fold512_rv` = vend/vtail (the R15
+    /// shape), `fold512_rc` = crc-chain (the R13 rollback), `fold512_rd`
+    /// = dfold (the R16 dual-stream shape — forced vend+vtail, all r)).
+    /// `dfold && !vend` resolves as dfold OFF (the class-ending
+    /// requirement). Values identical on every input.
+    ///
+    /// # Safety
+    /// Same feature contract as [`span_fold_eval_r`].
+    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
+    pub unsafe fn span_fold_eval_r_forced_d(
+        body: &[u8],
+        vend: bool,
+        vtail: bool,
+        dfold: bool,
+    ) -> u64 {
         if body.len() < FOLD_MIN_LEN {
             return span_crc32c_8lane(body);
         }
         let wp = body.len() / 64 / 2;
+        let dfold = dfold && vend;
         // SAFETY: 128*wp <= len (feature contract + caller bounds).
-        let st = fold_word_pairs_r(body.as_ptr(), wp);
-        finish_span_r_inner3(body, st, vend, vtail)
+        let st = if dfold {
+            fold_word_pairs_r2(body.as_ptr(), wp)
+        } else {
+            fold_word_pairs_r(body.as_ptr(), wp)
+        };
+        finish_span_r_inner3(body, st, vend, vtail || dfold, dfold)
     }
 
     /// R13: the production two-span path on the natural-domain kernel —
@@ -1646,12 +1822,26 @@ pub(crate) mod imp {
             let va = span_fold_eval_r(a);
             return (va, vb);
         }
+        // R16: the dfold axis rides the env gates exactly like the
+        // single-span path (both spans take the same shape — the parity
+        // bookkeeping is per-span and independent).
+        let vend = super::vend_enabled();
+        let dfold = super::dfold_enabled() && vend;
+        let vtail = super::vtail_enabled() || dfold;
         // SAFETY: 128*(wpa) <= a.len() (FOLD_MIN_LEN gate).
-        let sta = fold_word_pairs_r(a.as_ptr(), a.len() / 64 / 2);
+        let sta = if dfold {
+            fold_word_pairs_r2(a.as_ptr(), a.len() / 64 / 2)
+        } else {
+            fold_word_pairs_r(a.as_ptr(), a.len() / 64 / 2)
+        };
         // SAFETY: 128*(wpb) <= b.len().
-        let stb = fold_word_pairs_r(b.as_ptr(), b.len() / 64 / 2);
-        let va = finish_span_r(a, sta);
-        let vb = finish_span_r(b, stb);
+        let stb = if dfold {
+            fold_word_pairs_r2(b.as_ptr(), b.len() / 64 / 2)
+        } else {
+            fold_word_pairs_r(b.as_ptr(), b.len() / 64 / 2)
+        };
+        let va = finish_span_r_inner3(a, sta, vend, vtail, dfold);
+        let vb = finish_span_r_inner3(b, stb, vend, vtail, dfold);
         (va, vb)
     }
 }
@@ -1672,6 +1862,16 @@ pub(crate) mod imp {
 
     #[inline(always)]
     pub unsafe fn span_fold_eval_r_forced(body: &[u8], _vend: bool, _vtail: bool) -> u64 {
+        span_crc32c_8lane(body)
+    }
+
+    #[inline(always)]
+    pub unsafe fn span_fold_eval_r_forced_d(
+        body: &[u8],
+        _vend: bool,
+        _vtail: bool,
+        _dfold: bool,
+    ) -> u64 {
         span_crc32c_8lane(body)
     }
 
@@ -1841,6 +2041,11 @@ mod tests {
                 "reflect vtail diverged at len={}",
                 body.len()
             );
+            // R16: the dual-stream fold (dfold) — forced vend + vtail-all-r
+            // (the class-ending shape), independent of the HFT_CRC_DFOLD
+            // default. Same value on every body (the P2 differential).
+            let gd = unsafe { imp::span_fold_eval_r_forced_d(body, true, true, true) };
+            assert_eq!(want, gd, "reflect dfold diverged at len={}", body.len());
             let (g2a, g2b) = unsafe { imp::span_fold_eval2(body, body) };
             assert_eq!(want, g2a, "eval2 primary diverged at len={}", body.len());
             assert_eq!(want, g2b, "eval2 mirror diverged at len={}", body.len());
@@ -1954,6 +2159,76 @@ mod tests {
         let y96 = powx(96, P);
         let rev33 = (0..33).fold(0u64, |acc, i| acc | ((y96 >> i) & 1) << (32 - i));
         assert_eq!(rev33, 0x14CD_00BD_6, "rev33(y^96 mod P) anchor");
+    }
+
+    /// R16: re-derive the dual-stream fold constants at test time in the
+    /// ENDING ring GF(2)[y]/VM (scripts/r16_ufold_derive.py's P1'/P2, the
+    /// 1778-body differential). Pins the whole dfold algebra:
+    ///   * P1' class law: the R13 step is ring multiplication by
+    ///     K = RKLO mod VM, and K == VR0 (the ending seed re-emerging);
+    ///   * RKHI == K ⊗ y^64 (the merge pair IS (VR0, RKHI));
+    ///   * the M² pair: DFOLD_K2_LO == K², DFOLD_K2_HI == K² ⊗ y^64;
+    ///   * spot check of the law itself on one-hot states.
+    /// A transcription typo in either constant cannot survive.
+    #[test]
+    fn t_dfold_constants_derivation() {
+        fn clmul(a: u64, b: u64) -> u128 {
+            let mut r = 0u128;
+            let mut a = a as u128;
+            let mut b = b;
+            while b != 0 {
+                if b & 1 != 0 {
+                    r ^= a;
+                }
+                b >>= 1;
+                a <<= 1;
+            }
+            r
+        }
+        fn clmod(mut v: u128) -> u128 {
+            while v >= (1 << 32) {
+                let sh = (128 - v.leading_zeros() as i32 - 33) as u32;
+                v ^= (VM as u128) << sh;
+            }
+            v
+        }
+        fn rmul(a: u64, b: u64) -> u64 {
+            clmod(clmul(a, b)) as u64
+        }
+        fn ypow(mut e: u32) -> u64 {
+            let mut r = 1u64;
+            let mut base = 2u64;
+            while e != 0 {
+                if e & 1 != 0 {
+                    r = rmul(r, base);
+                }
+                base = rmul(base, base);
+                e >>= 1;
+            }
+            r
+        }
+        // P1': K = RKLO mod VM == VR0 (the fold advance and the ending
+        // seed are the same ring element — the R13/R14 convergence).
+        let k = clmod(RKLO as u128) as u64;
+        assert_eq!(k, VR0, "K = RKLO mod VM must equal VR0");
+        // RKHI == K ⊗ y^64 — the merge pair is (VR0, RKHI) itself.
+        let y64 = ypow(64);
+        assert_eq!(rmul(k, y64), RKHI, "RKHI != K (x) y^64");
+        // The M² step pair.
+        let k2 = rmul(k, k);
+        assert_eq!(k2, DFOLD_K2_LO, "DFOLD_K2_LO != K^2 mod VM");
+        assert_eq!(rmul(k2, y64), DFOLD_K2_HI, "DFOLD_K2_HI != K^2 (x) y^64");
+        // The class law on one-hot states: clmod(M(V)) == rmul(clmod(V), K)
+        // with M(V) = clmul(V_hi, RKHI) ^ clmul(V_lo, RKLO).
+        for bit in [0u32, 1, 31, 32, 63, 64, 95, 96, 127] {
+            let v = 1u128 << bit;
+            let m = clmul((v >> 64) as u64, RKHI) ^ clmul(v as u64, RKLO);
+            assert_eq!(
+                clmod(m),
+                clmod(clmul(clmod(v) as u64, k)),
+                "P1' class law broken at state bit {bit}"
+            );
+        }
     }
 
     /// R11: re-derive the tri-stream constants at test time — carry-less

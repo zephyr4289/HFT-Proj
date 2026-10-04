@@ -16,7 +16,7 @@ jobs:
   wave-1:
     name: "Wave 1 - Shard ${{ matrix.shard }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 14
+    timeout-minutes: 19
     strategy:
       fail-fast: false
       matrix:
@@ -116,7 +116,7 @@ jobs:
     needs: check-wave-1
     if: needs.check-wave-1.outputs.acquired != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 14
+    timeout-minutes: 19
     strategy:
       fail-fast: false
       matrix:
@@ -216,7 +216,7 @@ jobs:
     needs: check-wave-2
     if: needs.check-wave-2.outputs.acquired != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 14
+    timeout-minutes: 19
     strategy:
       fail-fast: false
       matrix:
@@ -316,7 +316,7 @@ jobs:
     needs: check-wave-3
     if: needs.check-wave-3.outputs.acquired != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 14
+    timeout-minutes: 19
     strategy:
       fail-fast: false
       matrix:
@@ -416,7 +416,7 @@ jobs:
     needs: check-wave-4
     if: needs.check-wave-4.outputs.acquired != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 14
+    timeout-minutes: 19
     strategy:
       fail-fast: false
       matrix:

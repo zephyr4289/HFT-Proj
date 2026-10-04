@@ -310,6 +310,22 @@ HFT_WORKER_BATCH=256 cargo run --release -p nf-engine --bin bench -- --hydra-onl
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_wbatch_256.txt
 grep -q "allocs=0" /tmp/bench_wbatch_256.txt
 
+echo "=== 11v. R16: Dual-Stream Fold (dfold) ARMED Soak (attribution) ==="
+# R16: the T=2 block-parity dual-stream reflect fold — same census (4
+# VPCLMULQDQ + 2 VPUNPCK + 2 VPTERNLOG per 128 B) but FOUR independent
+# chains instead of two: the measured ~9 cyc/step latency-bound loop
+# (2 chains vs the 6-cyc clmul latency) converts toward the 6-cyc p5
+# throughput floor. The Stage B unpack-free refutation (docs/29) left
+# latency as the only kernel lever — this IS the kernel lever.
+# DEFAULT OFF (no draw evidence yet); this arm runs it ON for per-draw
+# attribution (the 11m armed-soak precedent). kbench's fold512_rd vs
+# fold512_rv rows give the kernel-level twin. Bit-exactness is asserted
+# by the arm's per-pass checks + the D-oracle parity. HFT_CRC_DFOLD=0 is
+# the documented rollback (the default IS the rollback).
+HFT_CRC_DFOLD=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_dfold.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_dfold.txt
+grep -q "allocs=0" /tmp/bench_dfold.txt
+
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)
