@@ -129,3 +129,34 @@ re-derivation); the SPEED claim waits for the fleet. Bronze (≥1.40B) is
 NOT claimed by this lever alone — the R15 queue's other two items (the
 RX per-frame entry build, the supply/ring rebalance) are the follow-ups
 this same branch carries.
+
+## 6. The first fleet verdicts (four target draws, 2026-10-04)
+
+| # | Silicon | Gates | 11b (default) | vtail attribution | kbench 1t r/rv/rc |
+|---|---|---|---|---|---|
+| 1 | 8370C (noisy host) | R8 FAIL (noise) | 865.4M (−10% vs band) | n/a (OFF on class) | 27.6 / 27.7 / 28.8 |
+| 2 | 8370C (healthy) | ALL PASS | 945.9M | 11t 915.1M — Δ = arm-position noise (identical configs: ±3.4% floor) | — |
+| 3 | 8370C (marginal) | R8 FAIL (−0.9%) | 889.2M | n/a | — |
+| 4 | **8573C** (deciding) | **ALL PASS** | **1,061.8M** (Front A 3.234B) | **11t 1,057.9M → vtail +0.37% (within noise)** | 30.00 / 29.99 / 29.39 |
+
+* **Bit-exactness: 4/4 draws, every arm** — `0x881639cead506f25`
+  (the R15 stack's invariant held on every certified draw, including
+  the arms that force each of the three ending paths).
+* **The 8573C draw (the deciding class):** a mid-band instance (kbench
+  30.0 vs the record draw's 34.9 GB/s). The vtail's sustained delta is
+  +0.37% — WITHIN the ±3.4% identical-config arm-position variance the
+  8370C draw-2 measured (11b 945.9 vs 11t 915.1 on byte-identical code
+  paths). One draw is not a verdict (the challenge's own rule 9: ≥3);
+  the ledger records NEUTRAL-on-draw-1. The class-conditional default
+  stands — no class regresses (the R9c→R9d law), the physics targets
+  the r≥16 serial chain, and the rollback is one env away.
+* **The vend (R14) also washed this draw** (11s 1,061.2M ≈ 11b) — on a
+  record-class instance it measured +4.45%; draw variance dominates on
+  mid-band instances. The stack holds R13/R14 territory draw-adjusted:
+  reflect beats mirror +4.4% on this draw too (11r 1,017.3M).
+* **The 11u batch sweep:** 64 → 1,049.8M, 256 → 1,051.7M vs the 128
+  default's 1,061.8M — no signal; the R8 shape stands.
+* **The R8 pure-ingest gate's two marginal misses** (1.67B on a
+  uniformly-low host; 1.982B at −0.9%) are pre-existing gate strictness
+  on noisy draws — hft_bench executes none of the R15 code (the
+  count+span sink), and the same class passed at 3.2B+ on healthy draws.
