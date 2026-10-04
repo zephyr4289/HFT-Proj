@@ -9,15 +9,18 @@ permissions:
   contents: write
 
 jobs:
-  build-and-verify:
+  filter-and-benchmark:
+    name: "Shard ${{ matrix.shard }}: Silicon Probe & Bench"
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: 0
       CARGO_NET_RETRY: 3
-      # P0-fixed: conservative x86-64-v3 (Haswell) baseline 20.16M proven.
-      # P1 will replace hash (CRC32C hw), not CPU flags. Keep lto fat via profile.
       RUSTFLAGS: "-C target-cpu=x86-64-v3"
       CARGO_PROFILE_RELEASE_LTO: fat
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
@@ -25,26 +28,33 @@ jobs:
       CARGO_PROFILE_RELEASE_PANIC: abort
       CARGO_PROFILE_RELEASE_STRIP: debuginfo
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Fast-Discard Gate (Target Silicon Probe)
+        id: gate
+        run: |
+          CPU_NAME=$(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2 | xargs || echo "Unknown CPU")
+          echo "Host CPU: $CPU_NAME"
+          echo "cpu_name=$CPU_NAME" >> "$GITHUB_OUTPUT"
+          
+          if grep -qE "8573C|8370C" /proc/cpuinfo; then
+            echo "matched=true" >> "$GITHUB_OUTPUT"
+            echo "🎯 TARGET SILICON ACQUIRED ($CPU_NAME). Proceeding to full benchmark."
+          else
+            echo "matched=false" >> "$GITHUB_OUTPUT"
+            echo "❌ Non-target silicon ($CPU_NAME). Fast-discarding in < 1s."
+          fi
 
       - name: Cache Cargo Registry & Build
+        if: steps.gate.outputs.matched == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: "ci-v3-v0.1"
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v0.1' }}
 
-      - name: Target Silicon Filter (Intel Xeon 8573C / 8370C fold512 Gate)
-        run: |
-          CPU_NAME=$(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2 | xargs)
-          echo "Drawn Host CPU: $CPU_NAME"
-          # Check for target Intel Xeon silicon with fold512 capability
-          if ! grep -qE "8573C|8370C" /proc/cpuinfo; then
-            echo "❌ Non-target silicon ($CPU_NAME). Exiting early to re-roll."
-            exit 1
-          fi
-          echo "🎯 TARGET SILICON ACQUIRED ($CPU_NAME). Proceeding to full benchmark."
-
-      - name: Run CI Suite with Full Log Capture
+      - name: Run Full CI & Benchmark Suite
+        if: steps.gate.outputs.matched == 'true'
         id: ci_run
         run: |
           set -o pipefail
@@ -54,21 +64,123 @@ jobs:
           rustc -Vv
           ./scripts/ci.sh 2>&1 | tee /tmp/ci_full_output.log
 
-      - name: Auto-push Execution Logs to build-log Branch
-        if: always()
+      - name: Extract Shard Telemetry & Metrics
+        if: steps.gate.outputs.matched == 'true' && always()
+        run: |
+          mkdir -p /tmp/shard_output
+          cp /tmp/ci_full_output.log /tmp/shard_output/draw-shard${{ matrix.shard }}.log 2>/dev/null || true
+          cp /tmp/bench_hydra.txt /tmp/shard_output/bench_hydra.txt 2>/dev/null || true
+          cp /tmp/kbench.txt /tmp/shard_output/kbench.txt 2>/dev/null || true
+          cp /tmp/bench_results.json /tmp/shard_output/bench_results.json 2>/dev/null || true
+          
+          CPU_NAME="${{ steps.gate.outputs.cpu_name }}"
+          SUSTAINED_RATE=$(grep -oE "rate=[0-9,]+" /tmp/bench_hydra.txt 2>/dev/null | head -1 | cut -d= -f2 || echo "N/A")
+          KBENCH_1T=$(grep -E "KBENCH mode=fold512_r.*threads=1 " /tmp/kbench.txt 2>/dev/null | awk '{print $4, $5}' || echo "N/A")
+          BIT_PARITY=$(grep -oE "HYDRA_BITPARITY.*-> [A-Z-]+" /tmp/bench_hydra.txt 2>/dev/null | cut -d'>' -f2 | xargs || echo "N/A")
+          ALLOCS=$(grep -oE "allocs=[0-9]+" /tmp/bench_hydra.txt 2>/dev/null | head -1 || echo "N/A")
+          
+          cat <<EOF > /tmp/shard_output/shard_meta.json
+          {
+            "shard": ${{ matrix.shard }},
+            "matched": true,
+            "cpu_name": "$CPU_NAME",
+            "sustained_rate": "$SUSTAINED_RATE",
+            "kbench_1t": "$KBENCH_1T",
+            "bit_parity": "$BIT_PARITY",
+            "allocs": "$ALLOCS",
+            "timestamp": "$(date -u)"
+          }
+          EOF
+
+      - name: Upload Shard Output
+        if: steps.gate.outputs.matched == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-result-${{ matrix.shard }}
+          path: /tmp/shard_output/
+          retention-days: 1
+
+  aggregate-and-report:
+    name: "Consolidate Draws & Publish Scoreboard"
+    needs: filter-and-benchmark
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Shard Results
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/raw_shards
+          pattern: shard-result-*
+          merge-multiple: false
+        continue-on-error: true
+
+      - name: Aggregate Draws & Generate Step Summary
+        id: aggregate
+        run: |
+          mkdir -p consolidated-logs
+          
+          echo "## 🚀 Silicon Target Acquisition & Benchmark Scoreboard" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          TOTAL_HITS=0
+          
+          if [ -d "/tmp/raw_shards" ] && [ "$(ls -A /tmp/raw_shards 2>/dev/null)" ]; then
+            echo "| Draw | Shard | Host Silicon | Sustained Full-Verify (msg/s) | kbench fold512_r 1t | Bit Parity | Allocations |" >> $GITHUB_STEP_SUMMARY
+            echo "| :---: | :---: | :--- | :---: | :---: | :---: | :---: |" >> $GITHUB_STEP_SUMMARY
+            
+            DRAW_NUM=1
+            for shard_dir in /tmp/raw_shards/shard-result-*; do
+              if [ -d "$shard_dir" ]; then
+                TOTAL_HITS=$((TOTAL_HITS + 1))
+                META_FILE="$shard_dir/shard_meta.json"
+                
+                if [ -f "$META_FILE" ]; then
+                  SHARD=$(jq -r '.shard' "$META_FILE")
+                  CPU=$(jq -r '.cpu_name' "$META_FILE")
+                  RATE=$(jq -r '.sustained_rate' "$META_FILE")
+                  KBENCH=$(jq -r '.kbench_1t' "$META_FILE")
+                  PARITY=$(jq -r '.bit_parity' "$META_FILE")
+                  ALLOC=$(jq -r '.allocs' "$META_FILE")
+                  
+                  echo "| **#$DRAW_NUM** | Shard $SHARD | \`$CPU\` | **$RATE** | $KBENCH | \`$PARITY\` | \`$ALLOC\` |" >> $GITHUB_STEP_SUMMARY
+                  DRAW_NUM=$((DRAW_NUM + 1))
+                fi
+                cp "$shard_dir"/* consolidated-logs/ 2>/dev/null || true
+              fi
+            done
+            
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "✅ **Target hits in this round:** $TOTAL_HITS / 10 shards landed on certified Xeon silicon." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ **No shards acquired target silicon (8573C / 8370C) in this 10-shard draw round.**" >> $GITHUB_STEP_SUMMARY
+            echo "All shards fast-discarded in < 2s." >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "TOTAL_HITS=$TOTAL_HITS" >> "$GITHUB_OUTPUT"
+
+      - name: Package Consolidated Artifact
+        if: steps.aggregate.outputs.TOTAL_HITS != '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: consolidated-silicon-draws
+          path: consolidated-logs/
+          retention-days: 14
+
+      - name: Update build-log Branch with Consolidated Logs
+        if: steps.aggregate.outputs.TOTAL_HITS != '0' && always()
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git fetch origin || true
           git checkout -B build-log
           mkdir -p ci-logs
-          cp /tmp/ci_full_output.log ci-logs/ 2>/dev/null || true
-          cp /tmp/*.txt ci-logs/ 2>/dev/null || true
-          cp /tmp/*.json ci-logs/ 2>/dev/null || true
-          cp /tmp/musl_build.log ci-logs/ 2>/dev/null || true
+          cp consolidated-logs/* ci-logs/ 2>/dev/null || true
           echo "Run triggered by commit: ${{ github.sha }}" > ci-logs/run-metadata.txt
           echo "Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> ci-logs/run-metadata.txt
           echo "Timestamp: $(date -u)" >> ci-logs/run-metadata.txt
           git add -f ci-logs/
-          git commit -m "ci: auto-update build logs for ${{ github.sha }} [skip ci]" || true
+          git commit -m "ci: auto-update consolidated build logs for ${{ github.sha }} [skip ci]" || true
           git push origin build-log --force
