@@ -564,3 +564,22 @@ Verdicts:
    diet installment — the HFT_HYDRA_NULL diagnostic (protocol cost
    without the CRC kernel) on a CI arm is the candidate instrument;
    the draw-13+ fish continues for the ≥3-draw median.
+
+**Draw 13 (8573C healthy, run 37232593313, shard 32 — the diet's second
+healthy pricing; commit d969fab; waves 1-4, 46 jobs).** kbench 1t
+`r 32.79 / rv 32.62 / rd 32.41`; `2cpu_distinct` 66.69 GB/s. Arms:
+11b (diet) **945.5M** / 11y (B+C) 949.5M / 11x (pre-diet) 937.5M /
+11w (ring) **1,124.2M** / 11n 1,079.0M; bit-exact, allocs=0, all PASS.
+Verdicts:
+1. Diet vs pre-diet **+0.9%** (draw 12: +1.4%) — two healthy pricings,
+   same direction, both inside the ±3.4% noise: the diet is a
+   consistent NEUTRAL-POSITIVE; one more healthy draw completes the
+   3-draw diet median.
+2. Worker eval (w0/w1 cyc/span): diet 198.7/185.7, B+C 197.8/185.8,
+   pre-diet 205.0/191.7, ring 179.0/169.6 — the B+C strand again
+   −6..7 cyc; the ring residue ~+20 (draw 12: ~+24) — consistent, and
+   mildly supply-coupled (the residue shrinks on the stronger draw).
+3. The ring on this draw class: 1,124.2M — the strongest healthy-draw
+   ring number yet (the record-class 1.214B was kbench 34.86); the
+   diet/ring 0.841 vs prediet/ring 0.834 — the array-path residue is
+   the whole remaining story, exactly as draw 12 concluded.
