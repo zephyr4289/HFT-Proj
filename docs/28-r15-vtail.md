@@ -130,7 +130,7 @@ NOT claimed by this lever alone — the R15 queue's other two items (the
 RX per-frame entry build, the supply/ring rebalance) are the follow-ups
 this same branch carries.
 
-## 6. The first fleet verdicts (four target draws, 2026-10-04)
+## 6. The first fleet verdicts (five target draws, 2026-10-04)
 
 | # | Silicon | Gates | 11b (default) | vtail attribution | kbench 1t r/rv/rc |
 |---|---|---|---|---|---|
@@ -138,8 +138,9 @@ this same branch carries.
 | 2 | 8370C (healthy) | ALL PASS | 945.9M | 11t 915.1M — Δ = arm-position noise (identical configs: ±3.4% floor) | — |
 | 3 | 8370C (marginal) | R8 FAIL (−0.9%) | 889.2M | n/a | — |
 | 4 | **8573C** (deciding) | **ALL PASS** | **1,061.8M** (Front A 3.234B) | **11t 1,057.9M → vtail +0.37% (within noise)** | 30.00 / 29.99 / 29.39 |
+| 5 | 8370C (healthy, tight) | ALL PASS (Front A 2.781B) | 964.8M | 11t 969.4M / 11s 964.4M — identical-config arms within 0.5% | — |
 
-* **Bit-exactness: 4/4 draws, every arm** — `0x881639cead506f25`
+* **Bit-exactness: 5/5 draws, every arm** — `0x881639cead506f25`
   (the R15 stack's invariant held on every certified draw, including
   the arms that force each of the three ending paths).
 * **The 8573C draw (the deciding class):** a mid-band instance (kbench
