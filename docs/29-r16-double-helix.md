@@ -343,7 +343,7 @@ mitigation, and the kbench `2cpu_distinct` row prices each draw's pool.
 | — | Stage B unpack-free census-4 kernel | REFUTED (§2 — the zero-divisor proof) |
 | — | GFNI CRC hybrid, PMC instrumentation, ymm dual-chain | REFUTED earlier (Task 7 report verdicts) |
 
-## 9. Draw ledger (R16 stack, commit 8e95fe1 — run 37210099462)
+## 9. Draw ledger (R16 fishing pushes — each entry labels its stack; run IDs in the entries)
 
 **Draw 6 — 8573C, contended band (kbench `fold512_r` 1t = 29.61 GB/s; below
 the 30.0 healthy line, above the 29.0 discard line → marginal, does NOT
@@ -393,3 +393,40 @@ depth can bind). Record-class hosts are ~2% of shards — the fleet keeps
 fishing with the 11v arm armed. Consequence for the program ordering:
 **Route S (fabric efficiency 49% → 55%+) is promoted to the primary 2B
 lever** (docs/29 §6), with dfold as the record-class contingency.
+
+**Draw 8 (8573C noisy band, run 37211544099, commit 7d46650 — pre-R16b
+ring stack).** kbench 1t 28.02 (< 29.0 — a discard per R12) yet 11b
+1,177,988,640: the strongest 11b to that date, on the siblings-stacked
+ring. 2cpu_distinct measured 55.28 GB/s vs ~32.6 delivered by the
+SMT-stacked layout — the headroom the flip targets. Bit-exact, allocs=0.
+
+**Draw 9 (8370C healthy, same run).** 11b 943.2M — the healthy-8370C band
+(~945-965M), consistent with the class's kbench ceiling.
+
+**Draw 10 (8573C RECORD-CLASS, run 37219883871, shard 3 — the four-laws
+stack, commit 07e81d3).** kbench 1t: `fold512 34.86 / r 34.05 / rv 34.42
+/ rc 34.29 / rd 34.08`; `2cpu_distinct fold512_r` = **69.93 GB/s** — the
+largest pool any draw has ever shown (the record draw's class). Arms:
+11b (rxdesc+distinct) **957.3M** / 11e (prepatch off) 1,001.1M / 11f (w3)
+667.8M / 11g 975.3M / 11h 989.3M / 11i 981.5+963.7M / 11j 964.9M / 11k
+(siblings) 876.4M / 11l 946.9M / 11m 889.1M / **11n (HFT_DESC8=0 — which
+implies rxdesc off, the ring world) 1,214,220,732** / 11r (fold512 kernel)
+909.1M / 11s 972.6M / 11t 928.5M / 11u CRASHED (`ALLOC_DELTA=336` — the
+`worker_batch()` env parse; fixed in cc9664b) — arms 11v/11w never ran.
+Three verdicts:
+1. **R16d (the distinct flip) is vindicated on silicon**: within-draw,
+   11b vs 11k prices it at **+9.3%** (957 vs 876) on the rxdesc path; the
+   ring at 1.214B is the second-highest number ever recorded (record
+   1,234.8M @ kbench 34.90) and +10.8% over draw 7's siblings-stacked
+   1,096M on a comparable band — cross-draw, suggestive only.
+2. **R16b (rxdesc) is STILL −21.2% vs the ring on record-class silicon**
+   (957 vs 1,214, same draw, same placement) after the four coherence
+   laws (it was −30% on 8370C before them). Worker DIAG: 80%/74% busy,
+   res_waits=0 — busy-but-diluted: the array-protocol eval (chunk-grid
+   walk + record resolution + array desc reads + re-anchoring) costs ~11
+   points of delivered/pool efficiency (37.9% vs the ring's 48.0%).
+3. The §5.3 2B arithmetic assumed rxdesc ≥ ring — **refuted on both
+   observed draw classes**. The rxdesc worker-eval diet is now the
+   primary R16b follow-up; ring+distinct 1.214B is the current stack
+   ceiling. The cc9664b cascade re-rolls with 11u alive — 11v/11w will
+   finally price dfold and the rxdesc rollback on a fresh draw.
