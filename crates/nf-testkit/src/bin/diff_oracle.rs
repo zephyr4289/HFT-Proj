@@ -633,6 +633,14 @@ fn test_d11_crc_kernel_differential() {
         // SAFETY: fold512_available() verified the feature contract.
         let got = unsafe { rk.eval(b) };
         assert_eq!(want, got, "D11: reflect diverged at len={}", b.len());
+        // R15: pin ALL THREE ending paths explicitly (vend / vend+vtail /
+        // crc-chain), independent of the CPUID-conditional defaults.
+        let gv = unsafe { rk.eval_rpath3(b, true, false) };
+        assert_eq!(want, gv, "D11: reflect vend diverged at len={}", b.len());
+        let gvt = unsafe { rk.eval_rpath3(b, true, true) };
+        assert_eq!(want, gvt, "D11: reflect vtail diverged at len={}", b.len());
+        let gc = unsafe { rk.eval_rpath3(b, false, false) };
+        assert_eq!(want, gc, "D11: reflect crc-chain diverged at len={}", b.len());
         rchecked += 1;
     };
     for len in 0..=520usize {

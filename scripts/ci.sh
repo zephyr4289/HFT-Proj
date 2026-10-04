@@ -361,3 +361,20 @@ echo "=== 11s. R14: Vector Barrett Ending OFF (rollback attribution) ==="
 HFT_CRC_VEND=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_vend_off.txt
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_vend_off.txt
 grep -q "allocs=0" /tmp/bench_vend_off.txt
+
+echo "=== 11t. R15: Vectorized Tail (vtail) OFF (rollback attribution) ==="
+# The R15 vtail: lane 0's post-loop tail (the extra fold units + r0 bytes,
+# |R| = 8*(B%2)+tail bytes) is absorbed into the vend input field via the
+# length-indexed y-power tables G/KH/AT (scripts/r15_tail_derive.py; the
+# chain decomposition lane = Z_r(vend(V)) XOR rawCRC(R) with everything in
+# the ring GF(2)[y]/VM). The serial extract -> fold_extra chain -> 2-3
+# chained crc32 (~25-60 cyc for r >= 16) becomes 2 lift clmuls + <=9
+# INDEPENDENT data clmuls + vend_xmm (~22 cyc) — the r >= 16 gate skips
+# the cheap r <= 8 spans where the old path has no serial chain to
+# eliminate (the packed-loop evidence). 11b runs vtail ON by default
+# (SPR+); this arm runs the R14 tail shape for per-draw attribution (the
+# 11r/11s precedent). kbench's fold512_rv vs fold512_r rows give the
+# kernel-level split on the same draw.
+HFT_CRC_VTAIL=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_vtail_off.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_vtail_off.txt
+grep -q "allocs=0" /tmp/bench_vtail_off.txt

@@ -106,6 +106,94 @@ pub const VM: u64 = 0x1_05EC_76F1;
 /// (the solver's only verified solution).
 pub const VMU: u64 = 0x0105_FD79_BDAB_A560;
 
+// ── R15: the vtail (vectorized tail) constant tables ──────────────────────
+//
+// Derived, verified and emitted by `scripts/r15_tail_derive.py` (V1..V5;
+// the exhaustive 2419-body differential against the scalar kernel). The
+// algebra: with everything in the ring GF(2)[y]/VM and `vend(F) = F ⊗ VR0
+// (mod VM)` (the R14 ring-product law, re-verified for F < 2^95), the
+// lane-k value after the fold loop is
+//
+//   lane = Z_r(vend(V)) ⊕ rawCRC(R)     [chain decomposition]
+//        = (V_ring ⊗ G[r]) ⊗ VR0 ⊕ R̂ ⊗ y^(128-8r) ⊗ VR0
+//
+// so a modified field `F = (V_lo ⊗ G[r]) ⊕ (V_hi ⊗ KH[r]) ⊕ Σ data`
+// satisfies `vend(F) = lane` exactly, where R is the lane's remaining
+// byte stream (lane 0: the extra units + r0 bytes, |R| = 8·(B%2)+tail;
+// lanes 1..7 with B odd: the single unpaired word, r = 8) and each data
+// datum (qword or partial byte group) multiplies by `AT[t]`, t = the
+// bytes from the datum's start to the end of R. All constants are ≤ 32
+// bits, so every clmul product stays ≤ 95 bits — vend's Barrett-verified
+// input range. The KH table pre-reduces the hi-qword's structural y^64
+// factor (`KH[r] = G[r] ⊗ y^64 mod VM`), which is why KH[8] = 1: lanes
+// 1..7's hi qword passes through unmultiplied.
+
+/// `G[r] = Z_r(1) = y^(-8r) mod VM` — the r-byte zeros-update constant
+/// (the LFSR advance of a 1-seed by r zero bytes), r ∈ 0..=71.
+pub const VTAIL_G: [u32; 72] = [
+    0x00000001, 0xF26B8303, 0x13A29877, 0xA541927E, 0xDD45AAB8, 0x38116FAC,
+    0xEF306B19, 0x68032CC8, 0x493C7D27, 0xF43ED648, 0xCB567BA5, 0x9771F7C1,
+    0x3171D430, 0x30D23865, 0x54075546, 0x678EFD01, 0xF20C0DFE, 0x5FE4DC5F,
+    0x0F69022B, 0xB93B4CE7, 0x3743F7BD, 0x0D0A7DED, 0x5C15EEB4, 0x75D3F038,
+    0xBA4FC28E, 0x2E34CB9D, 0x2DAE840F, 0x5E3E92A0, 0xA2158B34, 0xF7DBCB25,
+    0x15BB4109, 0x78A7608D, 0x3DA6D0CB, 0x5A392B2F, 0x7EF48BD1, 0x21C69623,
+    0x33CCBBBC, 0xFF6571A2, 0x438FA020, 0x20FE017E, 0xDDC0152B, 0xB9E9E5F0,
+    0xF3D78690, 0x925B2B91, 0x6051243F, 0x6E9024B1, 0x401061EE, 0x4F08075C,
+    0x1C291D04, 0xC786BE02, 0xE1FCF649, 0x39283A86, 0xA46EF4AA, 0xC90DF36A,
+    0x0AEDB6A9, 0xDAF383DC, 0x9E4ADDF8, 0x79297D67, 0xB575DEF4, 0x34418DB4,
+    0x75BBA45B, 0xC8D9CA4C, 0x0CF00BA6, 0x84E6A245, 0x740EEF02, 0xE14F7E18,
+    0x9A66D0DE, 0x7F31385C, 0x1C19243B, 0xA976FBAE, 0x0E9A7C7A, 0x1A74E649,
+];
+/// `KH[r] = G[r] ⊗ y^64 mod VM` — lane-0's hi-qword lift constant (the
+/// pre-reduced structural y^64; KH[8] = 1 — lanes 1..7's hi qword is raw).
+pub const VTAIL_KH: [u32; 72] = [
+    0xA9CDDA0D, 0xBF818109, 0x780D5A4D, 0xFE2B5C35, 0x05EC76F1, 0x01000000,
+    0x00010000, 0x00000100, 0x00000001, 0xF26B8303, 0x13A29877, 0xA541927E,
+    0xDD45AAB8, 0x38116FAC, 0xEF306B19, 0x68032CC8, 0x493C7D27, 0xF43ED648,
+    0xCB567BA5, 0x9771F7C1, 0x3171D430, 0x30D23865, 0x54075546, 0x678EFD01,
+    0xF20C0DFE, 0x5FE4DC5F, 0x0F69022B, 0xB93B4CE7, 0x3743F7BD, 0x0D0A7DED,
+    0x5C15EEB4, 0x75D3F038, 0xBA4FC28E, 0x2E34CB9D, 0x2DAE840F, 0x5E3E92A0,
+    0xA2158B34, 0xF7DBCB25, 0x15BB4109, 0x78A7608D, 0x3DA6D0CB, 0x5A392B2F,
+    0x7EF48BD1, 0x21C69623, 0x33CCBBBC, 0xFF6571A2, 0x438FA020, 0x20FE017E,
+    0xDDC0152B, 0xB9E9E5F0, 0xF3D78690, 0x925B2B91, 0x6051243F, 0x6E9024B1,
+    0x401061EE, 0x4F08075C, 0x1C291D04, 0xC786BE02, 0xE1FCF649, 0x39283A86,
+    0xA46EF4AA, 0xC90DF36A, 0x0AEDB6A9, 0xDAF383DC, 0x9E4ADDF8, 0x79297D67,
+    0xB575DEF4, 0x34418DB4, 0x75BBA45B, 0xC8D9CA4C, 0x0CF00BA6, 0x84E6A245,
+];
+/// `AT[t] = y^(128-8t) mod VM` — the data constant for a datum (qword or
+/// partial byte group) with t bytes from its start to the end of the
+/// remaining stream R. Index 0 unused.
+pub const VTAIL_AT: [u32; 72] = [
+    0x00000000, 0xF838CD50, 0x51DDE21E, 0xBC77A5AA, 0xC915EA3B, 0xA9A3F760,
+    0x616F3095, 0xA738873B, 0xA9CDDA0D, 0xBF818109, 0x780D5A4D, 0xFE2B5C35,
+    0x05EC76F1, 0x01000000, 0x00010000, 0x00000100, 0x00000001, 0xF26B8303,
+    0x13A29877, 0xA541927E, 0xDD45AAB8, 0x38116FAC, 0xEF306B19, 0x68032CC8,
+    0x493C7D27, 0xF43ED648, 0xCB567BA5, 0x9771F7C1, 0x3171D430, 0x30D23865,
+    0x54075546, 0x678EFD01, 0xF20C0DFE, 0x5FE4DC5F, 0x0F69022B, 0xB93B4CE7,
+    0x3743F7BD, 0x0D0A7DED, 0x5C15EEB4, 0x75D3F038, 0xBA4FC28E, 0x2E34CB9D,
+    0x2DAE840F, 0x5E3E92A0, 0xA2158B34, 0xF7DBCB25, 0x15BB4109, 0x78A7608D,
+    0x3DA6D0CB, 0x5A392B2F, 0x7EF48BD1, 0x21C69623, 0x33CCBBBC, 0xFF6571A2,
+    0x438FA020, 0x20FE017E, 0xDDC0152B, 0xB9E9E5F0, 0xF3D78690, 0x925B2B91,
+    0x6051243F, 0x6E9024B1, 0x401061EE, 0x4F08075C, 0x1C291D04, 0xC786BE02,
+    0xE1FCF649, 0x39283A86, 0xA46EF4AA, 0xC90DF36A, 0x0AEDB6A9, 0xDAF383DC,
+];
+
+/// R15: the vectorized-tail master switch. `HFT_CRC_VTAIL=1|0` overrides;
+/// otherwise the default follows the vend class gate (the vtail replaces
+/// the vend path's scalar lane-0 continuation + the lanes-1..7 odd-word
+/// crc chain, so it only ever runs where vend runs — Intel SPR+ per the
+/// R14 draw evidence). Read once per span (OnceLock), never in a step
+/// loop. The kbench `fold512_rv` row forces it ON; `HFT_CRC_VTAIL=0` is
+/// the documented rollback (CI arm 11t).
+pub fn vtail_enabled() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| match std::env::var("HFT_CRC_VTAIL").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => vend_supported_cpu(),
+    })
+}
+
 /// Bodies shorter than this many bytes evaluate on the scalar kernel.
 pub const FOLD_MIN_LEN: usize = 192;
 
@@ -296,8 +384,10 @@ impl CrcKernel {
     /// R14: evaluate the REFLECT kernel with an explicit ENDING path — the
     /// kbench attribution twin (`fold512_r` runs the HFT_CRC_VEND default,
     /// i.e. the vector Barrett ending; `vend = false` forces the R13
-    /// crc-chain ending). Values identical on every input (the sweeps
-    /// assert it); only the ending's uop mix differs.
+    /// crc-chain ending). R15: the vtail axis rides `vtail_enabled()`
+    /// inside the forced path (HFT_CRC_VTAIL=0 pins the R14 tail shape).
+    /// Values identical on every input (the sweeps assert it); only the
+    /// ending's uop mix differs.
     ///
     /// # Safety
     /// Same feature contract as [`Self::eval`].
@@ -306,7 +396,25 @@ impl CrcKernel {
         match self {
             Self::Scalar => span_crc32c_8lane(body),
             Self::Fold512 => imp::span_fold_eval(body),
-            Self::Reflect => imp::span_fold_eval_r_forced(body, vend),
+            Self::Reflect => {
+                imp::span_fold_eval_r_forced(body, vend, vend && vtail_enabled())
+            }
+        }
+    }
+
+    /// R15: the FULL forced path — both the vend and vtail axes explicit
+    /// (the kbench attribution triple: `fold512_r` = vend/no-vtail (the
+    /// R14 shape), `fold512_rv` = vend/vtail (the R15 shape), `fold512_rc`
+    /// = crc-chain (the R13 rollback)). Values identical on every input.
+    ///
+    /// # Safety
+    /// Same feature contract as [`Self::eval`].
+    #[inline(always)]
+    pub unsafe fn eval_rpath3(&self, body: &[u8], vend: bool, vtail: bool) -> u64 {
+        match self {
+            Self::Scalar => span_crc32c_8lane(body),
+            Self::Fold512 => imp::span_fold_eval(body),
+            Self::Reflect => imp::span_fold_eval_r_forced(body, vend, vtail),
         }
     }
 }
@@ -1144,6 +1252,148 @@ pub(crate) mod imp {
         (_mm_extract_epi64(r, 1) as u64, _mm_extract_epi64(r, 0) as u64)
     }
 
+    /// R15: the vend ending in the xmm domain (one 128-bit field) — the
+    /// same Barrett structure as [`vend_zmm`], for lane 0's composed tail
+    /// field. Input must be ≤ 95 bits wide (the vend exactness range, the
+    /// same contract every vend input satisfies).
+    #[inline(always)]
+    unsafe fn vend_xmm(v: __m128i) -> u32 {
+        let kr0 = _mm_set1_epi64x(VR0 as i64);
+        let kh64 = _mm_set1_epi64x(VH64 as i64);
+        let kmu = _mm_set1_epi64x(VMU as i64);
+        let km = _mm_set1_epi64x(VM as i64);
+        let w = _mm_xor_si128(
+            _mm_clmulepi64_si128(v, kr0, 0x00),
+            _mm_clmulepi64_si128(v, kh64, 0x01),
+        );
+        let x = _mm_alignr_epi8(w, w, 4);
+        let p = _mm_clmulepi64_si128(x, kmu, 0x00);
+        let qh = _mm_alignr_epi8(p, p, 7);
+        let r = _mm_xor_si128(w, _mm_clmulepi64_si128(qh, km, 0x00));
+        let out = _mm_xor_si128(r, _mm_clmulepi64_si128(_mm_alignr_epi8(r, r, 4), km, 0x00));
+        _mm_cvtsi128_si32(out) as u32
+    }
+
+    /// R15 (vtail): finish one span with LANE 0's post-loop tail absorbed
+    /// into its vend input — no scalar lane-0 continuation, no store/reload
+    /// extract, no chained crc32. Lanes 1..7 keep the R14 vend shape
+    /// (the odd-word crc_u64 chaining is p1 work that runs PARALLEL to the
+    /// fold's p5 clmuls — absorbing it into the zmm states measured as a
+    /// local regression by moving it onto the saturated p5; the R14 shape
+    /// stands). See the table docs above for the algebra;
+    /// `scripts/r15_tail_derive.py` is the derivation + the exhaustive
+    /// 2419-body differential.
+    ///
+    /// Per span (typical span: B odd, tail ≈ 16, r = 24):
+    /// * lane 0: 2 lift clmuls + ≤9 independent data clmuls + `vend_xmm`
+    ///   (replacing the serial extract → fold_extra chain → 2-3 chained
+    ///   crc32 ≈ 15-25 serial cyc — the R15 target's ~15-20 cyc).
+    /// * r == 0 (len an exact 128-multiple): the old 2-crc ending (the
+    ///   vtail would only add uops — no tail to absorb).
+    /// * lanes 1..7: the R14 path verbatim.
+    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
+    unsafe fn finish_span_r_vtail(body: &[u8], st: FoldStates) -> u64 {
+        let len = body.len();
+        let p = body.as_ptr();
+        let blocks = len / 64;
+        let tail = len % 64;
+        let odd = blocks % 2 == 1;
+        // Lane 0's remaining stream length: the unpaired word (B odd) +
+        // the tail bytes. (wp >= 1 always — the FOLD_MIN_LEN gate.)
+        let r = 8 * (blocks % 2) + tail;
+
+        // ---- lane 0: F0 = (V0_lo ⊗ G[r]) ⊕ (V0_hi ⊗ KH[r]) ⊕ Σ data ----
+        // (r >= 16 by the dispatcher's gate — the serial fold_extra chain
+        // the vtail exists to eliminate.)
+        debug_assert!(r >= 16);
+        let v0 = _mm512_castsi512_si128(st.even);
+        let mut f0 = _mm_xor_si128(
+            _mm_clmulepi64_si128(v0, _mm_set1_epi64x(super::VTAIL_G[r] as i64), 0x00),
+            _mm_clmulepi64_si128(v0, _mm_set1_epi64x(super::VTAIL_KH[r] as i64), 0x01),
+        );
+        let mut t = r;
+        if odd {
+            // The unpaired word w = qword 0 of block B-1 (t = r).
+            // SAFETY: 64*(B-1)+8 <= len (block B-1 is full; B >= 3 by
+            // the FOLD_MIN_LEN gate).
+            let w = (p.add(64 * (blocks - 1)) as *const u64).read_unaligned();
+            f0 = _mm_xor_si128(
+                f0,
+                _mm_clmulepi64_si128(
+                    _mm_set_epi64x(0, w as i64),
+                    _mm_set1_epi64x(super::VTAIL_AT[t] as i64),
+                    0x00,
+                ),
+            );
+            t -= 8;
+        }
+        let mut base = 64 * blocks;
+        while t >= 8 {
+            // SAFETY: t >= 8 guarantees base+8 <= 64*B + tail = len.
+            let q = (p.add(base) as *const u64).read_unaligned();
+            f0 = _mm_xor_si128(
+                f0,
+                _mm_clmulepi64_si128(
+                    _mm_set_epi64x(0, q as i64),
+                    _mm_set1_epi64x(super::VTAIL_AT[t] as i64),
+                    0x00,
+                ),
+            );
+            t -= 8;
+            base += 8;
+        }
+        // The partial byte group (t = r mod 8 bytes): the LAST t bytes of
+        // the body, as the high t bytes of the u64 ending at len.
+        // SAFETY: len >= 192 > 8 (FOLD_MIN_LEN gate).
+        if t > 0 {
+            let v = ((p.add(len - 8) as *const u64).read_unaligned()) >> (64 - 8 * t);
+            f0 = _mm_xor_si128(
+                f0,
+                _mm_clmulepi64_si128(
+                    _mm_set_epi64x(0, v as i64),
+                    _mm_set1_epi64x(super::VTAIL_AT[t] as i64),
+                    0x00,
+                ),
+            );
+        }
+        let lane0 = vend_xmm(f0);
+
+        // ---- lanes 1..7: the R14 vend path verbatim ----
+        let mut lanes = [0u32; 8];
+        {
+            let mut e = [0u64; 8];
+            let mut o = [0u64; 8];
+            _mm512_storeu_si512(e.as_mut_ptr() as *mut _, vend_zmm(st.even));
+            _mm512_storeu_si512(o.as_mut_ptr() as *mut _, vend_zmm(st.odd));
+            for j in 1..4usize {
+                lanes[2 * j] = e[2 * j] as u32;
+            }
+            for j in 0..4usize {
+                lanes[2 * j + 1] = o[2 * j] as u32;
+            }
+        }
+        lanes[0] = lane0;
+        // Lanes 1..7: the odd-block last words (p1 crc chain, parallel to
+        // the fold's p5 work — the R14 economics).
+        if odd {
+            // SAFETY: 64*(B-1) + 8k + 8 <= len for k = 1..7 (block is full).
+            for k in 1..8usize {
+                let w = (p.add(64 * (blocks - 1) + 8 * k) as *const u64).read_unaligned();
+                lanes[k] = crc_u64(lanes[k], w);
+            }
+        }
+
+        // ---- FNV lane combine (identical to the scalar kernel) ----
+        let mut h: u64 = 0xcbf29ce484222325;
+        for c in lanes {
+            h ^= c as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h ^= len as u64 & 0xFFFF_FFFF;
+        h = h.wrapping_mul(0x100000001b3);
+        std::hint::black_box(h)
+    }
+
     /// R13: finish one span on the natural-domain states. The ending per
     /// lane is TWO chained `crc32` instructions over the state's qwords in
     /// natural order — `c = crc32_u64(crc32_u64(0, V_lo), V_hi)` — no
@@ -1157,7 +1407,35 @@ pub(crate) mod imp {
     /// store/reload round-trip with 2×(5 clmul + 2 alignr) in-register.
     #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
     unsafe fn finish_span_r(body: &[u8], st: FoldStates) -> u64 {
-        finish_span_r_inner(body, st, super::vend_enabled())
+        finish_span_r_inner3(body, st, super::vend_enabled(), super::vtail_enabled())
+    }
+
+    /// R15: the full attribution/rollback dispatch. `vend && vtail` takes
+    /// the vectorized-tail path (the default on SPR+); `vend` alone is the
+    /// R14 shape (the scalar lane-0 continuation + crc-chain odd words);
+    /// otherwise the R13 crc-chain ending.
+    ///
+    /// The vtail only engages when there is a serial tail chain to
+    /// eliminate: r = 8·(B%2) + tail ≥ 16 (the fold_extra unit chain).
+    /// For r ≤ 8 the old path's 2-3 chained crc32 (~17-21 cyc, no
+    /// fold_extra) beat the composed vend_xmm chain (~22 cyc) AND keep
+    /// p1 (not the fold-saturated p5) busy — the measured packed-loop and
+    /// sandbox-fabric evidence behind the gate.
+    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
+    unsafe fn finish_span_r_inner3(
+        body: &[u8],
+        st: FoldStates,
+        vend: bool,
+        vtail: bool,
+    ) -> u64 {
+        if vend && vtail {
+            let blocks = body.len() / 64;
+            let r = 8 * (blocks % 2) + body.len() % 64;
+            if r >= 16 {
+                return finish_span_r_vtail(body, st);
+            }
+        }
+        finish_span_r_inner(body, st, vend)
     }
 
     #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
@@ -1333,18 +1611,21 @@ pub(crate) mod imp {
 
     /// R14: the reflect kernel with an EXPLICIT ending path (the kbench
     /// attribution twin + the differential suite's pin of BOTH paths).
+    /// R15: `vtail` adds the third axis — `vend && vtail` runs the
+    /// vectorized-tail path, `vend && !vtail` the R14 shape, `!vend` the
+    /// R13 crc-chain ending.
     ///
     /// # Safety
     /// Same feature contract as [`span_fold_eval_r`].
     #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
-    pub unsafe fn span_fold_eval_r_forced(body: &[u8], vend: bool) -> u64 {
+    pub unsafe fn span_fold_eval_r_forced(body: &[u8], vend: bool, vtail: bool) -> u64 {
         if body.len() < FOLD_MIN_LEN {
             return span_crc32c_8lane(body);
         }
         let wp = body.len() / 64 / 2;
         // SAFETY: 128*wp <= len (feature contract + caller bounds).
         let st = fold_word_pairs_r(body.as_ptr(), wp);
-        finish_span_r_inner(body, st, vend)
+        finish_span_r_inner3(body, st, vend, vtail)
     }
 
     /// R13: the production two-span path on the natural-domain kernel —
@@ -1390,7 +1671,7 @@ pub(crate) mod imp {
     }
 
     #[inline(always)]
-    pub unsafe fn span_fold_eval_r_forced(body: &[u8], _vend: bool) -> u64 {
+    pub unsafe fn span_fold_eval_r_forced(body: &[u8], _vend: bool, _vtail: bool) -> u64 {
         span_crc32c_8lane(body)
     }
 
@@ -1548,10 +1829,18 @@ mod tests {
             assert_eq!(want, gr, "reflect diverged at len={}", body.len());
             // R14: BOTH ending paths on every body (vector Barrett + the
             // R13 crc-chain), independent of the HFT_CRC_VEND default.
-            let grv = unsafe { imp::span_fold_eval_r_forced(body, true) };
+            let grv = unsafe { imp::span_fold_eval_r_forced(body, true, false) };
             assert_eq!(want, grv, "reflect vend ending diverged at len={}", body.len());
-            let grc = unsafe { imp::span_fold_eval_r_forced(body, false) };
+            let grc = unsafe { imp::span_fold_eval_r_forced(body, false, false) };
             assert_eq!(want, grc, "reflect crc-chain ending diverged at len={}", body.len());
+            // R15: the vectorized-tail path (vend + vtail), independent of
+            // the HFT_CRC_VEND / HFT_CRC_VTAIL defaults.
+            let gvt = unsafe { imp::span_fold_eval_r_forced(body, true, true) };
+            assert_eq!(
+                want, gvt,
+                "reflect vtail diverged at len={}",
+                body.len()
+            );
             let (g2a, g2b) = unsafe { imp::span_fold_eval2(body, body) };
             assert_eq!(want, g2a, "eval2 primary diverged at len={}", body.len());
             assert_eq!(want, g2b, "eval2 mirror diverged at len={}", body.len());
@@ -1855,5 +2144,113 @@ mod tests {
                 "vend random"
             );
         }
+    }
+
+    /// R15: pin the vtail (vectorized-tail) tables from the ground up —
+    /// `scripts/r15_tail_derive.py` is the derivation; this re-derives
+    /// every entry independently at test time so a transcription typo in
+    /// any of the 216 constants cannot survive:
+    ///
+    /// 1. `G[r]` — the r-byte zeros-update of a 1-seed, computed through
+    ///    an independent table-driven reference (NOT the shipped kernel);
+    ///    plus the ring law `G[m] ⊗ y^(8m) == 1` (positive powers only).
+    /// 2. `KH[r]` — `G[r] ⊗ y^64 mod VM` (the pre-reduced structural
+    ///    y^64; KH[8] == 1 pins the lanes-1..7 shortcut).
+    /// 3. `AT[t]` — `y^(128-8t) mod VM` via the law `AT[t] ⊗ y^(8t) ==
+    ///    y^128` (all positive powers — no inverses anywhere).
+    #[test]
+    fn t_vtail_constants_derivation() {
+        // independent reflected-CRC32C table (same construction as the
+        // reference in t_vend_constants_derivation)
+        fn table() -> [u32; 256] {
+            let mut t = [0u32; 256];
+            for (i, e) in t.iter_mut().enumerate() {
+                let mut c = i as u32;
+                for _ in 0..8 {
+                    c = if c & 1 != 0 {
+                        (c >> 1) ^ 0x82F6_3B78
+                    } else {
+                        c >> 1
+                    };
+                }
+                *e = c;
+            }
+            t
+        }
+        static TABLE: std::sync::OnceLock<[u32; 256]> = std::sync::OnceLock::new();
+        let t = TABLE.get_or_init(table);
+        // 1. G[r]: the zeros-update of 1 by r bytes.
+        let mut c = 1u32;
+        for r in 0..72usize {
+            assert_eq!(c, VTAIL_G[r], "VTAIL_G[{r}] re-derivation");
+            c = (c >> 8) ^ t[(c & 0xFF) as usize];
+        }
+        // ring helpers (positive powers only)
+        fn clmul(a: u128, b: u128) -> u128 {
+            let mut r = 0u128;
+            let mut a = a;
+            let mut b = b;
+            while b != 0 {
+                if b & 1 != 0 {
+                    r ^= a;
+                }
+                a <<= 1;
+                b >>= 1;
+            }
+            r
+        }
+        fn rmul(a: u128, b: u128) -> u128 {
+            let mut v = clmul(a, b);
+            while v >= (1u128 << 32) {
+                let sh = (128 - v.leading_zeros()) - 33;
+                v ^= (VM as u128) << sh;
+            }
+            v
+        }
+        let y = |e: u32| -> u128 {
+            let mut r = 1u128;
+            let mut base = 2u128;
+            let mut e = e;
+            while e != 0 {
+                if e & 1 != 0 {
+                    r = rmul(r, base);
+                }
+                base = rmul(base, base);
+                e >>= 1;
+            }
+            r
+        };
+        // G[m] ⊗ y^(8m) == 1
+        for m in 1..72usize {
+            assert_eq!(
+                rmul(VTAIL_G[m] as u128, y(8 * m as u32)),
+                1,
+                "G[{m}] == y^(-8m)"
+            );
+        }
+        // 2. KH[r] == G[r] ⊗ y^64; the KH[8] == 1 anchor.
+        let y64 = y(64);
+        for r in 0..72usize {
+            assert_eq!(
+                VTAIL_KH[r] as u128,
+                rmul(VTAIL_G[r] as u128, y64),
+                "KH[{r}] == G[{r}] * y^64"
+            );
+        }
+        assert_eq!(VTAIL_KH[8], 1, "KH[8] anchor (lanes 1..7 raw hi qword)");
+        // 3. AT[t] ⊗ y^(8t) == y^128 (t >= 1), i.e. AT[t] == y^(128-8t);
+        //    plus the structural anchors AT[16] == 1 and AT[8] == y^64.
+        let y128 = y(128);
+        for t in 1..72usize {
+            assert_eq!(
+                rmul(VTAIL_AT[t] as u128, y(8 * t as u32)),
+                y128,
+                "AT[{t}] == y^(128-8t)"
+            );
+        }
+        assert_eq!(VTAIL_AT[16], 1, "AT[16] anchor");
+        assert_eq!(VTAIL_AT[8] as u128, y64, "AT[8] == y^64 anchor");
+        assert_eq!(VTAIL_G[8] as u128, VH64 as u128, "G[8] == VH64 anchor");
+        assert_eq!(VTAIL_G[16] as u128, VR0 as u128, "G[16] == VR0 anchor");
     }
 }

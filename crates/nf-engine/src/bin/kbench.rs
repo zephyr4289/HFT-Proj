@@ -87,6 +87,7 @@ fn main() {
     if fold512_available() {
         bench_1t("fold512", c0, mode_fold512);
         bench_1t("fold512_r", c0, mode_fold512_r);
+        bench_1t("fold512_rv", c0, mode_fold512_rv);
         bench_1t("fold512_rc", c0, mode_fold512_rc);
         bench_1t("fold512_r_pair", c0, mode_fold512_r_pair);
         bench_1t("fold512_eval2", c0, mode_fold512_eval2);
@@ -101,6 +102,7 @@ fn main() {
         if fold512_available() {
             bench_2t("fold512", "2cpu_distinct", a, b, mode_fold512);
             bench_2t("fold512_r", "2cpu_distinct", a, b, mode_fold512_r);
+            bench_2t("fold512_rv", "2cpu_distinct", a, b, mode_fold512_rv);
             bench_2t("fold512_rc", "2cpu_distinct", a, b, mode_fold512_rc);
             bench_2t("fold512_tri", "2cpu_distinct", a, b, mode_fold512_tri);
         }
@@ -110,6 +112,7 @@ fn main() {
         if fold512_available() {
             bench_2t("fold512", "2cpu_smt", a, b, mode_fold512);
             bench_2t("fold512_r", "2cpu_smt", a, b, mode_fold512_r);
+            bench_2t("fold512_rv", "2cpu_smt", a, b, mode_fold512_rv);
             bench_2t("fold512_rc", "2cpu_smt", a, b, mode_fold512_rc);
             bench_2t("fold512_tri", "2cpu_smt", a, b, mode_fold512_tri);
         }
@@ -306,11 +309,30 @@ fn mode_fold512_r(buf: &[u8], sink: &mut u64) -> usize {
     let mut acc = 0u64;
     while off + SPAN <= buf.len() {
         // SAFETY: main() only dispatches here when fold512_available().
-        // R14: forced vend ON — the controlled twin of mode_fold512_rc
-        // (vend OFF); the pair stays comparable on every silicon class
-        // regardless of the CPUID-conditional default (the fabric arms
-        // carry the default's per-class behavior).
-        acc ^= unsafe { kernel.eval_rpath(&buf[off..off + SPAN], true) };
+        // R14/R15: forced vend ON, vtail OFF — the R14 ending shape (the
+        // controlled twin of mode_fold512_rc (crc-chain) and
+        // mode_fold512_rv (vend + the R15 vectorized tail)); the triple
+        // stays comparable on every silicon class regardless of the
+        // CPUID-conditional defaults (the fabric arms carry the default's
+        // per-class behavior).
+        acc ^= unsafe { kernel.eval_rpath3(&buf[off..off + SPAN], true, false) };
+        off += SPAN;
+    }
+    *sink = acc;
+    off
+}
+
+/// R15: the reflect kernel with vend + the VECTORIZED TAIL forced ON —
+/// the new-production attribution row (vs `fold512_r` (the R14 shape)
+/// and `fold512_rc` (the R13 crc-chain) on the same draw). The GB/s
+/// delta IS the tail vectorization's diet, per runner class.
+fn mode_fold512_rv(buf: &[u8], sink: &mut u64) -> usize {
+    let kernel = CrcKernel::Reflect;
+    let mut off = 0usize;
+    let mut acc = 0u64;
+    while off + SPAN <= buf.len() {
+        // SAFETY: main() only dispatches here when fold512_available().
+        acc ^= unsafe { kernel.eval_rpath3(&buf[off..off + SPAN], true, true) };
         off += SPAN;
     }
     *sink = acc;
@@ -344,7 +366,7 @@ fn mode_fold512_rc(buf: &[u8], sink: &mut u64) -> usize {
     let mut acc = 0u64;
     while off + SPAN <= buf.len() {
         // SAFETY: main() only dispatches here when fold512_available().
-        acc ^= unsafe { kernel.eval_rpath(&buf[off..off + SPAN], false) };
+        acc ^= unsafe { kernel.eval_rpath3(&buf[off..off + SPAN], false, false) };
         off += SPAN;
     }
     *sink = acc;
