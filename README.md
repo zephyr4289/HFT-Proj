@@ -131,6 +131,9 @@ Every architectural phase, design thesis, failure ledger, and benchmark record i
 | [`docs/23-r10-assist.md`](docs/23-r10-assist.md) | **Phase 5b: R10 Assist Ring** (64-Slot Ring & 1.109B Sustained Draw) |
 | [`docs/24-r11-phase4.md`](docs/24-r11-phase4.md) | **Phase 6a: R11 Record** (1.2348B Sustained Record & Topology Resolution) |
 | [`docs/25-r12-ladder.md`](docs/25-r12-ladder.md) | **Phase 6b: R12 Compact Descriptors** (Desc8 Shipped, Ladder Ledger, R13) |
+| [`docs/26-r13-p5-wall.md`](docs/26-r13-p5-wall.md) | **Phase 7a: R13 Reflect Kernel** (The Natural-Domain Fold — the p5 Fix) |
+| [`docs/27-r14-vend.md`](docs/27-r14-vend.md) | **Phase 7b: R14 Vend Ending** (The Vector Barrett, Class-Conditional) |
+| [`docs/28-r15-vtail.md`](docs/28-r15-vtail.md) | **Phase 8a: R15 Vtail** (The Vectorized Lane-0 Tail, r≥16-Gated) |
 
 ---
 

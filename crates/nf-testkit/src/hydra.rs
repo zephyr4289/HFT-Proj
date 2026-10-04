@@ -450,7 +450,20 @@ fn prefetch_body(_ptr: *const u8) {}
 /// Worker batch budget: descriptors processed per outer-loop iteration
 /// (multiple of CHUNK so cursors stay chunk-aligned; two full chunks per
 /// iteration amortizes the result-space check and publishes).
-const WORKER_BATCH: u64 = 128;
+const WORKER_BATCH_DEFAULT: u64 = 128;
+
+/// R15: the worker drain granularity is sweepable (`HFT_WORKER_BATCH`, a
+/// multiple of CHUNK, clamped to [CHUNK, 4*CHUNK]) — the supply-side
+/// rebalance point (docs/27 §7): with the R13/R14/R15 kernel gains the
+/// workers drain faster and the batch shape that paced the result
+/// publications against main's ordered fold may want re-tuning per class.
+/// Read once per worker spawn, outside every window (the PfCfg precedent).
+fn worker_batch() -> u64 {
+    match std::env::var("HFT_WORKER_BATCH").ok().and_then(|v| v.parse::<u64>().ok()) {
+        Some(b) => (b / CHUNK).clamp(1, 4) * CHUNK,
+        None => WORKER_BATCH_DEFAULT,
+    }
+}
 
 /// Diagnostic (H5): when `HFT_HYDRA_NULL=1`, workers skip the CRC kernel
 /// and return a constant-derived value. This BREAKS bit parity by design —
@@ -606,6 +619,9 @@ fn lane_worker(
     // worker start, outside every window.
     let tri = std::env::var("HFT_WORKER_TRI").as_deref() == Ok("1");
     let pf = PfCfg::detect(kernel);
+    // R15: the drain granularity (HFT_WORKER_BATCH, the supply-side sweep —
+    // read once at worker start, outside every window).
+    let batch = worker_batch();
     let mut tail: u64 = 0; // desc cursor (worker-owned)
     let mut rhead: u64 = 0; // result cursor (worker-owned)
     // Prefetch cursor (GLOBAL desc positions; masked on access). Sprays
@@ -636,7 +652,7 @@ fn lane_worker(
             continue;
         }
         backoff = 0;
-        let n = (head - tail).min(WORKER_BATCH); // ≤ 128 descs (partial tails allowed)
+        let n = (head - tail).min(batch); // ≤ batch descs (partial tails allowed)
         stats.spans.fetch_add(n, Ordering::Relaxed);
         stats.batches.fetch_add(1, Ordering::Relaxed);
         let t_eval = std::time::Instant::now();

@@ -378,3 +378,18 @@ echo "=== 11t. R15: Vectorized Tail (vtail) OFF (rollback attribution) ==="
 HFT_CRC_VTAIL=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_vtail_off.txt
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_vtail_off.txt
 grep -q "allocs=0" /tmp/bench_vtail_off.txt
+
+echo "=== 11u. R15: Worker Drain Granularity Sweep (the supply-side rebalance) ==="
+# docs/27 §7's third queue item: with the R13/R14/R15 kernel gains the
+# workers drain faster, and the batch shape that paced the result
+# publications against main's ordered fold may want re-tuning per class.
+# HFT_WORKER_BATCH (a multiple of the 64-span CHUNK, clamped to [64, 256])
+# is read once per worker spawn; the default 128 is the R8 shape. Two
+# soaks per draw price the direction; the evidence ledger records whatever
+# the silicon says.
+HFT_WORKER_BATCH=64 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_wbatch_64.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_wbatch_64.txt
+grep -q "allocs=0" /tmp/bench_wbatch_64.txt
+HFT_WORKER_BATCH=256 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_wbatch_256.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_wbatch_256.txt
+grep -q "allocs=0" /tmp/bench_wbatch_256.txt
