@@ -117,9 +117,15 @@ still under saturation.
 | 2 | 37178509627 | 8573C | 30.88 | 1,072,927,201 | 1,069,539,994 | +0.32% | +0.3% |
 | 4 | 37180175441 | 8573C | 30.42 | 1,071,092,598 | (11n flake†) | — | +1.3% |
 | 3 | 37179164401 | 8370C | 27.24 | 946,693,317 | **974,739,551** | **−2.92%** | **−13.8%** |
+| 5† | 37181026479 | 8370C | 27.27 | 944,713,489 | 962,875,689 | −1.9% (positional) | −5.1% |
 
-† the documented pre-existing prepatch-race flake (docs/25 §5.1, open
-since R12) — struck the 11n arm before 11s could run; unrelated to vend.
+† draw 4's 11n failure: the documented pre-existing prepatch-race flake
+(docs/25 §5.1, open since R12) — struck the arm before 11s; unrelated to
+vend. Draw 5 ran POST-GATE (commit e4b4090): the 8370C's 11b and 11s BOTH
+ran the crc-chain ending — their −1.9% gap is arm-position variance, which
+retroactively prices draw 3's sustained penalty at ~−1% vend-specific (the
+kernel-level rows are the clean signal: −13.8% / −5.1%). The gate works:
+no class runs vend where it loses.
 
 **The reading:** on the record class (8573C — Sapphire Rapids, two 512-bit
 datapaths) vend wins the sustained fabric on every completed head-to-head
