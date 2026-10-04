@@ -583,3 +583,9 @@ Verdicts:
    ring number yet (the record-class 1.214B was kbench 34.86); the
    diet/ring 0.841 vs prediet/ring 0.834 — the array-path residue is
    the whole remaining story, exactly as draw 12 concluded.
+
+**Draw 14 (8370C noisy, run 37233779998, shard 8 — a discard per the
+class rule).** kbench 1t 27.59; 11b 668.8M / 11w (ring) 991.7M /
+11n 985.4M / 11x 656.3M / 11y 675.0M — the uniformly-low band for every
+array-path arm; bit-exact, allocs=0. No 8573C in this fish; the ≥3-draw
+diet median still wants its third healthy draw.
