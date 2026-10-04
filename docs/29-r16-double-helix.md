@@ -430,3 +430,33 @@ Three verdicts:
    primary R16b follow-up; ring+distinct 1.214B is the current stack
    ceiling. The cc9664b cascade re-rolls with 11u alive — 11v/11w will
    finally price dfold and the rxdesc rollback on a fresh draw.
+
+**Draw 11 (8573C healthy, run 37225938889, shard 5 — the cc9664b stack;
+the first FULL ladder: every arm 11b–11w ran green).** kbench 1t `r 30.16
+/ rv 30.09 / rd 30.03`; `2cpu_distinct fold512_r` = 60.87 GB/s. Arms: 11b
+(rxdesc+distinct) **842.1M** / 11e 888.8M / 11f (w3) 578.6M / 11g 840.9M
+/ 11h 855.3M / 11i 837.8+839.5M / 11j 838.8M / 11k (siblings) 750.4M /
+11l 795.8M / 11m 765.9M / 11n (ring) 1,055.0M / 11r (fold512) 790.8M /
+11s 837.0M / 11t 828.6M / 11u (wbatch 64/256) 802.6+834.0M / 11v (dfold)
+827.6M / 11w (rxdesc OFF — ring) **1,060.6M**. Verdicts:
+1. **rxdesc = −20.6% vs the ring on the healthy class** (842 vs 1,061,
+   same draw, same placement) — with draw 10's −21.2% on record-class,
+   the gap is a stable ~21% across classes. The four coherence laws
+   moved it from −30% (8370C) to −21%; the remainder is structural.
+2. **The gap decomposes 50/50** (worker DIAGs, ring vs rxdesc): the
+   ring runs 96.2% busy at ~189 cyc/span; rxdesc runs 86%/79% busy at
+   ~220 cyc/span. Half is WAKE-CADENCE IDLE (the batched drain still
+   idles between publication pairs — 2.7x more batch iterations than
+   the ring's, 620K-806K idle iters), half is PER-SPAN EVAL DILUTION
+   (record resolution + array desc reads + re-anchoring + the chunk-grid
+   walk ≈ +31 cyc/span). Also: assist_chunks 30,552 vs the ring's 384 —
+   the assist watermark fires 80x more under the array protocol's fold
+   lag (main-side load, currently not binding).
+3. dfold NEUTRAL again (−1.7%, inside noise) — its record-class case
+   remains open (draw 10's 11v never ran; the crash is now fixed).
+4. The flip prices at +12.2% on the rxdesc path this draw (842 vs 750).
+The build order that follows: **the rxdesc worker-eval diet** — (a) the
+wake cadence (deeper drain batches / fewer publication-pair idles), (b)
+the per-span resolution cost (record probes per span → per-chunk), (c)
+the re-anchor path. Target: ring parity first (1.06B healthy / 1.21B
+record-class), then the §5.3 pool arithmetic re-opens the 2B path.
