@@ -519,6 +519,9 @@ impl PfCfg {
         let (d_ahead, d_lines, d_burst) = match kernel {
             CrcKernel::Scalar => (2, 22, 24),
             CrcKernel::Fold512 => (2, 22, 24),
+            // R13: same L1 footprint class as the mirror fold (identical
+            // access pattern; only the per-step ALU mix changed).
+            CrcKernel::Reflect => (2, 22, 24),
         };
         Self {
             ahead: parse("HFT_PF_AHEAD", d_ahead),
