@@ -274,9 +274,12 @@ struct Mailbox {
     auto_pass: AtomicU64,
     /// The session the RX baked for `auto_pass` (ordering: see auto_pass).
     auto_session: UnsafeCell<[u8; 10]>,
-    /// Turn of the most recent EOS marker publication (Release after the
-    /// marker's filled store; the consumer's reset() uses it to free an
-    /// abandoned stream's publications).
+    /// Turn of the most recent EOS marker publication (u64::MAX before
+    /// the first marker lands; Release after the marker's filled store
+    /// and BEFORE the rx_turn store). reset_pass() loads the pair
+    /// rx_turn-THEN-auto_eos_turn, so any rx_turn that includes the
+    /// marker is observed together with the marker itself — the unstick
+    /// ceiling can never lag the frees it is about to issue.
     auto_eos_turn: AtomicU64,
     /// The RX's live publication cursor (turns published so far; one
     /// Release store per publication). The consumer's auto-reset uses it
@@ -867,6 +870,14 @@ pub struct PipelinedReplayTransport {
     cur: Option<u64>,
     /// Resets issued (matches the RX thread's served count).
     resets: u64,
+    /// R16b: the consumer sits exactly at a pass boundary — the LAST
+    /// next_batch() consumed an EOS marker. reset_pass() samples it to
+    /// tell a clean end-of-pass (nothing of the abandoned pass remains
+    /// in flight — the unstick must free NOTHING; everything published
+    /// past the cursor belongs to the NEXT pass) from a mid-pass abandon
+    /// (the abandoned pass's in-flight tail MUST be freed, or the RX
+    /// stalls NBUF buffers in and the advance never completes).
+    at_eos: bool,
 }
 
 impl PipelinedReplayTransport {
@@ -948,7 +959,7 @@ impl PipelinedReplayTransport {
             auto_fn: sess_fn,
             auto_pass: AtomicU64::new(0),
             auto_session: UnsafeCell::new(session),
-            auto_eos_turn: AtomicU64::new(0),
+            auto_eos_turn: AtomicU64::new(u64::MAX),
             rx_turn: AtomicU64::new(0),
             rx_stats: RxStats::zeroed(),
             cons_stats: ConsStats::zeroed(),
@@ -976,6 +987,7 @@ impl PipelinedReplayTransport {
             turn: 0,
             cur: None,
             resets: 0,
+            at_eos: false,
         }
     }
 
@@ -1071,6 +1083,43 @@ impl PipelinedReplayTransport {
             self.mb.freed[(t & NBUF_MASK) as usize].fetch_add(1, Ordering::Release);
         }
         self.resets += 1;
+        // R16b: a clean end-of-pass and a mid-pass abandon need OPPOSITE
+        // unstick policies, and `last_eos` alone cannot tell them apart —
+        // the stale marker of the ALREADY-DRAINED pass k−1 and the marker
+        // of the pass being abandoned k both read as "last EOS". The
+        // consumer KNOWS which shape it is in: it consumed the abandoned
+        // pass's marker iff its last next_batch returned false.
+        //
+        // CLEAN END: the cursor already sits past the marker; every
+        // publication in flight belongs to `pass`. The unstick must free
+        // NOTHING. (The R16b short-pass bug: this loop freed to rx_turn —
+        // the ap-read/rx_turn-read race let it free the NEXT pass's
+        // in-flight head, the consumer resumed mid-pass and the pass
+        // verified short: measured one pass in ~25k at 360,068/505,849.)
+        //
+        // MID-PASS ABANDON (incl. the never-consumed construction pass):
+        // the abandoned pass's tail is still in flight and MUST be freed
+        // or the RX stalls NBUF (=16) buffers in — a pass is thousands of
+        // turns, so freezing the unstick here deadlocks the advance.
+        let clean_end = self.at_eos;
+        self.at_eos = false;
+        // The free CEILING: the abandoned pass's EOS marker turn + 1 —
+        // free THROUGH the marker (its buffer free releases the RX's
+        // advance wait), never beyond it (the next pass's publications
+        // must survive for the consumer's exact-match walk). On a clean
+        // end the marker was the last consumed turn, so the ceiling is
+        // simply self.turn. On a mid-pass abandon it starts UNBOUNDED
+        // (everything in flight belongs to the abandoned pass) and LOCKS
+        // at the marker the moment the RX lands it: `last_eos >=
+        // self.turn` proves the marker in flight is the abandoned pass's
+        // own — the RX cannot publish beyond a marker whose buffer it is
+        // still waiting to have freed (the advance gate), and this loop's
+        // cursor has not freed it yet. The lock cannot fire late: the RX
+        // stores auto_eos_turn BEFORE rx_turn, and the loads below read
+        // rx_turn BEFORE auto_eos_turn — any rt that includes the marker
+        // is read together with (or after) the marker, so the lock lands
+        // in the very iteration whose free loop would first cross it.
+        let mut cap: u64 = if clean_end { self.turn } else { u64::MAX };
         let mut backoff = 0u32;
         loop {
             let ap = self.mb.auto_pass.load(Ordering::Acquire);
@@ -1090,17 +1139,27 @@ impl PipelinedReplayTransport {
                 );
                 break;
             }
-            // Unstick: free every published-but-unconsumed turn. In the
-            // steady shape this range is empty — the consumer's turn
-            // already sits past the EOS marker. In a mid-pass abandon it
-            // grows as the RX publishes the rest of the abandoned pass,
-            // releasing the RX's advance wait the moment its EOS marker
-            // lands. The park below is TIMED: the RX's in-flight
-            // publications bump `pub_wake`, not `wake`, so a plain park
-            // here could sleep through the frees the RX is waiting for
-            // (lost-wakeup deadlock — the multi-pass test caught it).
+            // Unstick: free the abandoned pass's published-but-unconsumed
+            // turns, up to the ceiling. In the steady (drained-to-EOS)
+            // shape the ceiling equals self.turn — the loop is empty by
+            // construction and the next pass's head is untouchable. In a
+            // mid-pass abandon it releases the RX's buffer-free wait turn
+            // by turn; the marker's own free then releases the advance.
+            // The park below is TIMED: the RX's in-flight publications
+            // bump `pub_wake`, not `wake`, so a plain park here could
+            // sleep through the frees the RX is waiting for (lost-wakeup
+            // deadlock — the multi-pass test caught it).
             let rt = self.mb.rx_turn.load(Ordering::Acquire);
-            while self.turn < rt {
+            let last_eos = self.mb.auto_eos_turn.load(Ordering::Acquire);
+            if cap == u64::MAX && last_eos != u64::MAX && last_eos >= self.turn {
+                // The abandoned pass's marker just landed — lock the
+                // ceiling at its turn + 1. (u64::MAX is the
+                // never-published sentinel: the construction pass
+                // mid-render.)
+                cap = last_eos + 1;
+            }
+            let stop = rt.min(cap);
+            while self.turn < stop {
                 self.mb.freed[(self.turn & NBUF_MASK) as usize]
                     .fetch_add(1, Ordering::Release);
                 self.turn += 1;
@@ -1179,8 +1238,15 @@ impl PipelinedReplayTransport {
             self.mb.freed[i].fetch_add(1, Ordering::Release);
             self.mb.wake.fetch_add(1, Ordering::Release);
             futex_wake(&self.mb.wake);
+            // R16b: the consumer now sits exactly at the pass boundary —
+            // reset_pass's clean-end discriminator (see at_eos).
+            self.at_eos = true;
             return false;
         }
+        // A data batch — any pass-boundary position is stale (the flag
+        // always reflects the LAST next_batch call, so a stray consume
+        // after a false can never poison the next reset_pass).
+        self.at_eos = false;
         self.cur = Some(t);
         true
     }

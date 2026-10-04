@@ -881,6 +881,10 @@ fn lane_worker_rxdesc(
         .store(crate::affinity::current_cpu() as u64, Ordering::Relaxed);
     let null = null_mode();
     let pf = PfCfg::detect(kernel);
+    // The drain batch (read ONCE at worker start — outside every window;
+    // worker_batch() parses an env var, which ALLOCATES. The first 11u
+    // shard caught the per-iteration call as an ALLOC_DELTA violation).
+    let wbatch = worker_batch();
     // Result cursor — per-LANE lifetime, continuing across generations
     // (the fresh sink's fold starts from the lane's res_tail, exactly as
     // the ring protocol's continuation).
@@ -995,7 +999,6 @@ fn lane_worker_rxdesc(
         // coherence traffic (the first 8370C draw measured the per-chunk
         // wake shape at a 30% regression: the polled line ping-ponged at
         // the publication rate).
-        let wbatch = worker_batch();
         let mut n_total: u64 = 0;
         let t_eval = std::time::Instant::now();
         // Result-space check: once per batch (n_total ≤ wbatch ≤ 4*CHUNK;

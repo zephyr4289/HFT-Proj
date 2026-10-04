@@ -241,6 +241,32 @@ worst case):
    deep-spin, productive) with the assist watermark (2048: convert the
    lead to in-window CRC) firing first — pending_max dropped to 4,817
    and the sandbox went from −20% to +18-20% vs the ring.
+8. **THE PASS-BOUNDARY UNSTICK CEILING** (pipeline.rs `reset_pass`): the
+   auto-advance unstick must NEVER free beyond the abandoned pass's EOS
+   marker, and the marker state alone cannot decide the policy — the
+   stale marker of the already-drained pass k−1 and the unconsumed
+   marker of the abandoned pass k read identically in `auto_eos_turn`.
+   The consumer's own boundary flag (`at_eos`, set when its last
+   `next_batch` consumed a marker) is the discriminator. CLEAN END:
+   free nothing — every publication past the cursor belongs to the next
+   pass. (The bug: freeing to `rx_turn` raced the RX's bake — the
+   ap-read/rx_turn-read window let the unstick free the NEXT pass's
+   in-flight head, the consumer resumed mid-pass, and the pass verified
+   short at 360,068/505,849 — measured once in ~25k passes on the
+   first Double Helix draw.) MID-PASS ABANDON (incl. the never-consumed
+   construction pass): free the in-flight tail — a frozen unstick
+   deadlocks (the RX stalls NBUF=16 buffers in, thousands of turns from
+   the marker) — but LOCK the ceiling at the marker the moment it lands
+   (`last_eos >= self.turn` proves it is the abandoned pass's own: the
+   RX cannot publish past a marker whose buffer it awaits). The lock
+   cannot fire late: the RX stores `auto_eos_turn` BEFORE `rx_turn`,
+   and the consumer loads `rx_turn` BEFORE `auto_eos_turn` — any
+   rx_turn that includes the marker is observed together with the
+   marker, in the very iteration whose free loop would first cross it.
+9. **ENV PARSING IS ALLOCATION**: `worker_batch()` parses an env var —
+   per-iteration calls inside the worker loop sit inside every measured
+   window. The first 11u shard caught it as an `ALLOC_DELTA` violation;
+   the read is hoisted to worker start (outside all windows).
 
 Rollback: `HFT_RXDESC=0` (CI arm 11w; the default IS the new path).
 Attribution: the `R16B_RXDESC_VERDICT rx_fixes=... assist_chunks=...`
