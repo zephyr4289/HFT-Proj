@@ -345,3 +345,19 @@ print('ALL CONSTRAINTS PASSED')
 PYEOF
 
 echo "=== ALL CHECKS PASSED SUCCESSFULLY ==="
+
+echo "=== 11s. R14: Vector Barrett Ending OFF (rollback attribution) ==="
+# The R14 ending diet: the reflect kernel's per-span ending replaces the
+# 16 chained crc32 u64 instructions + their store/reload round-trip with
+# an in-register vector Barrett (per zmm: 5 clmul + 2 vpalignr — the
+# cross-qword byte shifts 32/56/32 are the unique byte-aligned triple that
+# closes exactly; constants VR0/VH64/VM/VMU derived + basis-exhaustively
+# pinned by t_vend_constants_derivation, docs/27). The real-mix span pays
+# ~93 cyc/span over the packed loop's ~91 (endings + supply + ring, the
+# R13 record draw's worker telemetry) — this lever attacks the endings'
+# share. 11b runs vend ON by default; this arm runs the R13 crc-chain
+# ending for per-draw fabric attribution. kbench's fold512_r vs fold512_rc
+# rows give the kernel-level split on the same draw.
+HFT_CRC_VEND=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_vend_off.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_vend_off.txt
+grep -q "allocs=0" /tmp/bench_vend_off.txt
