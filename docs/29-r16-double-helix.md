@@ -204,7 +204,11 @@ hold only later chunks there). The straddling window boundary (the pass
 span count is not chunk-aligned) seals a partial inline chunk and the
 next window's open re-claims the continuation.
 
-Three hard-won protocol laws, each caught by the parity suites:
+Seven hard-won protocol laws — the first three from the parity suites,
+the last four from the FIRST FLEET DRAW's attribution (an 8370C where
+every rxdesc arm ran ~30% under the ring arms; each fix verified by the
+local A/B, which ended +18-20% OVER the ring on the sandbox's 1-worker
+worst case):
 1. **The gen-activation clear**: sink CONSTRUCTION order does not match
    consumption order (the sustained bench builds its main sink before
    its ref sink) — marks must clear at the first window OPEN, not at
@@ -217,6 +221,26 @@ Three hard-won protocol laws, each caught by the parity suites:
    publishes BEYOND them — the fold must not drain the lane while
    `fold_pos` sits inside a marked chunk (the ring protocol never had
    later chunks' results ahead of the cursor).
+4. **The publication cadence is the chunk**: publishing spans_ready per
+   emission batch (≤32 spans) while the worker polls per iteration made
+   the shared line ping-pong at MHz rates — main's Release stores
+   stalled on the coherence traffic. One publish per CHUNK (the ring's
+   per-chunk head-store cadence).
+5. **The worker drains in batches**: one chunk per wake made the worker
+   idle between every pair of publications; the yield-escalating spin
+   then churned the runqueue (3.9M yields/worker measured). The batched
+   drain (WORKER_BATCH spans per wake, one res publish) + the deep
+   pause-bounded spin (yield only after ~100µs of true idleness).
+6. **The prefetch spray keeps the ring's PER-SPAN cadence**: a
+   batch-level spray issued 24 lines per 128 spans — 128x too slow —
+   and the eval ran memory-stalled at ~45% of the kernel ceiling.
+7. **FLOW CONTROL RETURNS, EXPLICITLY**: the ring's desc-ring fullness
+   was pacing main to the fold (the R7 invariance's own law); without
+   it the fold lagged 87,936 spans and 61% of the run burned in the
+   array-reuse gate's spin. The hard pending pace (8192 spans: fold +
+   deep-spin, productive) with the assist watermark (2048: convert the
+   lead to in-window CRC) firing first — pending_max dropped to 4,817
+   and the sandbox went from −20% to +18-20% vs the ring.
 
 Rollback: `HFT_RXDESC=0` (CI arm 11w; the default IS the new path).
 Attribution: the `R16B_RXDESC_VERDICT rx_fixes=... assist_chunks=...`

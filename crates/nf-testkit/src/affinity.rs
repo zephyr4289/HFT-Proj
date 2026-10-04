@@ -559,3 +559,23 @@ pub fn polite_spin(iters: &mut u32) {
     }
     *iters += 1;
 }
+
+/// R16b: the DEEP pause spin — the array protocol's work arrives in
+/// chunk-granule publications (a ~µs-scale cadence). The fast yield
+/// escalation above was tuned for the ring protocol's rare idle laps;
+/// at the array cadence it degenerated into a runqueue-churning yield
+/// storm (measured: 3.9M yields per worker on the first 8370C draw —
+/// every subsequent wake paid scheduler latency, and the polled
+/// spans_ready line ping-ponged at MHz rates). Pause bursts up to 256
+/// (~9µs), yielding only after ~20 laps (~100µs of true idleness).
+pub fn polite_spin_deep(iters: &mut u32) {
+    if *iters < 20 {
+        let n = 1u32 << (*iters).min(8);
+        for _ in 0..n {
+            std::hint::spin_loop();
+        }
+    } else {
+        std::thread::yield_now();
+    }
+    *iters += 1;
+}

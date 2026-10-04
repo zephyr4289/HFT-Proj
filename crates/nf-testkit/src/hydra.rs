@@ -983,34 +983,29 @@ fn lane_worker_rxdesc(
                 return;
             }
             stats.idle_iters.fetch_add(1, Ordering::Relaxed);
-            crate::affinity::polite_spin(&mut backoff);
+            // R16b: the DEEP pause spin (the chunk-granule publication
+            // cadence makes the fast-yield escalation a runqueue storm).
+            crate::affinity::polite_spin_deep(&mut backoff);
             continue;
         }
         backoff = 0;
-        // The chunk containing `eval` (mid-chunk resume: a partially
-        // published chunk is continued, not restarted).
-        let chunk = eval / CHUNK;
-        debug_assert_eq!(chunk % n_lanes, lane_idx, "eval cursor left the lane grid");
-        // Inline-claimed chunk? The claim is decided at the chunk's open,
-        // before any of its spans are published — by the time we can see
-        // the chunk, its state byte is final.
-        if eval == chunk * CHUNK && rx.is_inline(chunk) {
-            eval = (chunk + n_lanes) * CHUNK;
-            continue;
-        }
-        let chunk_hi = ((chunk + 1) * CHUNK).min(ready);
-        let n = chunk_hi - eval;
-        stats.spans.fetch_add(n, Ordering::Relaxed);
-        stats.batches.fetch_add(1, Ordering::Relaxed);
+        // R16b: drain up to `wbatch` spans across THIS lane's chunks in
+        // one iteration — the ring protocol's batch shape. One poll + one
+        // result publish per wake amortizes the spans_ready/res-ring
+        // coherence traffic (the first 8370C draw measured the per-chunk
+        // wake shape at a 30% regression: the polled line ping-ponged at
+        // the publication rate).
+        let wbatch = worker_batch();
+        let mut n_total: u64 = 0;
         let t_eval = std::time::Instant::now();
-        // Result-space check: once per chunk (the per-chunk publish keeps
-        // in-flight ≤ RES_CAP - CHUNK; defensive spin as in the ring
-        // worker — the fold's drain frees space).
+        // Result-space check: once per batch (n_total ≤ wbatch ≤ 4*CHUNK;
+        // the same bound class as the ring worker — the fold's drain
+        // frees space).
         {
             let mut rb = 0u32;
             loop {
                 let rt = lane.res_tail.load(Ordering::Acquire);
-                if rhead.saturating_sub(rt) + n <= (RES_CAP as u64) - CHUNK {
+                if rhead.saturating_sub(rt) + wbatch <= (RES_CAP as u64) - CHUNK {
                     break;
                 }
                 if shutdown.load(Ordering::Acquire) {
@@ -1020,85 +1015,125 @@ fn lane_worker_rxdesc(
                 crate::affinity::polite_spin(&mut rb);
             }
         }
-        // Prefetch spray: advance the persistent cursor over THIS lane's
-        // sequence until it covers pf.ahead spans beyond the eval
-        // position (bounded by ready — entries beyond it are unwritten).
-        if pf.lines > 0 && pf.burst > 0 {
-            if pf_gid < eval {
-                pf_gid = eval;
-                pf_line = 0;
-                pf_slot = rec_slot;
-                pf_base = rec_base;
-            }
-            let target = eval + pf.ahead + 1;
-            let mut issued = 0usize;
-            while pf_gid < target && pf_gid < ready && issued < pf.burst {
-                let c = pf_gid / CHUNK;
-                if c % n_lanes != lane_idx {
-                    // Jump to this lane's next chunk in the grid.
-                    let skip = n_lanes - ((c % n_lanes) + n_lanes - lane_idx) % n_lanes;
-                    pf_gid = (c + skip) * CHUNK;
-                    pf_line = 0;
-                    continue;
-                }
-                if rx.is_inline(c) {
-                    pf_gid = (c + n_lanes) * CHUNK;
-                    pf_line = 0;
-                    continue;
-                }
-                resolve_rec(&rx, gen, &mut pf_slot, &mut pf_base, pf_gid);
-                let w = rx.get_arr(pf_slot, (pf_gid - pf_base) as usize);
-                let (off, dlen) = rxdesc_unpack_span(w);
-                let dptr = blob_base.wrapping_add(off as u64);
-                let span_lines = (((dlen as usize) + 63) >> 6).min(pf.lines);
-                let end = span_lines.min(pf_line + (pf.burst - issued));
-                // SAFETY: prefetch never faults and never dereferences;
-                // the entry is published (below ready).
-                for l in pf_line..end {
-                    prefetch_line(dptr as *const u8, l);
-                }
-                issued += end - pf_line;
-                if end >= span_lines {
-                    pf_gid += 1;
-                    pf_line = 0;
-                } else {
-                    pf_line = end;
-                }
-            }
-        }
-        // Evaluate + buffer the chunk's results, then publish with ONE
+        // Evaluate + buffer the batch's results, then publish with ONE
         // Release store (slot writes stay invisible until the store).
-        // SAFETY: res slots in [rhead, rhead+n) are owned by this worker.
+        // SAFETY: res slots in [rhead, rhead+n_total) are owned by this
+        // worker (the space check above bounded the batch).
         let res_slots = lane.res_slots();
         let mut nres: u64 = 0;
-        let mut gid = eval;
-        while gid < chunk_hi {
-            resolve_rec(&rx, gen, &mut rec_slot, &mut rec_base, gid);
-            let w = rx.get_arr(rec_slot, (gid - rec_base) as usize);
-            let (off, dlen) = rxdesc_unpack_span(w);
-            // SAFETY: the entry was published by the sink's ready store
-            // (Acquire above); the body slice per the HydraLane contract
-            // — immutable bytes, valid until the owning pass's drain.
-            let value = if null {
-                // Diagnostic: constant work, wrong value by design.
-                (dlen as u64) | (gid << 32)
-            } else {
-                let body = unsafe {
-                    std::slice::from_raw_parts(blob_base.wrapping_add(off as u64) as *const u8, dlen as usize)
+        while n_total < wbatch && eval < ready {
+            // The chunk containing `eval` (mid-chunk resume: a partially
+            // published chunk is continued, not restarted).
+            let chunk = eval / CHUNK;
+            debug_assert_eq!(chunk % n_lanes, lane_idx, "eval cursor left the lane grid");
+            // Inline-claimed chunk? The claim is decided at the chunk's
+            // open, before any of its spans are published — by the time
+            // we can see the chunk, its state byte is final.
+            if eval == chunk * CHUNK && rx.is_inline(chunk) {
+                eval = (chunk + n_lanes) * CHUNK;
+                continue;
+            }
+            let chunk_hi = ((chunk + 1) * CHUNK).min(ready);
+            let mut gid = eval;
+            while gid < chunk_hi && n_total < wbatch {
+                // Prefetch spray — THE RING PROTOCOL'S CADENCE: up to
+                // pf.burst lines issued PER EVALUATED SPAN, keeping the
+                // cursor pf.ahead spans beyond the eval position (the
+                // first 8370C draw's batch-level spray was 128x too slow
+                // — the bodies arrived as demand loads and the eval ran
+                // at ~45% of the kernel ceiling, memory-stalled).
+                if pf.lines > 0 && pf.burst > 0 {
+                    if pf_gid < gid {
+                        pf_gid = gid;
+                        pf_line = 0;
+                        pf_slot = rec_slot;
+                        pf_base = rec_base;
+                    }
+                    let target = gid + pf.ahead + 1;
+                    let mut issued = 0usize;
+                    while pf_gid < target && pf_gid < ready && issued < pf.burst {
+                        let c = pf_gid / CHUNK;
+                        if c % n_lanes != lane_idx {
+                            // Jump to this lane's next chunk in the grid.
+                            let skip =
+                                n_lanes - ((c % n_lanes) + n_lanes - lane_idx) % n_lanes;
+                            pf_gid = (c + skip) * CHUNK;
+                            pf_line = 0;
+                            continue;
+                        }
+                        if rx.is_inline(c) {
+                            pf_gid = (c + n_lanes) * CHUNK;
+                            pf_line = 0;
+                            continue;
+                        }
+                        resolve_rec(&rx, gen, &mut pf_slot, &mut pf_base, pf_gid);
+                        let w = rx.get_arr(pf_slot, (pf_gid - pf_base) as usize);
+                        let (off, dlen) = rxdesc_unpack_span(w);
+                        let dptr = blob_base.wrapping_add(off as u64);
+                        let span_lines = (((dlen as usize) + 63) >> 6).min(pf.lines);
+                        let end = span_lines.min(pf_line + (pf.burst - issued));
+                        // SAFETY: prefetch never faults and never
+                        // dereferences; the entry is published (below
+                        // ready).
+                        for l in pf_line..end {
+                            prefetch_line(dptr as *const u8, l);
+                        }
+                        issued += end - pf_line;
+                        if end >= span_lines {
+                            pf_gid += 1;
+                            pf_line = 0;
+                        } else {
+                            pf_line = end;
+                        }
+                    }
+                }
+                resolve_rec(&rx, gen, &mut rec_slot, &mut rec_base, gid);
+                let w = rx.get_arr(rec_slot, (gid - rec_base) as usize);
+                let (off, dlen) = rxdesc_unpack_span(w);
+                // SAFETY: the entry was published by the sink's ready
+                // store (Acquire above); the body slice per the
+                // HydraLane contract — immutable bytes, valid until the
+                // owning pass's drain.
+                let value = if null {
+                    // Diagnostic: constant work, wrong value by design.
+                    (dlen as u64) | (gid << 32)
+                } else {
+                    let body = unsafe {
+                        std::slice::from_raw_parts(
+                            blob_base.wrapping_add(off as u64) as *const u8,
+                            dlen as usize,
+                        )
+                    };
+                    // SAFETY: feature contract verified at spawn.
+                    unsafe { kernel.eval(body) }
                 };
-                // SAFETY: feature contract verified at spawn.
-                unsafe { kernel.eval(body) }
-            };
-            debug_assert!(gid <= u32::MAX as u64, "span id exceeds u32");
-            res_slots[((rhead + nres) & RES_MASK) as usize] = Res {
-                span_id: gid as u32,
-                _pad: 0,
-                value,
-            };
-            nres += 1;
-            gid += 1;
+                debug_assert!(gid <= u32::MAX as u64, "span id exceeds u32");
+                res_slots[((rhead + nres) & RES_MASK) as usize] = Res {
+                    span_id: gid as u32,
+                    _pad: 0,
+                    value,
+                };
+                nres += 1;
+                gid += 1;
+                n_total += 1;
+            }
+            // Advance: the resume position is `gid` — a batch-limited
+            // stop mid-chunk resumes IN PLACE (advancing to chunk_hi
+            // here skipped the chunk's tail: the off-by-one the fold
+            // caught). A fully-consumed chunk moves to this lane's next
+            // chunk; a ready-limited partial chunk resumes at chunk_hi
+            // (== ready, which grows before the next pass over it).
+            if gid < chunk_hi {
+                eval = gid;
+            } else if chunk_hi == (chunk + 1) * CHUNK {
+                eval = (chunk + n_lanes) * CHUNK;
+            } else {
+                eval = chunk_hi;
+            }
         }
         std::hint::black_box(&res_slots[(rhead & RES_MASK) as usize]);
+        stats.spans.fetch_add(n_total, Ordering::Relaxed);
+        stats.batches.fetch_add(1, Ordering::Relaxed);
         stats
             .eval_ns
             .fetch_add(t_eval.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1106,13 +1141,6 @@ fn lane_worker_rxdesc(
         // Release store; the fold Acquires it and owns them after.
         lane.res_head.store(rhead + nres, Ordering::Release);
         rhead += nres;
-        // Advance: a fully-published chunk moves to this lane's next
-        // chunk; a partial chunk is resumed in place next iteration.
-        eval = if chunk_hi == (chunk + 1) * CHUNK {
-            (chunk + n_lanes) * CHUNK
-        } else {
-            chunk_hi
-        };
     }
 }
 
@@ -1499,6 +1527,14 @@ pub struct HydraSpanSink<'a> {
 
 impl<'a> HydraSpanSink<'a> {
     pub const SPAN_SEED: u64 = 0xcbf29ce484222325;
+
+    /// R16b: the hard pending pace (spans). The ring protocol's combined
+    /// ring capacities bounded its in-flight lead at ~6k spans/lane; the
+    /// array protocol's equivalent (the res rings + the assist ring) is
+    /// ~8k, and the 8-window array gate sits far beyond it — this pace
+    /// restores the ring's flow-control shape (fold near the submit
+    /// point) without restoring the per-span submission cost.
+    const RX_PACE: u64 = 8192;
 
     /// R16b: the assist watermark default. The ring protocol's assist
     /// fired on lane-ring fullness (deep saturation); the array protocol
@@ -2043,6 +2079,23 @@ impl<'a> HydraSpanSink<'a> {
         if !self.rx_win_open {
             self.rx_open_window();
         }
+        // R16b FLOW CONTROL — the ring protocol's desc-ring backpressure
+        // kept the fold within ~one pass of the submit point (the R7
+        // fabric-efficiency invariance); the array protocol has no rings,
+        // so the pace is an explicit pending watermark. Beyond it, the
+        // submitting core folds and waits (productive: the drain frees
+        // the workers' res rings) — without this, the fold lags to the
+        // 8-window array gate and every window open pays the gate spin
+        // (measured: 61% of the run in reset_pass on the first local
+        // shape). The assist watermark (lower) fires FIRST — the lead
+        // converts to in-window CRC before the hard pace binds.
+        {
+            let mut sb = 0u32;
+            while self.rx_assist_wm > 0 && self.pending() > Self::RX_PACE {
+                self.fold_available();
+                crate::affinity::polite_spin_deep(&mut sb);
+            }
+        }
         // Chunk-open: the assist decision (the ring protocol decided at
         // lane-fullness; here the trigger is the submission lead).
         if self.submit_rem == CHUNK {
@@ -2100,10 +2153,16 @@ impl<'a> HydraSpanSink<'a> {
                 self.submit_lane + 1
             };
             // Chunk completion: seal an inline chunk (the ring protocol's
-            // flush point; non-inline chunks have nothing to flush).
+            // flush point; non-inline chunks have nothing to flush) and
+            // PUBLISH — one spans_ready Release per chunk (the ring
+            // protocol's per-chunk head store cadence: the worker's
+            // consumption unit IS the chunk, so a finer publish only
+            // bounces the polled line between the cores — the measured
+            // coherence storm on the first 8370C draw).
             if self.cur_inline.is_some() {
                 self.flush_pending();
             }
+            self.rx_publish_ready();
         }
     }
 
@@ -2597,9 +2656,9 @@ impl<'a> Sink for HydraSpanSink<'a> {
                     self.submit_span(r.body);
                     self.next_span += 1;
                 }
-                // R16b: one Release per emission batch (the ladder flushes
-                // every ≤32 spans) — the workers' only visibility point.
-                self.rx_publish_ready();
+                // R16b: NO publish here — the chunk-completion boundary
+                // inside submit_span_rx owns the cadence (per-CHUNK, the
+                // ring protocol's shape); end_pass/finish publish the tail.
             }
         }
     }
