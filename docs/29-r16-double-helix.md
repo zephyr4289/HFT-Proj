@@ -589,3 +589,29 @@ class rule).** kbench 1t 27.59; 11b 668.8M / 11w (ring) 991.7M /
 11n 985.4M / 11x 656.3M / 11y 675.0M — the uniformly-low band for every
 array-path arm; bit-exact, allocs=0. No 8573C in this fish; the ≥3-draw
 diet median still wants its third healthy draw.
+
+**Draw 15 (8573C healthy ×2, run 37234491532, shards 5 and 7 — the diet
+median pool COMPLETES at four pricings; commit e497e3d).**
+Shard 5 (kbench `fold512_r` 1t = **33.46** — the strongest healthy draw
+of the program, `2cpu_distinct` 63.69): 11b (diet) **986.4M** at
+cyc/span **190.0/189.3** / 11y (B+C) 962.9M at 190.7/187.9 / 11x
+(pre-diet) 961.3M at 198.2/193.8 / 11w (ring) **1,098.1M** at
+181.3/184.0 / 11n 1,095.5M. Shard 7 (kbench 30.54, pool 60.56):
+11b 840.2M at 221.5/203.7 / 11y 810.2M / 11x 840.6M at 228.6/209.4 /
+11w 1,084.8M at 192.3/185.7. Bit-exact, allocs=0, all PASS. Verdicts:
+1. **The diet's healthy median (4 pricings: +1.4%, +0.9%, +0.0%,
+   +2.6%) = +1.15%** — a consistent NEUTRAL-POSITIVE; every draw inside
+   the ±3.4% noise, direction positive 3-of-4. The default stands.
+2. **The array-path residue is SUPPLY-COUPLED**: at kbench 33.46 the
+   diet's worker cost is 190 cyc/span (residue +8 vs the ring's 181);
+   at kbench 30.2-30.5 it is 219-221 (residue +24-29). The candidates
+   line up: the array's working set (8 slots × 1 MB; ~276 KB/pass/lane
+   cycling) is L2/L3-resident where the ring's desc stream is
+   L1-resident (16 KB/lane) — on supply-rich draws the latency hides,
+   on contended draws it exposes. The null-mode instrument remains the
+   next step, but the target moved: the residue to kill is ~+8 cyc on
+   supply-rich draws (record-class territory), not ~+24.
+3. The strongest-draw ring (1,098.1M) vs diet (986.4M): 0.898 — the
+   diet/ring gap narrowed to ~10% on this draw class; on the median
+   healthy draw it remains ~18%. The 2B arithmetic (§5.3) still needs
+   ring parity first — the fish continues per the class protocol.
