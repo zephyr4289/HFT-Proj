@@ -2643,8 +2643,9 @@ pub mod endpipe {
 
     /// Stages 2-4 over FOUR spans — the pipelined schedule (four
     /// lane-0 tails, four lane endings, four FNV combines; the same
-    /// stage order the register-path quad issues). `out` receives the
-    /// four values in span order.
+    /// stage order the register-path quad issues, straight-line — no
+    /// per-stage loops: the kbench row must price the SCHEDULE, not a
+    /// loop structure). `out` receives the four values in span order.
     ///
     /// # Safety
     /// Requires AVX-512F/BW, VPCLMULQDQ, GFNI, SSE4.2; `sts[i]` must be
@@ -2656,39 +2657,97 @@ pub mod endpipe {
         cfg: EndCfg,
         out: &mut [u64; 4],
     ) {
-        let mut lanes_arr = [[0u32; 8]; 4];
-        let mut st_buf: [imp::FoldStates; 4] = std::mem::zeroed();
-        for k in 0..4 {
-            if bodies[k].len() < super::FOLD_MIN_LEN {
-                out[k] = crate::sink::span_crc32c_8lane(bodies[k]);
-                continue;
-            }
-            // SAFETY: the 128-byte q arrays are 64-aligned, initialized.
-            st_buf[k] = imp::FoldStates {
-                even: _mm512_loadu_si512(sts[k].q.as_ptr() as *const _),
-                odd: _mm512_loadu_si512(sts[k].q.as_ptr().add(8) as *const _),
-                units: (bodies[k].len() / 64 / 2) as usize,
-            };
+        let min = super::FOLD_MIN_LEN;
+        // Short bodies take the scalar kernel per slot (the checkpoint
+        // fold was a no-op for them — same dispatch as end_span).
+        if bodies[0].len() < min {
+            out[0] = crate::sink::span_crc32c_8lane(bodies[0]);
         }
-        // Stage 2: four lane-0 tails (independent chains).
-        for k in 0..4 {
-            if bodies[k].len() >= super::FOLD_MIN_LEN {
-                lanes_arr[k][0] =
-                    imp::ep_lane0_dispatch(bodies[k], &st_buf[k], cfg.vend, cfg.vtail, cfg.dfold);
-            }
+        if bodies[1].len() < min {
+            out[1] = crate::sink::span_crc32c_8lane(bodies[1]);
         }
+        if bodies[2].len() < min {
+            out[2] = crate::sink::span_crc32c_8lane(bodies[2]);
+        }
+        if bodies[3].len() < min {
+            out[3] = crate::sink::span_crc32c_8lane(bodies[3]);
+        }
+        // Stage 1 (checkpoint reload): the four state registers.
+        // SAFETY: the 128-byte q arrays are 64-aligned, initialized.
+        let st0 = imp::FoldStates {
+            even: _mm512_loadu_si512(sts[0].q.as_ptr() as *const _),
+            odd: _mm512_loadu_si512(sts[0].q.as_ptr().add(8) as *const _),
+            units: (bodies[0].len() / 64 / 2) as usize,
+        };
+        let st1 = imp::FoldStates {
+            even: _mm512_loadu_si512(sts[1].q.as_ptr() as *const _),
+            odd: _mm512_loadu_si512(sts[1].q.as_ptr().add(8) as *const _),
+            units: (bodies[1].len() / 64 / 2) as usize,
+        };
+        let st2 = imp::FoldStates {
+            even: _mm512_loadu_si512(sts[2].q.as_ptr() as *const _),
+            odd: _mm512_loadu_si512(sts[2].q.as_ptr().add(8) as *const _),
+            units: (bodies[2].len() / 64 / 2) as usize,
+        };
+        let st3 = imp::FoldStates {
+            even: _mm512_loadu_si512(sts[3].q.as_ptr() as *const _),
+            odd: _mm512_loadu_si512(sts[3].q.as_ptr().add(8) as *const _),
+            units: (bodies[3].len() / 64 / 2) as usize,
+        };
+        // Stage 2: four lane-0 tails — four independent chains.
+        let l0 = if bodies[0].len() >= min {
+            imp::ep_lane0_dispatch(bodies[0], &st0, cfg.vend, cfg.vtail, cfg.dfold)
+        } else {
+            0
+        };
+        let l1 = if bodies[1].len() >= min {
+            imp::ep_lane0_dispatch(bodies[1], &st1, cfg.vend, cfg.vtail, cfg.dfold)
+        } else {
+            0
+        };
+        let l2 = if bodies[2].len() >= min {
+            imp::ep_lane0_dispatch(bodies[2], &st2, cfg.vend, cfg.vtail, cfg.dfold)
+        } else {
+            0
+        };
+        let l3 = if bodies[3].len() >= min {
+            imp::ep_lane0_dispatch(bodies[3], &st3, cfg.vend, cfg.vtail, cfg.dfold)
+        } else {
+            0
+        };
         // Stage 3: four lane endings.
-        for k in 0..4 {
-            if bodies[k].len() >= super::FOLD_MIN_LEN {
-                let l0 = lanes_arr[k][0];
-                lanes_arr[k] = imp::ep_lanes(bodies[k], &st_buf[k], cfg.vend, l0);
-            }
+        let e0 = if bodies[0].len() >= min {
+            imp::ep_lanes(bodies[0], &st0, cfg.vend, l0)
+        } else {
+            [0u32; 8]
+        };
+        let e1 = if bodies[1].len() >= min {
+            imp::ep_lanes(bodies[1], &st1, cfg.vend, l1)
+        } else {
+            [0u32; 8]
+        };
+        let e2 = if bodies[2].len() >= min {
+            imp::ep_lanes(bodies[2], &st2, cfg.vend, l2)
+        } else {
+            [0u32; 8]
+        };
+        let e3 = if bodies[3].len() >= min {
+            imp::ep_lanes(bodies[3], &st3, cfg.vend, l3)
+        } else {
+            [0u32; 8]
+        };
+        // Stage 4: four FNV combines — four independent imul chains.
+        if bodies[0].len() >= min {
+            out[0] = imp::ep_fnv(&e0, bodies[0].len());
         }
-        // Stage 4: four FNV combines.
-        for k in 0..4 {
-            if bodies[k].len() >= super::FOLD_MIN_LEN {
-                out[k] = imp::ep_fnv(&lanes_arr[k], bodies[k].len());
-            }
+        if bodies[1].len() >= min {
+            out[1] = imp::ep_fnv(&e1, bodies[1].len());
+        }
+        if bodies[2].len() >= min {
+            out[2] = imp::ep_fnv(&e2, bodies[2].len());
+        }
+        if bodies[3].len() >= min {
+            out[3] = imp::ep_fnv(&e3, bodies[3].len());
         }
     }
 }
