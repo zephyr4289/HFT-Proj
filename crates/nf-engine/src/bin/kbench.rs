@@ -34,12 +34,16 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use nf_testkit::affinity;
-use nf_testkit::crcfold::{fold512_available, CrcKernel};
+use nf_testkit::crcfold::{fold512_available, transpose_arena_slot, CrcKernel};
 use nf_testkit::sink::span_crc32c_8lane;
 
 /// Working-set size per thread (fits L3 on runner silicon; we are measuring
 /// instruction throughput, not DRAM).
 const BUF_BYTES: usize = 8 << 20;
+/// R17/I-1: the supply row's working set — ~14.3 MB (7x L2, L3-resident on
+/// the runner class): each draw's actual L3 streaming ceiling for 1.4 KB
+/// bodies, the 2B supply gate's gauge (ROADMAP2 §5.1b; CHECKLIST I-1/D-1).
+const SUPPLY_TARGET_BYTES: usize = 14_996_224;
 /// Minimum measurement window per sample.
 const MIN_MS: u64 = 300;
 /// Span quantum: ~21 cache lines, the fabric's real per-span body size.
@@ -95,6 +99,15 @@ fn main() {
         bench_1t("fold512_pair", c0, mode_fold512_pair);
         bench_1t("fold512_tri", c0, mode_fold512_tri);
         bench_1t("fold512_pclmul_mix", c0, mode_fold512_pclmul_mix);
+        // R17 Phase I instruments (CHECKLIST I-1; ROADMAP2 §5.1b) + the
+        // Route T kill test (CHECKLIST T-1; ROADMAP2 §5.2). All 1t rows on
+        // the packed corpus; `fold512_t` vs `fold512_r` on the SAME draw
+        // is the Route T decision (>= +8% builds it, < +8% kills it).
+        bench_1t("fold512_noend", c0, mode_fold512_noend);
+        bench_1t("fold512_pre", c0, mode_fold512_pre);
+        bench_1t("fold512_t", c0, mode_fold512_t);
+        let supply_bytes = (SUPPLY_TARGET_BYTES / SPAN) * SPAN;
+        bench_1t_sz("fold512_supply", c0, mode_fold512_r, supply_bytes);
     }
 
     // ── multi-core ceilings ───────────────────────────────────────────────
@@ -493,12 +506,126 @@ fn mode_fold512_pclmul_mix(buf: &[u8], sink: &mut u64) -> usize {
     0
 }
 
+// ── R17: Phase I instruments + the Route T kill test ─────────────────────
+
+/// R17/I-1: the fold-loop-only floor row — the ending stack stubbed to a
+/// state sum (`eval_rpath_noend`). fold512_r minus this row = the ending +
+/// lane-0-continuation diet, per draw (ROADMAP2 §5.1b). The sink is a
+/// STATE SUM, not a CRC — attribution telemetry only.
+fn mode_fold512_noend(buf: &[u8], sink: &mut u64) -> usize {
+    let kernel = CrcKernel::Reflect;
+    let mut off = 0usize;
+    let mut acc = 0u64;
+    while off + SPAN <= buf.len() {
+        // SAFETY: main() only dispatches here when fold512_available().
+        acc ^= unsafe { kernel.eval_rpath_noend(&buf[off..off + SPAN]) };
+        off += SPAN;
+    }
+    *sink = acc;
+    off
+}
+
+/// R17/I-1: the spray twin — the worker's ahead-of-cursor prefetch shape
+/// (hydra.rs: next span's lines, T0) over the same packed corpus. The
+/// roadmap's `fold512_nopre` resolved as THIS PAIR: the kbench baseline
+/// never carried a spray to turn off, so fold512_r (unsprayed) vs
+/// fold512_pre (sprayed) prices the spray's kernel-level cost.
+#[cfg(target_arch = "x86_64")]
+fn mode_fold512_pre(buf: &[u8], sink: &mut u64) -> usize {
+    use std::arch::x86_64::_mm_prefetch;
+    use std::arch::x86_64::_MM_HINT_T0;
+    let kernel = CrcKernel::Reflect;
+    let mut off = 0usize;
+    let mut acc = 0u64;
+    let lines = SPAN / 64;
+    while off + SPAN <= buf.len() {
+        // Spray the NEXT span's lines (wraps to span 0 at the tail — the
+        // corpus is visited repeatedly, same as the worker's blob).
+        let nxt = if off + 2 * SPAN <= buf.len() {
+            off + SPAN
+        } else {
+            0
+        };
+        for l in 0..lines {
+            unsafe {
+                _mm_prefetch(buf.as_ptr().add(nxt + 64 * l) as *const i8, _MM_HINT_T0)
+            };
+        }
+        // SAFETY: main() only dispatches here when fold512_available().
+        acc ^= unsafe { kernel.eval_rpath3(&buf[off..off + SPAN], true, false) };
+        off += SPAN;
+    }
+    *sink = acc;
+    off
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+fn mode_fold512_pre(buf: &[u8], sink: &mut u64) -> usize {
+    let _ = buf;
+    *sink = 0;
+    0
+}
+
+/// R17/T-1: the TRANSPOSED-arena kill-test row (`fold512_t`) — Route T,
+/// ROADMAP2 §5.2. The arena is built ONCE, untimed (the deterministic
+/// packed corpus — same fill seed on every bench_1t call), then each span
+/// folds through the no-unpck loop + the UNCHANGED ending stack (tail
+/// reads the ORIGINAL wire corpus). The sink MUST equal fold512_r's sink
+/// on the same corpus — the structural bit-exactness proof prints on
+/// every run. Decision rule: fold512_t vs fold512_r at 1t on a healthy
+/// draw — >= +8% builds Route T; < +8% kills it (the kernel program ends
+/// with a measurement).
+fn mode_fold512_t(buf: &[u8], sink: &mut u64) -> usize {
+    static ARENA: std::sync::OnceLock<Vec<u8>> = std::sync::OnceLock::new();
+    // Full 128 B units per span (the trailing partial unit stays on the
+    // wire corpus — the ending reads it there).
+    const ARENA_SPAN: usize = 128 * (SPAN / 128);
+    let arena = ARENA.get_or_init(|| {
+        let n = buf.len() / SPAN;
+        let mut a = vec![0u8; n * ARENA_SPAN];
+        for i in 0..n {
+            transpose_arena_slot(
+                &buf[i * SPAN..i * SPAN + SPAN],
+                &mut a[i * ARENA_SPAN..(i + 1) * ARENA_SPAN],
+            );
+        }
+        a
+    });
+    debug_assert_eq!(buf.len() / SPAN * ARENA_SPAN, arena.len());
+    let kernel = CrcKernel::Reflect;
+    let mut off = 0usize;
+    let mut acc = 0u64;
+    let mut i = 0usize;
+    while off + SPAN <= buf.len() {
+        // SAFETY: main() only dispatches here when fold512_available();
+        // the slot holds this span's transposed image (built above).
+        acc ^= unsafe {
+            kernel.eval_rpath_t(
+                &buf[off..off + SPAN],
+                arena[i * ARENA_SPAN..].as_ptr(),
+                true,
+                false,
+            )
+        };
+        off += SPAN;
+        i += 1;
+    }
+    *sink = acc;
+    off
+}
+
 // ── harness ────────────────────────────────────────────────────────────────
 
 type Mode = fn(&[u8], &mut u64) -> usize;
 
 fn bench_1t(name: &str, cpu: usize, mode: Mode) {
-    let mut buf = vec![0u8; BUF_BYTES];
+    bench_1t_sz(name, cpu, mode, BUF_BYTES);
+}
+
+/// R17/I-1: the size-parameterized single-core harness (the supply row's
+/// ~14.3 MB working set; every other row keeps the 8 MB default).
+fn bench_1t_sz(name: &str, cpu: usize, mode: Mode, buf_bytes: usize) {
+    let mut buf = vec![0u8; buf_bytes];
     fill(&mut buf, 0x243f_6a88_85a3_08d3);
     let pinned = affinity::pin_current_to(cpu);
     // Warmup pass (page faults, caches, branch predictors).

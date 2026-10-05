@@ -310,6 +310,45 @@ pub fn fold512_available() -> bool {
     }
 }
 
+/// R17/T-1: bake-time wire -> arena transposition for one span body
+/// (Route T, ROADMAP2 §5.2 — the kill-test/twin groundwork). For each
+/// full 128 B fold unit j the arena stores the unit's (even, odd)
+/// lane-pure images in the exact order [`CrcKernel::eval_rpath_t`]
+/// loads them:
+///
+/// * `arena[128j .. 128j+64]`     = `unpacklo_epi64(n0, n1)` as bytes
+/// * `arena[128j+64 .. 128j+128]` = `unpackhi_epi64(n0, n1)` as bytes
+///
+/// with `n0 = body[128j .. 128j+64]`, `n1 = body[128j+64 .. 128j+128]`
+/// (per 128-bit lane i: lo = `(n0.qw[2i], n1.qw[2i])`,
+/// hi = `(n0.qw[2i+1], n1.qw[2i+1])`). The trailing partial unit (the
+/// body's bytes past the last full 128 B — lane-0 continuation and
+/// ending bytes) is NOT transposed: the ending path keeps reading the
+/// ORIGINAL wire body (ROADMAP2 §5.2 hazard #1's ship-first variant —
+/// zero algebra changes). Pure storage permutation, no algebra — safe
+/// code, runs in the untimed init window.
+pub fn transpose_arena_slot(body: &[u8], arena: &mut [u8]) {
+    let wp = body.len() / 128;
+    assert!(
+        arena.len() >= 128 * wp,
+        "arena slot too small: {} < {}",
+        arena.len(),
+        128 * wp
+    );
+    for j in 0..wp {
+        let s = 128 * j;
+        let (n0, n1) = (&body[s..s + 64], &body[s + 64..s + 128]);
+        let (ev, od) = arena[s..s + 128].split_at_mut(64);
+        for i in 0..4 {
+            let (lo, hi) = (16 * i, 16 * i + 8);
+            ev[lo..hi].copy_from_slice(&n0[lo..hi]);
+            ev[hi..lo + 16].copy_from_slice(&n1[lo..hi]);
+            od[lo..hi].copy_from_slice(&n0[hi..lo + 16]);
+            od[hi..lo + 16].copy_from_slice(&n1[hi..lo + 16]);
+        }
+    }
+}
+
 impl CrcKernel {
     /// Deterministic dispatch: CPUID features + optional `HFT_CRC_KERNEL`
     /// override (`scalar` | `fold512` | `reflect`). The kernel choice never
@@ -462,6 +501,56 @@ impl CrcKernel {
             Self::Scalar => span_crc32c_8lane(body),
             Self::Fold512 => imp::span_fold_eval(body),
             Self::Reflect => imp::span_fold_eval_r_forced_d(body, vend, vtail, dfold),
+        }
+    }
+
+    /// R17/T-1: the TRANSPOSED-arena twin of [`Self::eval_rpath3`] (Route
+    /// T, ROADMAP2 §5.2 — the `fold512_t` kbench kill-test row). `arena`
+    /// must point at the body's transposed slot: `128*wp` bytes
+    /// (`wp = body.len()/64/2`) holding each 128 B fold unit
+    /// PRE-INTERLEAVED in the exact lane order the fold consumes — the
+    /// `unpacklo/hi(n0, n1)` materialized at bake time by
+    /// [`transpose_arena_slot`]. The fold loop then loads the even/odd
+    /// unit registers directly: the 2 `vpunpckqdq` per 128 B step are
+    /// DELETED (p5 census 6 -> 4). The tail/ending path reads the
+    /// ORIGINAL wire `body` (hazard #1's ship-first variant), so the
+    /// value is bit-identical to [`Self::eval_rpath3`] BY CONSTRUCTION
+    /// (a pure storage permutation; the 8-lane value definition is
+    /// untouched). `t_transpose_arena_parity` pins it.
+    ///
+    /// # Safety
+    /// Same feature contract as [`Self::eval_rpath3`]; additionally
+    /// `arena` must be readable for `128 * (body.len()/64/2)` bytes and
+    /// hold the [`transpose_arena_slot`] image of `body`.
+    #[inline(always)]
+    pub unsafe fn eval_rpath_t(
+        &self,
+        body: &[u8],
+        arena: *const u8,
+        vend: bool,
+        vtail: bool,
+    ) -> u64 {
+        match self {
+            Self::Scalar => span_crc32c_8lane(body),
+            Self::Fold512 => imp::span_fold_eval(body),
+            Self::Reflect => imp::span_fold_eval_r_t(body, arena, vend, vtail),
+        }
+    }
+
+    /// R17/I-1: the fold-loop-only floor row (`fold512_noend`) — the
+    /// ending stack stubbed to a state sum. Prices the ending +
+    /// lane-0-continuation share in isolation (fold512_r minus this row
+    /// = the ending diet, per draw). NOT a CRC value (state sum, not the
+    /// finished span value) — kbench telemetry only, never a fabric path.
+    ///
+    /// # Safety
+    /// Same feature contract as [`Self::eval_rpath3`].
+    #[inline(always)]
+    pub unsafe fn eval_rpath_noend(&self, body: &[u8]) -> u64 {
+        match self {
+            Self::Scalar => span_crc32c_8lane(body),
+            Self::Fold512 => imp::span_fold_eval(body),
+            Self::Reflect => imp::span_fold_eval_r_noend(body),
         }
     }
 }
@@ -1244,6 +1333,49 @@ pub(crate) mod imp {
         st
     }
 
+    /// R17/Route T: the no-unpck block-pair loop over a TRANSPOSED arena
+    /// (ROADMAP2 §5.2 — the `fold512_t` kill test). Identical recurrence,
+    /// census and value semantics as [`fold_word_pairs_r`]; the only
+    /// difference is that the 2 `vpunpckqdq` per 128 B step are GONE —
+    /// the arena stores each unit's (even, odd) lane-pure images at bake
+    /// time ([`super::transpose_arena_slot`]), so the loop loads them
+    /// directly: 2 loads + 4 VPCLMULQDQ + 2 `vpternlogq` per step (p5
+    /// census 4). The states are bit-identical to [`fold_word_pairs_r`]
+    /// on the same body BY CONSTRUCTION (pure storage permutation — the
+    /// Stage-B unpack-free kills do not apply: no unmixing is ever
+    /// needed, each load lane IS a lane-pure qword).
+    ///
+    /// SAFETY: `p` must hold >= 128*wp bytes in the transposed layout;
+    /// requires the AVX-512 + VPCLMULQDQ feature contract (callers gate
+    /// it).
+    #[inline(always)]
+    unsafe fn fold_word_pairs_t(p: *const u8, wp: usize) -> FoldStates {
+        let khi = _mm512_set1_epi64(RKHI as i64);
+        let klo = _mm512_set1_epi64(RKLO as i64);
+        if wp == 0 {
+            return FoldStates {
+                even: _mm512_setzero_si512(),
+                odd: _mm512_setzero_si512(),
+                units: 0,
+            };
+        }
+        // Prologue: arena unit 0 is the pre-unpacked image of wire pair
+        // 0 — seed the states directly.
+        // SAFETY: 128 <= 128*wp bytes are in bounds (wp >= 1).
+        let mut st = FoldStates {
+            even: _mm512_loadu_si512(p as *const _),
+            odd: _mm512_loadu_si512(p.add(64) as *const _),
+            units: 1,
+        };
+        for j in 1..wp {
+            // SAFETY: 128*(j+1) <= 128*wp bytes are in bounds.
+            let u_even = _mm512_loadu_si512(p.add(128 * j) as *const _);
+            let u_odd = _mm512_loadu_si512(p.add(128 * j + 64) as *const _);
+            fold_step_r(&mut st, u_even, u_odd, khi, klo);
+        }
+        st
+    }
+
     /// R16: the dual-stream (T=2 block-parity) block-pair loop. Set A
     /// consumes the EVEN blocks, set B the ODD; every state is stepped
     /// every OTHER block, so the four chains (A.even/A.odd/B.even/B.odd)
@@ -1804,6 +1936,57 @@ pub(crate) mod imp {
         finish_span_r_inner3(body, st, vend, vtail || dfold, dfold)
     }
 
+    /// R17/T-1: the TRANSPOSED-arena eval (the `fold512_t` kbench row —
+    /// the Route T kill test, ROADMAP2 §5.2). Fold loop over the arena
+    /// image of `body` (no unpck), ending stack over the ORIGINAL wire
+    /// body — bit-identical to [`span_fold_eval_r_forced`] by
+    /// construction; `t_transpose_arena_parity` pins it.
+    ///
+    /// # Safety
+    /// Same feature contract as [`span_fold_eval_r_forced`]; additionally
+    /// `arena` must be readable for `128 * (body.len()/64/2)` bytes and
+    /// hold the [`super::transpose_arena_slot`] image of `body`.
+    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
+    pub unsafe fn span_fold_eval_r_t(
+        body: &[u8],
+        arena: *const u8,
+        vend: bool,
+        vtail: bool,
+    ) -> u64 {
+        if body.len() < FOLD_MIN_LEN {
+            return span_crc32c_8lane(body);
+        }
+        let wp = body.len() / 64 / 2;
+        // SAFETY: 128*wp <= len; arena holds the transposed image
+        // (caller contract).
+        let st = fold_word_pairs_t(arena, wp);
+        finish_span_r_inner3(body, st, vend, vtail, false)
+    }
+
+    /// R17/I-1: the fold-loop-only floor (`fold512_noend` kbench row) —
+    /// the ending stubbed to a state sum. NOT a CRC value.
+    ///
+    /// # Safety
+    /// Same feature contract as [`span_fold_eval_r_forced`].
+    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
+    pub unsafe fn span_fold_eval_r_noend(body: &[u8]) -> u64 {
+        if body.len() < FOLD_MIN_LEN {
+            return span_crc32c_8lane(body);
+        }
+        let wp = body.len() / 64 / 2;
+        // SAFETY: 128*wp <= len (feature contract + caller bounds).
+        let st = fold_word_pairs_r(body.as_ptr(), wp);
+        let mut e = [0u64; 8];
+        let mut o = [0u64; 8];
+        _mm512_storeu_si512(e.as_mut_ptr() as *mut _, st.even);
+        _mm512_storeu_si512(o.as_mut_ptr() as *mut _, st.odd);
+        let mut acc = st.units as u64;
+        for v in e.iter().chain(o.iter()) {
+            acc ^= v;
+        }
+        acc
+    }
+
     /// R13: the production two-span path on the natural-domain kernel —
     /// the same software-pipelined structure as [`span_fold_eval_pair`]
     /// (A's vector fold, B's vector fold, A's endings, B's endings).
@@ -1872,6 +2055,21 @@ pub(crate) mod imp {
         _vtail: bool,
         _dfold: bool,
     ) -> u64 {
+        span_crc32c_8lane(body)
+    }
+
+    #[inline(always)]
+    pub unsafe fn span_fold_eval_r_t(
+        body: &[u8],
+        _arena: *const u8,
+        _vend: bool,
+        _vtail: bool,
+    ) -> u64 {
+        span_crc32c_8lane(body)
+    }
+
+    #[inline(always)]
+    pub unsafe fn span_fold_eval_r_noend(body: &[u8]) -> u64 {
         span_crc32c_8lane(body)
     }
 
@@ -1997,6 +2195,57 @@ mod tests {
         }
     }
 
+    /// R17/T-1: the PUBLIC transposed-arena API (`CrcKernel::eval_rpath_t`)
+    /// mirrors `eval_rpath3` on the span-class battery (the fabric-shaped
+    /// lengths: MTU-class 1344, power boundaries, FOLD_MIN_LEN edges), and
+    /// the noend floor row is smoke-checked (state-sum value, not a CRC —
+    /// determinism + non-panic only, by design).
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn t_transpose_arena_public_api() {
+        if !fold512_available() {
+            eprintln!("(fold512 unavailable on this CPU — transpose API test skipped)");
+            return;
+        }
+        let kernel = CrcKernel::Reflect;
+        let mut body = [0u8; 4200];
+        let mut seed = 0x0E12_578C_31A4_90F7u64;
+        let mut next = || {
+            seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = seed;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        };
+        let mut arena = [0u8; 128 * 34];
+        for len in [
+            0usize, 1, 63, 64, 65, 127, 128, 129, 191, 192, 193, 255, 256, 383, 384, 512, 1000,
+            1344, 1345, 1408, 2047, 2048, 2049, 3000, 4095, 4199,
+        ] {
+            for (i, e) in body[..len].iter_mut().enumerate() {
+                *e = (next() >> ((i % 8) * 8)) as u8;
+            }
+            let b = &body[..len];
+            transpose_arena_slot(b, &mut arena);
+            for (vend, vtail) in [(true, false), (true, true), (false, false)] {
+                unsafe {
+                    let want = kernel.eval_rpath3(b, vend, vtail);
+                    let got = kernel.eval_rpath_t(b, arena.as_ptr(), vend, vtail);
+                    assert_eq!(
+                        got, want,
+                        "public transpose parity break: len={len} vend={vend} vtail={vtail}"
+                    );
+                }
+            }
+            // The noend floor row: deterministic, non-panic (state sum —
+            // NOT a CRC value; equality with the CRC is not asserted by
+            // design).
+            let a = unsafe { kernel.eval_rpath_noend(b) };
+            let b2 = unsafe { kernel.eval_rpath_noend(b) };
+            assert_eq!(a, b2, "noend row not deterministic at len={len}");
+        }
+    }
+
     /// Differential: fold kernel == scalar kernel on exhaustive lengths,
     /// patterns and random bodies (the D11 oracle's unit-level core).
     #[cfg(target_arch = "x86_64")]
@@ -2046,6 +2295,20 @@ mod tests {
             // default. Same value on every body (the P2 differential).
             let gd = unsafe { imp::span_fold_eval_r_forced_d(body, true, true, true) };
             assert_eq!(want, gd, "reflect dfold diverged at len={}", body.len());
+            // R17/T-1: the transposed-arena twin (Route T, ROADMAP2 §5.2) —
+            // identical value on every body and both ending shapes, by
+            // construction (pure storage permutation; the ending reads the
+            // ORIGINAL wire body).
+            {
+                let mut arena = [0u8; 128 * 34];
+                super::transpose_arena_slot(body, &mut arena);
+                let gt = unsafe { imp::span_fold_eval_r_t(body, arena.as_ptr(), true, false) };
+                assert_eq!(want, gt, "transpose twin diverged at len={}", body.len());
+                let gtt = unsafe { imp::span_fold_eval_r_t(body, arena.as_ptr(), true, true) };
+                assert_eq!(want, gtt, "transpose twin (vtail) diverged at len={}", body.len());
+                let gtc = unsafe { imp::span_fold_eval_r_t(body, arena.as_ptr(), false, false) };
+                assert_eq!(want, gtc, "transpose twin (crc-chain) diverged at len={}", body.len());
+            }
             let (g2a, g2b) = unsafe { imp::span_fold_eval2(body, body) };
             assert_eq!(want, g2a, "eval2 primary diverged at len={}", body.len());
             assert_eq!(want, g2b, "eval2 mirror diverged at len={}", body.len());
