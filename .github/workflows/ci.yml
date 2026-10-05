@@ -10,17 +10,100 @@ permissions:
   actions: read
 
 jobs:
-  # ==========================================
-  # WAVE 1: Shards 1..10 (Initial Parallel Run)
-  # ==========================================
-  wave-1:
-    name: "Wave 1 - Shard ${{ matrix.shard }}"
+  # =========================================================================
+  # CONTINUOUS SATURATION QUEUE: 80 Shards (Max Concurrency: 20 Slots)
+  # Dynamic replenishment: Non-target runners exit in < 1s, immediately
+  # popping the next shard from the 80-runner queue to keep 20 slots 100% busy.
+  # =========================================================================
+  shards:
+    name: "Shard ${{ matrix.shard }}"
     runs-on: ubuntu-latest
     timeout-minutes: 24
     strategy:
       fail-fast: false
+      max-parallel: 20
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        shard:
+          - 1
+          - 2
+          - 3
+          - 4
+          - 5
+          - 6
+          - 7
+          - 8
+          - 9
+          - 10
+          - 11
+          - 12
+          - 13
+          - 14
+          - 15
+          - 16
+          - 17
+          - 18
+          - 19
+          - 20
+          - 21
+          - 22
+          - 23
+          - 24
+          - 25
+          - 26
+          - 27
+          - 28
+          - 29
+          - 30
+          - 31
+          - 32
+          - 33
+          - 34
+          - 35
+          - 36
+          - 37
+          - 38
+          - 39
+          - 40
+          - 41
+          - 42
+          - 43
+          - 44
+          - 45
+          - 46
+          - 47
+          - 48
+          - 49
+          - 50
+          - 51
+          - 52
+          - 53
+          - 54
+          - 55
+          - 56
+          - 57
+          - 58
+          - 59
+          - 60
+          - 61
+          - 62
+          - 63
+          - 64
+          - 65
+          - 66
+          - 67
+          - 68
+          - 69
+          - 70
+          - 71
+          - 72
+          - 73
+          - 74
+          - 75
+          - 76
+          - 77
+          - 78
+          - 79
+          - 80
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: 0
@@ -86,412 +169,13 @@ jobs:
           path: /tmp/shard_output/
           retention-days: 1
 
-  check-wave-1:
-    name: "Check Wave 1 Status"
-    needs: wave-1
-    if: always()
-    runs-on: ubuntu-latest
-    outputs:
-      acquired: ${{ steps.check.outputs.acquired }}
-    steps:
-      - name: Query Target Artifacts
-        id: check
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              run_id: context.runId,
-            });
-            const matches = artifacts.data.artifacts.filter(a => a.name.startsWith('shard-result-'));
-            console.log(`Wave 1 target shard artifacts found: ${matches.length}`);
-            core.setOutput('acquired', matches.length > 0 ? 'true' : 'false');
-
-  # ==========================================
-  # WAVE 2: Shards 11..20 (Fires if Wave 1 Missed)
-  # ==========================================
-  wave-2:
-    name: "Wave 2 - Shard ${{ matrix.shard }}"
-    needs: check-wave-1
-    if: needs.check-wave-1.outputs.acquired != 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 24
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
-    env:
-      CARGO_TERM_COLOR: always
-      CARGO_INCREMENTAL: 0
-      CARGO_NET_RETRY: 3
-      RUSTFLAGS: "-C target-cpu=x86-64-v3"
-      CARGO_PROFILE_RELEASE_LTO: fat
-      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
-      CARGO_PROFILE_RELEASE_OPT_LEVEL: 3
-      CARGO_PROFILE_RELEASE_PANIC: abort
-      CARGO_PROFILE_RELEASE_STRIP: debuginfo
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Fast-Discard Gate (Target Silicon Probe)
-        id: gate
-        run: |
-          CPU_NAME=$(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2 | xargs || echo "Unknown CPU")
-          echo "Host CPU: $CPU_NAME"
-          echo "cpu_name=$CPU_NAME" >> "$GITHUB_OUTPUT"
-          if grep -qE "8573C|8370C" /proc/cpuinfo; then
-            echo "matched=true" >> "$GITHUB_OUTPUT"
-            echo "🎯 TARGET SILICON ACQUIRED ($CPU_NAME). Proceeding to full benchmark."
-          else
-            echo "matched=false" >> "$GITHUB_OUTPUT"
-            echo "❌ Non-target silicon ($CPU_NAME). Fast-discarding in < 1s."
-          fi
-
-      - name: Cache Cargo Registry & Build
-        if: steps.gate.outputs.matched == 'true'
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "ci-v3-v0.1"
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v0.1' }}
-
-      - name: Run Full CI & Benchmark Suite
-        if: steps.gate.outputs.matched == 'true'
-        id: ci_run
-        run: |
-          set -o pipefail
-          echo "RUSTFLAGS=$RUSTFLAGS"
-          echo "CARGO_PROFILE_RELEASE_LTO=$CARGO_PROFILE_RELEASE_LTO"
-          rustc --print cfg | grep target_cpu || true
-          rustc -Vv
-          ./scripts/ci.sh 2>&1 | tee /tmp/ci_full_output.log
-
-      - name: Extract Shard Telemetry & Metrics
-        if: steps.gate.outputs.matched == 'true' && always()
-        run: |
-          mkdir -p /tmp/shard_output
-          cp /tmp/ci_full_output.log /tmp/shard_output/draw-shard${{ matrix.shard }}.log 2>/dev/null || true
-          cp /tmp/bench_hydra.txt /tmp/shard_output/bench_hydra.txt 2>/dev/null || true
-          cp /tmp/kbench.txt /tmp/shard_output/kbench.txt 2>/dev/null || true
-          cp /tmp/bench_results.json /tmp/shard_output/bench_results.json 2>/dev/null || true
-          echo "${{ matrix.shard }}" > /tmp/shard_output/shard_num.txt
-          echo "${{ steps.gate.outputs.cpu_name }}" > /tmp/shard_output/cpu_name.txt
-
-      - name: Upload Shard Output
-        if: steps.gate.outputs.matched == 'true' && always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: shard-result-${{ matrix.shard }}
-          path: /tmp/shard_output/
-          retention-days: 1
-
-  check-wave-2:
-    name: "Check Wave 2 Status"
-    needs: [check-wave-1, wave-2]
-    if: always() && needs.check-wave-1.outputs.acquired != 'true'
-    runs-on: ubuntu-latest
-    outputs:
-      acquired: ${{ steps.check.outputs.acquired }}
-    steps:
-      - name: Query Target Artifacts
-        id: check
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              run_id: context.runId,
-            });
-            const matches = artifacts.data.artifacts.filter(a => a.name.startsWith('shard-result-'));
-            console.log(`Wave 2 target shard artifacts found: ${matches.length}`);
-            core.setOutput('acquired', matches.length > 0 ? 'true' : 'false');
-
-  # ==========================================
-  # WAVE 3: Shards 21..30 (Fires if Waves 1-2 Missed)
-  # ==========================================
-  wave-3:
-    name: "Wave 3 - Shard ${{ matrix.shard }}"
-    needs: check-wave-2
-    if: needs.check-wave-2.outputs.acquired != 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 24
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [21, 22, 23, 24, 25, 26, 27, 28, 29, 30]
-    env:
-      CARGO_TERM_COLOR: always
-      CARGO_INCREMENTAL: 0
-      CARGO_NET_RETRY: 3
-      RUSTFLAGS: "-C target-cpu=x86-64-v3"
-      CARGO_PROFILE_RELEASE_LTO: fat
-      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
-      CARGO_PROFILE_RELEASE_OPT_LEVEL: 3
-      CARGO_PROFILE_RELEASE_PANIC: abort
-      CARGO_PROFILE_RELEASE_STRIP: debuginfo
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Fast-Discard Gate (Target Silicon Probe)
-        id: gate
-        run: |
-          CPU_NAME=$(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2 | xargs || echo "Unknown CPU")
-          echo "Host CPU: $CPU_NAME"
-          echo "cpu_name=$CPU_NAME" >> "$GITHUB_OUTPUT"
-          if grep -qE "8573C|8370C" /proc/cpuinfo; then
-            echo "matched=true" >> "$GITHUB_OUTPUT"
-            echo "🎯 TARGET SILICON ACQUIRED ($CPU_NAME). Proceeding to full benchmark."
-          else
-            echo "matched=false" >> "$GITHUB_OUTPUT"
-            echo "❌ Non-target silicon ($CPU_NAME). Fast-discarding in < 1s."
-          fi
-
-      - name: Cache Cargo Registry & Build
-        if: steps.gate.outputs.matched == 'true'
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "ci-v3-v0.1"
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v0.1' }}
-
-      - name: Run Full CI & Benchmark Suite
-        if: steps.gate.outputs.matched == 'true'
-        id: ci_run
-        run: |
-          set -o pipefail
-          echo "RUSTFLAGS=$RUSTFLAGS"
-          echo "CARGO_PROFILE_RELEASE_LTO=$CARGO_PROFILE_RELEASE_LTO"
-          rustc --print cfg | grep target_cpu || true
-          rustc -Vv
-          ./scripts/ci.sh 2>&1 | tee /tmp/ci_full_output.log
-
-      - name: Extract Shard Telemetry & Metrics
-        if: steps.gate.outputs.matched == 'true' && always()
-        run: |
-          mkdir -p /tmp/shard_output
-          cp /tmp/ci_full_output.log /tmp/shard_output/draw-shard${{ matrix.shard }}.log 2>/dev/null || true
-          cp /tmp/bench_hydra.txt /tmp/shard_output/bench_hydra.txt 2>/dev/null || true
-          cp /tmp/kbench.txt /tmp/shard_output/kbench.txt 2>/dev/null || true
-          cp /tmp/bench_results.json /tmp/shard_output/bench_results.json 2>/dev/null || true
-          echo "${{ matrix.shard }}" > /tmp/shard_output/shard_num.txt
-          echo "${{ steps.gate.outputs.cpu_name }}" > /tmp/shard_output/cpu_name.txt
-
-      - name: Upload Shard Output
-        if: steps.gate.outputs.matched == 'true' && always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: shard-result-${{ matrix.shard }}
-          path: /tmp/shard_output/
-          retention-days: 1
-
-  check-wave-3:
-    name: "Check Wave 3 Status"
-    needs: [check-wave-2, wave-3]
-    if: always() && needs.check-wave-2.outputs.acquired != 'true'
-    runs-on: ubuntu-latest
-    outputs:
-      acquired: ${{ steps.check.outputs.acquired }}
-    steps:
-      - name: Query Target Artifacts
-        id: check
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              run_id: context.runId,
-            });
-            const matches = artifacts.data.artifacts.filter(a => a.name.startsWith('shard-result-'));
-            console.log(`Wave 3 target shard artifacts found: ${matches.length}`);
-            core.setOutput('acquired', matches.length > 0 ? 'true' : 'false');
-
-  # ==========================================
-  # WAVE 4: Shards 31..40 (Fires if Waves 1-3 Missed)
-  # ==========================================
-  wave-4:
-    name: "Wave 4 - Shard ${{ matrix.shard }}"
-    needs: check-wave-3
-    if: needs.check-wave-3.outputs.acquired != 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 24
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [31, 32, 33, 34, 35, 36, 37, 38, 39, 40]
-    env:
-      CARGO_TERM_COLOR: always
-      CARGO_INCREMENTAL: 0
-      CARGO_NET_RETRY: 3
-      RUSTFLAGS: "-C target-cpu=x86-64-v3"
-      CARGO_PROFILE_RELEASE_LTO: fat
-      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
-      CARGO_PROFILE_RELEASE_OPT_LEVEL: 3
-      CARGO_PROFILE_RELEASE_PANIC: abort
-      CARGO_PROFILE_RELEASE_STRIP: debuginfo
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Fast-Discard Gate (Target Silicon Probe)
-        id: gate
-        run: |
-          CPU_NAME=$(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2 | xargs || echo "Unknown CPU")
-          echo "Host CPU: $CPU_NAME"
-          echo "cpu_name=$CPU_NAME" >> "$GITHUB_OUTPUT"
-          if grep -qE "8573C|8370C" /proc/cpuinfo; then
-            echo "matched=true" >> "$GITHUB_OUTPUT"
-            echo "🎯 TARGET SILICON ACQUIRED ($CPU_NAME). Proceeding to full benchmark."
-          else
-            echo "matched=false" >> "$GITHUB_OUTPUT"
-            echo "❌ Non-target silicon ($CPU_NAME). Fast-discarding in < 1s."
-          fi
-
-      - name: Cache Cargo Registry & Build
-        if: steps.gate.outputs.matched == 'true'
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "ci-v3-v0.1"
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v0.1' }}
-
-      - name: Run Full CI & Benchmark Suite
-        if: steps.gate.outputs.matched == 'true'
-        id: ci_run
-        run: |
-          set -o pipefail
-          echo "RUSTFLAGS=$RUSTFLAGS"
-          echo "CARGO_PROFILE_RELEASE_LTO=$CARGO_PROFILE_RELEASE_LTO"
-          rustc --print cfg | grep target_cpu || true
-          rustc -Vv
-          ./scripts/ci.sh 2>&1 | tee /tmp/ci_full_output.log
-
-      - name: Extract Shard Telemetry & Metrics
-        if: steps.gate.outputs.matched == 'true' && always()
-        run: |
-          mkdir -p /tmp/shard_output
-          cp /tmp/ci_full_output.log /tmp/shard_output/draw-shard${{ matrix.shard }}.log 2>/dev/null || true
-          cp /tmp/bench_hydra.txt /tmp/shard_output/bench_hydra.txt 2>/dev/null || true
-          cp /tmp/kbench.txt /tmp/shard_output/kbench.txt 2>/dev/null || true
-          cp /tmp/bench_results.json /tmp/shard_output/bench_results.json 2>/dev/null || true
-          echo "${{ matrix.shard }}" > /tmp/shard_output/shard_num.txt
-          echo "${{ steps.gate.outputs.cpu_name }}" > /tmp/shard_output/cpu_name.txt
-
-      - name: Upload Shard Output
-        if: steps.gate.outputs.matched == 'true' && always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: shard-result-${{ matrix.shard }}
-          path: /tmp/shard_output/
-          retention-days: 1
-
-  check-wave-4:
-    name: "Check Wave 4 Status"
-    needs: [check-wave-3, wave-4]
-    if: always() && needs.check-wave-3.outputs.acquired != 'true'
-    runs-on: ubuntu-latest
-    outputs:
-      acquired: ${{ steps.check.outputs.acquired }}
-    steps:
-      - name: Query Target Artifacts
-        id: check
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              run_id: context.runId,
-            });
-            const matches = artifacts.data.artifacts.filter(a => a.name.startsWith('shard-result-'));
-            console.log(`Wave 4 target shard artifacts found: ${matches.length}`);
-            core.setOutput('acquired', matches.length > 0 ? 'true' : 'false');
-
-  # ==========================================
-  # WAVE 5: Shards 41..50 (Final Fail-Safe Wave)
-  # ==========================================
-  wave-5:
-    name: "Wave 5 - Shard ${{ matrix.shard }}"
-    needs: check-wave-4
-    if: needs.check-wave-4.outputs.acquired != 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 24
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [41, 42, 43, 44, 45, 46, 47, 48, 49, 50]
-    env:
-      CARGO_TERM_COLOR: always
-      CARGO_INCREMENTAL: 0
-      CARGO_NET_RETRY: 3
-      RUSTFLAGS: "-C target-cpu=x86-64-v3"
-      CARGO_PROFILE_RELEASE_LTO: fat
-      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: 1
-      CARGO_PROFILE_RELEASE_OPT_LEVEL: 3
-      CARGO_PROFILE_RELEASE_PANIC: abort
-      CARGO_PROFILE_RELEASE_STRIP: debuginfo
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Fast-Discard Gate (Target Silicon Probe)
-        id: gate
-        run: |
-          CPU_NAME=$(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2 | xargs || echo "Unknown CPU")
-          echo "Host CPU: $CPU_NAME"
-          echo "cpu_name=$CPU_NAME" >> "$GITHUB_OUTPUT"
-          if grep -qE "8573C|8370C" /proc/cpuinfo; then
-            echo "matched=true" >> "$GITHUB_OUTPUT"
-            echo "🎯 TARGET SILICON ACQUIRED ($CPU_NAME). Proceeding to full benchmark."
-          else
-            echo "matched=false" >> "$GITHUB_OUTPUT"
-            echo "❌ Non-target silicon ($CPU_NAME). Fast-discarding in < 1s."
-          fi
-
-      - name: Cache Cargo Registry & Build
-        if: steps.gate.outputs.matched == 'true'
-        uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: "ci-v3-v0.1"
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/v0.1' }}
-
-      - name: Run Full CI & Benchmark Suite
-        if: steps.gate.outputs.matched == 'true'
-        id: ci_run
-        run: |
-          set -o pipefail
-          echo "RUSTFLAGS=$RUSTFLAGS"
-          echo "CARGO_PROFILE_RELEASE_LTO=$CARGO_PROFILE_RELEASE_LTO"
-          rustc --print cfg | grep target_cpu || true
-          rustc -Vv
-          ./scripts/ci.sh 2>&1 | tee /tmp/ci_full_output.log
-
-      - name: Extract Shard Telemetry & Metrics
-        if: steps.gate.outputs.matched == 'true' && always()
-        run: |
-          mkdir -p /tmp/shard_output
-          cp /tmp/ci_full_output.log /tmp/shard_output/draw-shard${{ matrix.shard }}.log 2>/dev/null || true
-          cp /tmp/bench_hydra.txt /tmp/shard_output/bench_hydra.txt 2>/dev/null || true
-          cp /tmp/kbench.txt /tmp/shard_output/kbench.txt 2>/dev/null || true
-          cp /tmp/bench_results.json /tmp/shard_output/bench_results.json 2>/dev/null || true
-          echo "${{ matrix.shard }}" > /tmp/shard_output/shard_num.txt
-          echo "${{ steps.gate.outputs.cpu_name }}" > /tmp/shard_output/cpu_name.txt
-
-      - name: Upload Shard Output
-        if: steps.gate.outputs.matched == 'true' && always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: shard-result-${{ matrix.shard }}
-          path: /tmp/shard_output/
-          retention-days: 1
-
-  # ==========================================
+  # =========================================================================
   # FINAL AGGREGATOR: Scoreboard & Unified Zip
-  # ==========================================
+  # Consolidates all target hits across all 80 shards and reports results.
+  # =========================================================================
   aggregate-and-report:
     name: "Consolidate Draws & Publish Scoreboard"
-    needs: [wave-1, check-wave-1, wave-2, check-wave-2, wave-3, check-wave-3, wave-4, check-wave-4, wave-5]
+    needs: shards
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -580,7 +264,7 @@ jobs:
               })
 
           with open(step_summary, 'a') as out:
-              out.write("## 🚀 Silicon Target Acquisition & Benchmark Scoreboard\n\n")
+              out.write("## 🚀 Silicon Target Acquisition & Benchmark Scoreboard (80-Shard Fleet)\n\n")
               if hits:
                   out.write("| Draw | Shard | Host Silicon | Sustained Full-Verify (msg/s) | kbench fold512_r 1t | Bit Parity | Allocations |\n")
                   out.write("| :---: | :---: | :--- | :---: | :---: | :---: | :---: |\n")
@@ -588,7 +272,7 @@ jobs:
                       out.write(f"| **#{idx}** | Shard {h['shard']} | `{h['cpu']}` | **{h['rate']}** | {h['kbench']} | `{h['parity']}` | `{h['allocs']}` |\n")
                   out.write(f"\n✅ **Target hits acquired:** {len(hits)} shards landed on certified Xeon silicon.\n")
               else:
-                  out.write("⚠️ **No shards acquired target silicon (8573C / 8370C) across all executed waves.**\n")
+                  out.write("⚠️ **No shards acquired target silicon (8573C / 8370C) across all 80 shards.**\n")
                   out.write("All shards fast-discarded in < 2s.\n")
 
           with open(github_output, 'a') as go:
