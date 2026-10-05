@@ -678,3 +678,47 @@ Verdicts (all single-draw, the ≥3-draw law governs flips):
    exercised on-silicon yet (no noisy Intel draw in this run's waves).
    Front A note for the Phase II program: 0.889 cyc/msg span-median —
    the warm-start lever's target denominator on this draw class.
+
+**Draw 17 (8573C healthy, run 37269680406, Wave-1 shard 9; commit 4144c0b
+— the 11wm bisect aboard).** kbench `fold512_r` 1t = **30.61**, THP
+granted, bit-exact, allocs=0. Section 16 fired its ONLY failure of the
+push on the classic arm's CV (26.07 > 25.0 — a 1-point marginal breach;
+span arm tight at CV 10.3%, r8 pure-ingest PASS 3.084B) — the shard went
+red but the full arm ladder had already run; the draw counts for the
+ledger (the R2 §8 law: single-shard constraint noise never blocks the
+fishing push; the scoreboard + artifacts published clean).
+
+| arm | draw 16 | draw 17 | delta vs 11b |
+|---|---|---|---|
+| 11b ring+distinct | 992.4M | 1,049.6M | — |
+| 11k ring+siblings | 1,057.9M | 1,056.1M | +6.6% → **+0.6%** |
+| 11e prepatch off | 982.4M | 1,025.8M | −1.0% → −2.3% |
+| 11u-64 / 11u-256 | +4.6% / +4.6% | 1,058.5M / 1,058.2M | +0.8% / +0.8% |
+| 11wm (A3-b, distinct) | — | 1,053.7M | **+0.4%** |
+| 11v dfold | +5.5% | 1,064.4M | +1.4% |
+| 11w rxdesc armed | −20.2% | 809.9M | −22.9% (6th straight) |
+| 11z null-mode | 1,306.3M @ 17.1 | **1,345.3M @ 17** | **the 17 cyc/span floor replicates** |
+
+Verdicts (two draws in; the law wants three):
+1. **The null reading is STABLE: 17 cyc/span on both draws.** The
+   plumbing floor is real, small, and replicates — Route R stays dead;
+   the worker program (T/endings/supply) owns ~170 cyc/span.
+2. **A1 (siblings) is wobbling**: +6.6% then +0.6%. Draw 16's 11b
+   (992.4) now looks noise-low (the first-arm position tax) — the
+   honest interim read: siblings ≥ distinct on both draws, magnitude
+   unclear, median pending the third draw. No flip (the law).
+3. **A3-a and A3-b both faded on draw 17** (batch +0.8% both points;
+   watermark +0.4% on distinct) — draw 16's +4.6% was likely position
+   noise. BUT 11wm priced the watermark on DISTINCT, where the assist
+   is dormant (242 chunks) — the R12-era reference shape is SIBLINGS,
+   where the assist runs 294,693 chunks. The bisect re-aims: 11wm gets
+   HFT_FABRIC_PLACE=siblings on the next push (the watermark question
+   only exists where the assist is live).
+4. dfold: +5.5% then +1.4% (median +3.5%, direction positive 2-of-2 on
+   the ring path — the rxdesc-era neutrality does not transfer; the
+   third draw decides whether 11v's case reopens on the healthy class).
+5. The section-16 classic-CV breach on a healthy draw (span arm tight)
+   is now the dominant shard-red class: the constraint is doing its
+   job, the data publishes anyway, and no gate change is warranted
+   without a roadmap mandate (R3 §3.1's reorder is in; CV relaxation
+   was never on the table).
