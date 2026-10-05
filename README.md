@@ -135,6 +135,8 @@ Every architectural phase, design thesis, failure ledger, and benchmark record i
 | [`docs/27-r14-vend.md`](docs/27-r14-vend.md) | **Phase 7b: R14 Vend Ending** (The Vector Barrett, Class-Conditional) |
 | [`docs/28-r15-vtail.md`](docs/28-r15-vtail.md) | **Phase 8a: R15 Vtail** (The Vectorized Lane-0 Tail, r≥16-Gated) |
 | [`docs/29-r16-double-helix.md`](docs/29-r16-double-helix.md) | **Phase 9b: R16 Double Helix** (rxdesc Array Submission + the Distinct Placement Flip + the R16e RX Desc Diet — the 2B/5B Program) |
+| [`docs/challenge/ROADMAP1.md`](docs/challenge/ROADMAP1.md) · [`ROADMAP2.md`](docs/challenge/ROADMAP2.md) · [`ROADMAP3.md`](docs/challenge/ROADMAP3.md) | **Senior-Dev Audits** (the 2B/5B physics, the PR #7 lever ledger, Route T/S/D + Lever B/F1 programs) |
+| [`docs/challenge/CHECKLIST.md`](docs/challenge/CHECKLIST.md) | **Phase 10: R17 Execution Checklist** (the consolidated roadmap synthesis — ring default restore, null-mode instrument, Front A 5B program, the 2B record-class campaign) |
 
 ---
 
