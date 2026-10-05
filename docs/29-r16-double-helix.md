@@ -1093,6 +1093,62 @@ premium will be smaller than +104% — but the ROADMAP1 §6-I1 budget
 (Front A 4.8-5.5B on 8573C ≈ +40…+60% over 3.4B) needs only the
 mechanism to transfer, not the weak-host multiple.
 
+**Draw 24 — THE 11rb HEALTHY READINGS: 2/2 CLEAR THE BAR (run
+37295181423, commit 846284b — the draw-24 fish, battery unchanged from
+616584c; Wave-1 shards 6/9 uploaded, BOTH healthy 8573C: kbench
+`fold512_r` 1t = 34.31/30.20; battery CLEAN on both — I-7 holds
+through its fourth fleet draw).** 11b per shard: **1,194,428,933 /
+995,443,342** (the kernel-correlation law holds — the stronger host
+prices the whole battery higher; draw 18a's 1.2391B fleet best stands
+on the default path). T-1 4th/5th readings: fold512_t 29.88 vs r 34.31
+= −12.9% / 26.19 vs 30.20 = −13.2% (Route T stays formally dead).
+
+**THE 11rb HEALTHY READINGS — BOTH CLEAR THE +15% BAR:**
+
+```text
+                      default Front A      rxbuild Front A     premium
+shard 6 (kbench 34.31)  3,446,213,482       4,603,481,853     +33.6%
+                       @ 0.6674 cyc/msg   @ 0.50 cyc/msg
+shard 9 (kbench 30.20)  3,099,204,136       3,767,261,217     +21.6%
+                       @ 0.7421 cyc/msg   @ 0.61 cyc/msg
+sustained (armed)       1,246,447,190 / 1,048,698,948 vs own-shard
+                       11b 1,194,428,933 / 995,443,342
+                       = +4.4% / +5.3% — shard 6's ARMED rate EXCEEDS
+                       the standing fleet-best 11b (1,239,070,083);
+                       shard 9 crosses the 1B R8 gate. F-2 is not just
+                       a Front A lever — it is a SUSTAINED lever too on
+                       healthy silicon (the freed ~1MB entry footprint
+                       + the patch-budget headroom coming back to the
+                       fold supply)
+patch law               span last_pass=frames on both (the pinned law);
+                       sustained shard 9 last_pass 22,124 vs frames
+                       21,996 (+128 = the rotating-session re-patch
+                       count — entries re-patched at session flips,
+                       parity BIT-EXACT, the diagnostic counts patches
+                       not unique entries)
+RX span prod_ms         0.5 / 0.6 ms — sub-millisecond again
+the transfer question   ANSWERED: the healthy premium (+21.6…+33.6%) is
+                       smaller than the weak-host +104% exactly as
+                       Amdahl predicts (the healthy denominator carries
+                       a smaller RX-share), yet far above the +15% bar;
+                       shard 6's 4.603B reaches 92% of the 5B target
+                       and the ROADMAP1 §6-I1 budget band (4.8-5.5B) is
+                       in arm's reach with the residual levers
+arm context             11e −2.3/−2.5% (9th straight), 11k −2.8/+0.9%,
+                       11w −9.7/−4.8% (12th straight — the ring flip
+                       stays permanent), 11z null +26.8/+33.6%,
+                       11wn −17.0/−13.7% (F-1's instrument stays dead —
+                       the refutation replicates)
+```
+
+**The decision tally: 2/3 healthy readings at ≥ +15% (+33.6%, +21.6%),
+sign-unanimous, plus two noisy-host previews at +104.5/+118.3%.** One
+more healthy draw at ≥ +15% triggers the default-flip protocol; a miss
+keeps fishing; persistent misses kill. The fish continues — and with
+the sustained side now pricing POSITIVE on healthy silicon, the flip
+would carry the 2B program upward with it (the armed sustained already
+exceeds the fleet-best 11b on a record-class host).
+
 ## 10. I-7 — the prepatch-race hardening round (SHIPPED — this revision)
 
 The three-strike class (R9's +39, R12's 11j −47,297, draw 19's +35 on a
@@ -1381,5 +1437,9 @@ Kill/flip rule per the CHECKLIST: ≥ +15% healthy Front A over ≥ 3 draws
 2/2 noisy 8370C hosts — +104.5%/+118.3% Front A (4.55B/4.45B @
 0.61/0.63 cyc/msg), sustained +2.0%/+1.9% with the lever armed, patch
 law holding, RX span prod_ms at 0.8/0.7 ms, BIT-EXACT, allocs=0.** The
-decision tally opens only on healthy draws (0/3 so far) — the fish
-continues until three 8573C-class readings land.
+decision tally opens only on healthy draws — and **draw 24 opened it:
+2/2 healthy 8573C readings CLEAR the bar (+33.6% on kbench-34.31,
++21.6% on kbench-30.20; the armed sustained +4.4%/+5.3%, shard 6's
+armed 1,246,447,190 EXCEEDS the standing fleet-best 11b)**. Tally
+2/3 — one more healthy draw at ≥ +15% triggers the default-flip
+protocol.
