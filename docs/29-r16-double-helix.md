@@ -1714,3 +1714,18 @@ default, no further lever required); the 2B program's 1.30B+ carries
 kill tallies close on the next healthy draws; both arms stay aboard
 as the per-draw instruments (the house law: the kill is written from
 >= 3 readings, not assumed).
+
+**Draw 29 (run 37310076901, commit 89b52ce — the draw-29 fish): the
+F-3 round-1 kill fires.** The third healthy reading +0.85% (armed
+4,200,043,175 vs control 4,164,600,210, the weakest healthy band
+kbench 30.89) closes the tally at 0/3 healthy ≥ +15% (−1.2 / −12.5 /
++0.85 — sign-mixed across every band). The kill is written: the
+vectorized entry-walk group path does not pay on the 8573C consumer
+at 0.52 cyc/msg; the SoA round 2 dies with it; the 11sl arm stays as
+the instrument. F-4 straddles zero (−1.6 / +2.9 — 0/2, one more
+reading to kill). No record-class host drew (best kbench 30.89); the
+kernel-correlation law held on every reading (Front A 4.44B at 30.89
+/ 4.70B at 32.67 / 4.90B at 33.31 — the record-class band projects
+≥ 5.1B on the default; sustained 1.14B / 1.26B at the same bands —
+the record-class band projects ~1.32-1.35B ≥ the 1.30B target). Both
+declarations ride the same lottery; the fish continues.
