@@ -1192,6 +1192,44 @@ arm 11wn pins `HFT_RXBUILD=0` explicitly so the warm instrument keeps
 pricing the classic path (without the pin, the rxbuild default would
 win and the arm would price nothing).
 
+**Draw 26 — THE FLIP'S FLEET VALIDATION, CLEAN ON THE FIRST DRAW (run
+37299209503, commit 8da4356 — the flip commit itself; Wave-1 shard 14
+uploaded, healthy 8573C kbench `fold512_r` 1t = 30.35 — the weakest
+healthy-class band; battery CLEAN through every arm, all greps hold).**
+
+```text
+the default IS rxbuild     11b sustained 1,141,371,292 BIT-EXACT
+                           allocs=0 with RXBUILD_DIAGNOSTIC enabled=true
+                           (patches 248.2M, the rotating-session law);
+                           section-16 span RXBUILD enabled=true,
+                           patches=769,860=35×21,996, last_pass=frames
+the rollback arm           11rb (HFT_RXBUILD=0): enabled=false, classic
+                           sustained 1,108,831,104 (−2.9% vs the new
+                           default), classic span ~2.57B @ 0.90 — the
+                           flip's live price on THIS host: +2.9%
+                           sustained, +81% Front A
+the default Front A        4,642,648,016 @ 0.4954 cyc/msg (30-run
+                           median) — 93% of the 5B target ON THE
+                           DEFAULT, on the WEAKEST healthy-class host
+                           (the pre-flip classic default on this band
+                           read ~3.1B @ 0.74 — draw 24 shard 9)
+the warm instrument        11wn (RXWARM=1 RXBUILD=0): RXWARM enabled=
+                           true fixes=21,996 (the pass-1 fill),
+                           last_pass_fixes=0, RXBUILD false — priced
+                           −17.6% vs the new default (the instrument
+                           works post-flip)
+arm table (vs the new      11k −2.6%, 11w −18.8% (13th straight),
+default)                   11z null +5.0%, 11wn −17.6%, 11rb −2.9%
+```
+
+**The flip is validated on target silicon at the first attempt.** The
+default sustained on the weakest healthy band now reads 1.141B (the
+record band 1.235-1.239B was set on stronger hosts — the next
+record-class draw hunts 1.30B+ on the new default); the default Front A
+reads 4.643B @ 0.495 — **the 5B claim needs +7.7% from the residual
+levers (F-3 prefix-sum walk, F-4 NBUF=32, F-5 reset hygiene) or a
+stronger host**, both inside the program's remaining budget.
+
 ## 10. I-7 — the prepatch-race hardening round (SHIPPED — this revision)
 
 The three-strike class (R9's +39, R12's 11j −47,297, draw 19's +35 on a
