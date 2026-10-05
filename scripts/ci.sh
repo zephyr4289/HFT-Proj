@@ -487,6 +487,33 @@ grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_f5_budget.txt
 grep -q "allocs=0" /tmp/bench_f5_budget.txt
 grep -q "ADVANCE_DIAGNOSTIC" /tmp/bench_f5_budget.txt
 
+echo "=== 11ep. R19: HFT_ENDPIPE Software-Pipelined Chunk Drain ARMED (attribution) ==="
+# THE DIRECTIVE'S PRIMARY LEVER (Engineer 2, docs/directives/
+# ENGINEER_2_DIRECTIVE.md §4.1): HFT_ENDPIPE=1 drains the ring worker's
+# batches through 4-span quads (kernel.eval_quad — four folds, four
+# lane-0 tails, four lane endings, four FNV combines; the ending chains
+# of spans k..k+3 overlap the neighbors' folds instead of serializing
+# behind their own). The drain ALSO restores the per-group prefetch
+# spray cadence the R12 restructure had demoted to once-per-batch, and
+# deepens the lead by the quad's 4-span fold reach (EP_LEAD; HFT_PF_AHEAD
+# sweeps on top). Gates-as-arms (the 11w armed-soak precedent): bit-exact
+# golden parity + ALLOC_DELTA=0 asserted on every draw; the sustained
+# verdict prices the lever per draw (the R15 vtail protocol — local and
+# packed-corpus numbers do not transfer; only this arm decides).
+HFT_ENDPIPE=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_endpipe.txt
+grep -q "HYDRA_BITPARITY.*-> BIT-EXACT" /tmp/bench_endpipe.txt
+grep -q "allocs=0" /tmp/bench_endpipe.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_endpipe.txt
+# R19 ROUND 2 (the decomposition, after round 1's fleet refutation —
+# docs/31 §8): ENDPIPE sustained -14.5..-21.2% (median -16.7%) across 7
+# draws / 2 silicon classes vs 11b, and the deepened leads were
+# monotonically worse (853 -> 798 -> 792 on shard 42; the pf8/pf12 sweep
+# sub-runs are retired). This control runs the quad ALONE (spray off) —
+# HFT_PF_LINES=0 prices the restored spray's share of the regression.
+HFT_ENDPIPE=1 HFT_PF_LINES=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_endpipe_nospray.txt
+grep -q "HYDRA_BITPARITY.*-> BIT-EXACT" /tmp/bench_endpipe_nospray.txt
+grep -q "allocs=0" /tmp/bench_endpipe_nospray.txt
+
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)

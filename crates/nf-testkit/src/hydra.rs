@@ -673,6 +673,19 @@ fn lane_worker(
     // it on the real span mix through the full worker loop. Read once at
     // worker start, outside every window.
     let tri = std::env::var("HFT_WORKER_TRI").as_deref() == Ok("1");
+    // R19 (HFT_ENDPIPE): the software-pipelined chunk drain — consecutive
+    // span QUADS evaluate through `kernel.eval_quad` (four vector folds,
+    // four lane-0 tails, four lane endings, four FNV combines: the ending
+    // chains of spans k..k+3 overlap each other and the next quad's fold
+    // streams instead of serializing behind their own — the ~26% serial
+    // ending blob, ROADMAP3 §4.3, the directive's primary lever). The
+    // drain also restores the per-group prefetch spray cadence the R12
+    // anchor restructure had demoted to once-per-batch, deepened by the
+    // quad's 4-span fold reach (see the loop body). Read once at worker
+    // start, outside every window. Precedence when combined with the
+    // older experiment knobs: ENDPIPE > PIPE > EVAL2 > TRI (the CI arms
+    // never combine them).
+    let endpipe = std::env::var("HFT_ENDPIPE").as_deref() == Ok("1");
     let pf = PfCfg::detect(kernel);
     // R15: the drain granularity (HFT_WORKER_BATCH, the supply-side sweep —
     // read once at worker start, outside every window).
@@ -755,6 +768,153 @@ fn lane_worker(
         // advances by THIS count.
         let mut nres: u64 = 0;
         let mut i = 0u64;
+        // R12: results are indexed by RESULT count, not desc count —
+        // anchor descs consume ring slots without emitting.
+        let emit = |res_slots: &mut [Res], nres: &mut u64, span_id: u32, value: u64| {
+            res_slots[((rhead + *nres) & RES_MASK) as usize] = Res {
+                span_id,
+                _pad: 0,
+                value,
+            };
+            *nres += 1;
+        };
+        // R19 (HFT_ENDPIPE): the flat pipelined drain. When armed, this
+        // loop consumes the WHOLE batch (i -> n) through 4-span groups;
+        // the legacy loop below then no-ops (its condition is false on
+        // entry) — the non-ENDPIPE arms stay byte-identical.
+        if endpipe {
+            // The pipeline's fold reach, in spans: the NEXT quad's four
+            // bodies must be in flight (sprayed) while this quad's
+            // endings retire. The spray lead therefore runs
+            // `pf.ahead + 4` spans past the eval cursor — HFT_PF_AHEAD
+            // sweeps the directive's 8-12 span window on top of this.
+            const EP_LEAD: u64 = 4;
+            while i < n {
+                // R12: anchors re-anchor the derivation and consume their
+                // slot without evaluating or emitting (the flat-drain
+                // form of the legacy loop's head check).
+                if desc8 {
+                    let w = slots[((tail + i) & DESC_MASK) as usize];
+                    if (w >> 48) & DESC8_ANCHOR != 0 {
+                        deriv.cur_span = (w & 0xFFFF_FFFF) as u64;
+                        i += 1;
+                        continue;
+                    }
+                }
+                // The group: a QUAD when four descs are in range with no
+                // anchor among them (the pipeline's unit of scheduling);
+                // a PAIR where two are in range anchor-free (the R10
+                // shape — the tail fallback); else a single span. null
+                // keeps singles (the diagnostic stub must not pipeline).
+                let quad = !null
+                    && i + 3 < n
+                    && !desc8_anchor_ahead(slots, tail + i + 1, desc8)
+                    && !desc8_anchor_ahead(slots, tail + i + 2, desc8)
+                    && !desc8_anchor_ahead(slots, tail + i + 3, desc8);
+                let pair = !null
+                    && !quad
+                    && i + 1 < n
+                    && !desc8_anchor_ahead(slots, tail + i + 1, desc8);
+                let g: u64 = if quad {
+                    4
+                } else if pair {
+                    2
+                } else {
+                    1
+                };
+                // The per-group spray — restoring the R8/R9 cadence. The
+                // R12 anchor restructure had left the spray block in the
+                // outer loop while the inner eval loop drained the batch,
+                // so it ran ONCE per batch (the cursor covered ~1 span;
+                // the per-span burst design effectively dead — see
+                // docs/31-r19). Here it runs per GROUP with the budget
+                // scaled for the group plus the pipeline's fold reach.
+                if pf.lines > 0 && pf.burst > 0 {
+                    let target = tail + i + g + pf.ahead + EP_LEAD;
+                    let budget = pf.burst * (g as usize + EP_LEAD as usize);
+                    let mut issued = 0usize;
+                    while pf_span < target && pf_span < head && issued < budget {
+                        let (dptr, dlen) = desc_ptr_len(slots, pf_span, desc8, lane_base);
+                        let span_lines = (((dlen as usize) + 63) >> 6).min(pf.lines);
+                        let end = span_lines.min(pf_line + (budget - issued));
+                        // SAFETY: prefetch never faults and never
+                        // dereferences; the slot is published (below
+                        // head, above tail).
+                        for l in pf_line..end {
+                            prefetch_line(dptr as *const u8, l);
+                        }
+                        issued += end - pf_line;
+                        if end >= span_lines {
+                            pf_span += 1;
+                            pf_line = 0;
+                        } else {
+                            pf_line = end;
+                        }
+                    }
+                }
+                if quad {
+                    // SAFETY: published descriptor slots (Acquire above);
+                    // body slices per the HydraLane contract.
+                    let (p0, l0, s0) =
+                        desc_read(slots, tail + i, desc8, lane_base, &mut deriv);
+                    let (p1, l1, s1) =
+                        desc_read(slots, tail + i + 1, desc8, lane_base, &mut deriv);
+                    let (p2, l2, s2) =
+                        desc_read(slots, tail + i + 2, desc8, lane_base, &mut deriv);
+                    let (p3, l3, s3) =
+                        desc_read(slots, tail + i + 3, desc8, lane_base, &mut deriv);
+                    let b0 =
+                        unsafe { std::slice::from_raw_parts(p0 as *const u8, l0 as usize) };
+                    let b1 =
+                        unsafe { std::slice::from_raw_parts(p1 as *const u8, l1 as usize) };
+                    let b2 =
+                        unsafe { std::slice::from_raw_parts(p2 as *const u8, l2 as usize) };
+                    let b3 =
+                        unsafe { std::slice::from_raw_parts(p3 as *const u8, l3 as usize) };
+                    // SAFETY: feature contract verified at spawn; values
+                    // bit-exact with four serial evals (the quad
+                    // differential pins it).
+                    let (v0, v1, v2, v3) = unsafe { kernel.eval_quad(b0, b1, b2, b3) };
+                    emit(res_slots, &mut nres, s0, v0);
+                    emit(res_slots, &mut nres, s1, v1);
+                    emit(res_slots, &mut nres, s2, v2);
+                    emit(res_slots, &mut nres, s3, v3);
+                    i += 4;
+                } else if pair {
+                    // The R10 pipelined pair (the tail fallback).
+                    // SAFETY: as the quad path, twice.
+                    let (p0, l0, s0) =
+                        desc_read(slots, tail + i, desc8, lane_base, &mut deriv);
+                    let (p1, l1, s1) =
+                        desc_read(slots, tail + i + 1, desc8, lane_base, &mut deriv);
+                    let b0 =
+                        unsafe { std::slice::from_raw_parts(p0 as *const u8, l0 as usize) };
+                    let b1 =
+                        unsafe { std::slice::from_raw_parts(p1 as *const u8, l1 as usize) };
+                    // SAFETY: feature contract verified at spawn.
+                    let (v0, v1) = unsafe { kernel.eval_pair(b0, b1) };
+                    emit(res_slots, &mut nres, s0, v0);
+                    emit(res_slots, &mut nres, s1, v1);
+                    i += 2;
+                } else {
+                    let (dptr, dlen, dsid) =
+                        desc_read(slots, tail + i, desc8, lane_base, &mut deriv);
+                    let value = if null {
+                        // Diagnostic: constant work, no body read, wrong
+                        // value (by design — see null_mode doc).
+                        (dlen as u64) | ((dsid as u64) << 32)
+                    } else {
+                        let body = unsafe {
+                            std::slice::from_raw_parts(dptr as *const u8, dlen as usize)
+                        };
+                        // SAFETY: feature contract verified at spawn.
+                        unsafe { kernel.eval(body) }
+                    };
+                    emit(res_slots, &mut nres, dsid, value);
+                    i += 1;
+                }
+            }
+        }
         while i < n {
             // Advance the prefetch pipeline: spray up to `burst` lines per
             // evaluated span until the cursor covers `pf.ahead` spans beyond
@@ -781,15 +941,9 @@ fn lane_worker(
                 }
             }
             // R12: results are indexed by RESULT count, not desc count —
-            // anchor descs consume ring slots without emitting.
-            let emit = |res_slots: &mut [Res], nres: &mut u64, span_id: u32, value: u64| {
-                res_slots[((rhead + *nres) & RES_MASK) as usize] = Res {
-                    span_id,
-                    _pad: 0,
-                    value,
-                };
-                *nres += 1;
-            };
+            // anchor descs consume ring slots without emitting. (The emit
+            // closure is defined once above the drain — R19 hoisted it so
+            // the ENDPIPE flat drain and this legacy loop share it.)
             // R8 phase-6: single-span eval for BOTH kernels. The eval2
             // interleave (two concurrent body streams per worker) was
             // designed to hide clmul latency on early AVX-512 silicon, but

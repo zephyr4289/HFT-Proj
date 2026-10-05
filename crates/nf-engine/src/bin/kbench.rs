@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use nf_testkit::affinity;
-use nf_testkit::crcfold::{fold512_available, transpose_arena_slot, CrcKernel};
+use nf_testkit::crcfold::{endpipe, fold512_available, transpose_arena_slot, CrcKernel};
 use nf_testkit::sink::span_crc32c_8lane;
 
 /// Working-set size per thread (fits L3 on runner silicon; we are measuring
@@ -95,6 +95,7 @@ fn main() {
         bench_1t("fold512_rc", c0, mode_fold512_rc);
         bench_1t("fold512_rd", c0, mode_fold512_rd);
         bench_1t("fold512_r_pair", c0, mode_fold512_r_pair);
+        bench_1t("fold512_r_quad", c0, mode_fold512_r_quad);
         bench_1t("fold512_eval2", c0, mode_fold512_eval2);
         bench_1t("fold512_pair", c0, mode_fold512_pair);
         bench_1t("fold512_tri", c0, mode_fold512_tri);
@@ -106,6 +107,13 @@ fn main() {
         bench_1t("fold512_noend", c0, mode_fold512_noend);
         bench_1t("fold512_pre", c0, mode_fold512_pre);
         bench_1t("fold512_t", c0, mode_fold512_t);
+        // R19 (HFT_ENDPIPE, ROADMAP3 §4.3 measure-first): the ending-only
+        // twins — serial vs pipelined endings on 16-span groups, fold states
+        // precomputed untimed. end16p/end16s >= 1.5 builds the worker drain;
+        // < 1.5 kills it. Sinks must MATCH (the rows compute the same
+        // values; the differential pins the equality).
+        bench_1t("fold512_end16s", c0, mode_end16_serial);
+        bench_1t("fold512_end16p", c0, mode_end16_pipe);
         let supply_bytes = (SUPPLY_TARGET_BYTES / SPAN) * SPAN;
         bench_1t_sz("fold512_supply", c0, mode_fold512_r, supply_bytes);
     }
@@ -609,6 +617,120 @@ fn mode_fold512_t(buf: &[u8], sink: &mut u64) -> usize {
         };
         off += SPAN;
         i += 1;
+    }
+    *sink = acc;
+    off
+}
+
+// ── R19: the HFT_ENDPIPE ending-only twins (measure first) ────────────────
+
+/// The precomputed fold states for the ending-only rows — built ONCE,
+/// untimed (the mode_fold512_t arena pattern), from the same
+/// deterministic packed corpus every bench_1t call sees. Both twins
+/// pay identical checkpoint traffic (states streamed from this array),
+/// so the end16p/end16s ratio is the pure ending-schedule effect.
+fn end16_states(buf: &[u8]) -> &'static Vec<endpipe::FoldState> {
+    static STATES: std::sync::OnceLock<Vec<endpipe::FoldState>> = std::sync::OnceLock::new();
+    STATES.get_or_init(|| {
+        let cfg = endpipe::EndCfg::from_env();
+        let n = buf.len() / SPAN;
+        let mut v = Vec::with_capacity(n);
+        for i in 0..n {
+            // SAFETY: kbench only builds states when fold512_available()
+            // held at row registration; the corpus slices are in bounds.
+            v.push(unsafe { endpipe::fold_span(&buf[i * SPAN..(i + 1) * SPAN], cfg) });
+        }
+        v
+    })
+}
+
+/// R19: the register-path QUAD on the natural-domain kernel — the
+/// kernel-level attribution twin of the ENDPIPE arm (fold512_r_quad vs
+/// fold512_r on the same draw = the pipelined-ending schedule's effect
+/// on the FULL span: fold + ending, packed corpus; the fabric effect
+/// additionally carries the real layout + ring mechanics). Values equal
+/// four serial evals (the quad differential pins it).
+fn mode_fold512_r_quad(buf: &[u8], sink: &mut u64) -> usize {
+    let kernel = CrcKernel::Reflect;
+    let mut off = 0usize;
+    let mut acc = 0u64;
+    while off + 4 * SPAN <= buf.len() {
+        // SAFETY: main() only dispatches here when fold512_available().
+        let (v0, v1, v2, v3) = unsafe {
+            kernel.eval_quad(
+                &buf[off..off + SPAN],
+                &buf[off + SPAN..off + 2 * SPAN],
+                &buf[off + 2 * SPAN..off + 3 * SPAN],
+                &buf[off + 3 * SPAN..off + 4 * SPAN],
+            )
+        };
+        acc ^= v0 ^ v1 ^ v2 ^ v3;
+        off += 4 * SPAN;
+    }
+    *sink = acc;
+    off
+}
+
+/// R19 (ROADMAP3 §4.3, the measure-first law): the endings of 16-span
+/// groups, ONE SPAN AT A TIME — today's production schedule (the fold
+/// states precomputed, untimed; the timed region is the pure ending
+/// stack: lane-0 tail, lane endings, FNV combine, per span, serially).
+/// `fold512_end16s` vs `fold512_end16p` on the same draw is the ENDPIPE
+/// decision: ratio >= 1.5 builds the worker drain, < 1.5 writes the
+/// refutation and moves on. The sink MUST equal end16p's sink (same
+/// values, XOR-commutative).
+fn mode_end16_serial(buf: &[u8], sink: &mut u64) -> usize {
+    let states = end16_states(buf);
+    let cfg = endpipe::EndCfg::from_env();
+    let mut off = 0usize;
+    let mut acc = 0u64;
+    while off + 16 * SPAN <= buf.len() {
+        for k in 0..16usize {
+            let b = &buf[off + k * SPAN..off + (k + 1) * SPAN];
+            // SAFETY: the row only runs under fold512_available(); the
+            // state is the fold_span image of this exact slice.
+            acc ^= unsafe { endpipe::end_span(b, &states[off / SPAN + k], cfg) };
+        }
+        off += 16 * SPAN;
+    }
+    *sink = acc;
+    off
+}
+
+/// R19: the endings of 16-span groups through the PIPELINED schedule —
+/// four spans' stages in flight (four lane-0 tails, four lane endings,
+/// four FNV combines per quad; four quads per 16-span group). The
+/// timed region is identical work to mode_end16_serial on identical
+/// inputs; only the instruction schedule differs.
+fn mode_end16_pipe(buf: &[u8], sink: &mut u64) -> usize {
+    let states = end16_states(buf);
+    let cfg = endpipe::EndCfg::from_env();
+    let mut off = 0usize;
+    let mut acc = 0u64;
+    let mut vals = [0u64; 4];
+    while off + 16 * SPAN <= buf.len() {
+        for q in 0..4usize {
+            let s0 = off / SPAN + q * 4;
+            let b0 = off + (q * 4) * SPAN;
+            let bodies = [
+                &buf[b0..b0 + SPAN],
+                &buf[b0 + SPAN..b0 + 2 * SPAN],
+                &buf[b0 + 2 * SPAN..b0 + 3 * SPAN],
+                &buf[b0 + 3 * SPAN..b0 + 4 * SPAN],
+            ];
+            // SAFETY: the row only runs under fold512_available(); each
+            // state is the fold_span image of its body.
+            unsafe {
+                endpipe::end_quad4(
+                    bodies,
+                    [&states[s0], &states[s0 + 1], &states[s0 + 2], &states[s0 + 3]],
+                    cfg,
+                    &mut vals,
+                )
+            };
+            acc ^= vals[0] ^ vals[1] ^ vals[2] ^ vals[3];
+        }
+        off += 16 * SPAN;
     }
     *sink = acc;
     off
