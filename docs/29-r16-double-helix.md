@@ -1223,3 +1223,96 @@ holes is unsound; the packed-record v2 enables it); (3) the pass-1 fill
 is ~22 K fixes on the first pass — one-time, untimed warmup territory,
 recorded in the telemetry. Expected per ROADMAP2 §6.1: RX 0.30-0.35 →
 0.05-0.10 cyc/msg, Front A 4.6-6.4B on 8573C-class draws.
+
+## 12. F-2 — the publish-by-reference master array (SHIPPED default-off;
+CHECKLIST F-2 / ROADMAP1 §6-I1 "Lever B rxbuild" — fired by draw 22's
+F-1 refutation)
+
+The Front A 5B lever, round 2 — and this one removes the RX's per-frame
+work instead of re-deriving it. `HFT_RXBUILD=1` arms it; unset/0 is the
+rollback (the classic path verbatim — `poll_impl::<0>` is the pre-F-1
+codegen and the record submission is untouched). If both `HFT_RXWARM`
+and `HFT_RXBUILD` are set, rxbuild wins (the warm start is refuted as a
+Front A lever anyway; 11wn stays aboard as its pricing instrument).
+
+**The design (ROADMAP1 §6-I1, shipped verbatim):**
+
+1. **Build once per render**: the master `FrameEntry` array is built at
+   CONSTRUCTION (`render::build_frame_master` — outside every measured
+   window, `ALLOC_DELTA=0`) from the freshly-baked blob: event-ordered
+   over the pass's emitted frames, tombstone-free (the consumer's walk
+   needs no empty-slot checks), `bytes`/`blocks`/`memo`/`first_seq`/
+   `feed` construction-frozen, only `sess_lo`/`sess_hi`/`elig` are
+   per-pass state. Sizing is schedule-exact (`rendered_frame_count()`;
+   ~22K entries ≈ 1.4 MB for the mini tape).
+2. **Per-turn slice publish**: the RX's poll walk becomes COUNT-ONLY
+   (`poll_impl::<2>` — the third const instantiation of the shared
+   pacing skeleton; no frame line read, no session reads, no slot push,
+   no entry build — the DLP prefetch stays). The publication carries
+   `(rx_start, len)` master-slice bounds + the clock: mailbox traffic
+   collapses from ~64 KB/batch to ~16 B/turn, and the EntryBuf's 1 MB
+   entry footprint disappears (C8's working-set law, net-negative).
+3. **Session patching, prepatch-extended**: `master_patch_range` is the
+   blob prepatch's twin — the SAME consumed-event frontier (the I-7
+   `pass_start_turn` floor and the TOFF_RING overwrite guard bound BOTH
+   patchers), the master's own cursor `mpp_idx`, the same R9c budget
+   pacing (64 entries/step post-publication, 1024 in the advance drain,
+   the synchronous tail at the advance = `reset_prepatched`'s twin, the
+   full rewrite at the blocking reset serves). The per-entry patch
+   writes the new session's compare words and re-derives the elig bit
+   from the entry's own static fields (the `warm_rewrite_session`
+   formula). Non-patchable entries (HB/EOS and second-session frames
+   under `session_split`) never change — the patchable flag mirrors the
+   constructor's rule exactly.
+4. **The consumer walks the master directly** (`entries()` returns
+   `master[rx_start..rx_start+len]` in rxbuild mode) — the steady ladder
+   is untouched, no redesign (the vector ladder stays refuted).
+5. **Ordering**: the master is shared read-mostly state in the Mailbox
+   (the rxdesc records pattern — RX writes, consumer reads, the
+   filled[] Release/Acquire pair orders every patch before any
+   publication whose read could observe it; the patch frontier
+   guarantees no in-flight entry is ever touched).
+
+**PINS** (the F-1 discipline, mirrored): `t_rxbuild_parity_vs_classic`
+(both pacing modes, 4 rotating-session passes, every entry compared over
+all ten fields against a side-by-side classic transport, plus the patch
+law: cumulative patches = whole multiples of the patchable frame count),
+`t_rxbuild_mid_pass_abandon` (the abandoned partial's patch state — the
+reset serve's full rewrite is the catch-all), `t_rxbuild_constant_session`
+(the unarmed span-arm shape), and `t_f2_rxbuild_chaos_sustained_soak`
+(the I-7 chaos program verbatim with the master armed: per-entry session
+law in the published bytes, per-pass tuple parity vs the classic legs,
+and the patch law — deterministic 2,462 × 40 across repeats). The I-7
+pins (the engineered-straddle sentinel pin + the prepatch chaos soak)
+run unchanged on top of the shared-frontier extension.
+
+**Local validation** (Granite Rapids sandbox — non-deciding, recorded):
+30/30 workspace suites green (156 tests: 23 nf-transport incl. the three
+new pins, 65 nf-testkit incl. the new soak), clippy `-D warnings` clean.
+Classic default sustained: BIT-EXACT `0x881639cead506f25`, allocs=0,
+`RXBUILD_DIAGNOSTIC enabled=false patches=0` (the record path
+untouched). RXBUILD sustained: BIT-EXACT `0x881639cead506f25`, allocs=0,
+patches = 21,996 × boundaries + endpoint partials (the flush-lag
+artifact — the visible cumulative is flush-aligned at markers; the soak
+pins the exact law). **Local Front A A/B: classic 1.745B/1.538B @
+1.83/2.08 cyc/msg vs rxbuild 2.825B/2.336B @ 1.13/1.37 — +62%/+52%, the
+RX build removal is worth ~0.70 cyc/msg on the walk-shaped sandbox**
+(where F-1's local A/B was ambiguous-to-negative — the direction agrees
+with the mechanism this time). Local sustained −10% (the 1-worker
+latency-bound shape taxes the patch traffic; the fleet's distinct
+placement + the RX idle headroom is the real test — 11rb prices it per
+draw and the default stays OFF until the ≥3-draw evidence lands).
+
+**The honest risk register**: (1) the master is a new ~1.4 MB shared
+structure — but it REPLACES the mailbox's ~1 MB entry buffers, and its
+per-pass traffic is strictly smaller (17 B/entry patches vs full-entry
+builds, both off the critical path via the prepatch budget); (2) the
+patch RFO at ~9,900 passes/s (the 5B rate) doubles the bake's line
+traffic (blob + master) — the prepatch's incremental pacing was built
+for exactly this shape, and the sustained arm prices the residue per
+draw; (3) the flush-lag telemetry (the visible cumulative vs the
+thread-local count) is documented — the soak pins the law where the
+structure is clean. Expected per ROADMAP1 §6-I1's budget table: RX
+0.20-0.30 → ~0.03 cyc/msg, Front A 4.8-5.5B on 8573C-class draws.
+Kill/flip rule per the CHECKLIST: ≥ +15% healthy Front A over ≥ 3 draws
+→ the default-flip protocol; short of that → the kill.

@@ -122,6 +122,13 @@ struct EntryBuf {
     entries: Box<[FrameEntry<'static>; ENTRY_CAP]>,
     len: u32,
     clock: u64,
+    /// F-2 (HFT_RXBUILD): the publication's master slice start (the
+    /// pass-local frame index at the publication's first frame; `len`
+    /// frames follow). Read by the consumer only in rxbuild mode — the
+    /// per-turn entry copy is REPLACED by this 4-byte reference, which is
+    /// the lever's whole point (the mailbox traffic collapses from
+    /// ~64KB/batch to ~16B/batch).
+    rx_start: u32,
 }
 
 impl EntryBuf {
@@ -143,6 +150,7 @@ impl EntryBuf {
             })),
             len: 0,
             clock: 0,
+            rx_start: 0,
         }
     }
 }
@@ -197,10 +205,16 @@ struct RxStats {
     /// past its construction size — the live-derived fallback published;
     /// telemetry only).
     warm_uncovered: AtomicU64,
-    /// F-1: the most recently ENDED pass's fix count (flushed at the EOS
-    /// marker publication and at the reset serves — the steady-state
-    /// signal the CI arm and the kill rule read).
+    /// F-1: fixes in the last ENDED pass (the EOS-marker flush's window;
+    /// the kill rule's steady-state reading).
     warm_last_pass_fixes: AtomicU64,
+    /// F-2 (HFT_RXBUILD): cumulative master session/elig patches (the
+    /// per-pass bake's telemetry; the steady-state law: every patchable
+    /// entry exactly once per pass boundary).
+    rxbuild_patches: AtomicU64,
+    /// F-2: patches in the last ENDED pass (the EOS-marker flush's
+    /// window).
+    rxbuild_last_pass: AtomicU64,
 }
 
 #[repr(align(64))]
@@ -229,6 +243,8 @@ impl RxStats {
             warm_fixes: AtomicU64::new(0),
             warm_uncovered: AtomicU64::new(0),
             warm_last_pass_fixes: AtomicU64::new(0),
+            rxbuild_patches: AtomicU64::new(0),
+            rxbuild_last_pass: AtomicU64::new(0),
         }
     }
 }
@@ -308,6 +324,32 @@ struct Mailbox {
     /// happens-before makes the read race-free; the diagnostics and the
     /// CI arm key on it).
     warm_enabled: bool,
+    /// F-2 (HFT_RXBUILD / CHECKLIST F-2 / ROADMAP1 §6-I1): the
+    /// publish-by-reference master entry array — event-ordered over the
+    /// pass's emitted frames (tombstone-free), built ONCE at construction
+    /// from the freshly-baked blob (`render::build_frame_master`),
+    /// outside every measured window. The RX patches only its
+    /// sess/elig fields (frontier-guarded, see `master_patch_range`);
+    /// the consumer walks slices of it through `entries()`. Ordering:
+    /// every patch precedes the filled[] Release store of any publication
+    /// whose consumer read could observe it, and patches only touch
+    /// entries whose publication the consumer has already freed (the
+    /// blob prepatch's contract verbatim). `None` in classic/warm modes.
+    /// Drop: freeing the Box never dereferences the entries (no Drop on
+    /// FrameEntry) — the EntryBuf lifetime contract extends to it.
+    master: UnsafeCell<Option<Box<[FrameEntry<'static>]>>>,
+    /// F-2: per-master-entry event index (the patch frontier's mapping —
+    /// the same consumed-event index the blob prepatch keys on).
+    /// Construction-built, immutable afterwards (plain shared read).
+    master_evt: Box<[u32]>,
+    /// F-2: per-master-entry patchability (the constructor's
+    /// session-split rule mirrored). Construction-built, immutable.
+    master_patchable: Box<[bool]>,
+    /// F-2: whether the RX thread publishes by reference (write-once at
+    /// construction, BEFORE the spawn). HFT_RXBUILD=1 arms; unset/0 is the
+    /// rollback (the classic path verbatim — and HFT_RXWARM keeps its own
+    /// mode; if both are set, rxbuild wins and warm is ignored).
+    rxbuild_enabled: bool,
 }
 
 // SAFETY: the mailbox is the SPSC handoff described in the module doc —
@@ -432,6 +474,151 @@ fn warm_flush_pass_end(
     }
 }
 
+/// F-2 (HFT_RXBUILD): the master's session patch — the prepatch law
+/// applied to the entry array. Walks master entries from cursor `from`,
+/// patching every PATCHABLE entry whose event index is below `upto_evt`
+/// (the consumed frontier — the exclusive end event index of the last
+/// freed publication; entries above it belong to in-flight or future
+/// publications and must keep the current pass's session). The patch
+/// writes the new session's compare words and re-derives the elig
+/// byte's session-derived bit from the entry's own static fields (the
+/// warm_rewrite_session formula). Non-patchable entries (HB/EOS and
+/// second-session frames under session_split) never change — the walk
+/// still advances past them (the frontier is event-based).
+/// Returns `(new cursor, entries patched this call)`; the walk is
+/// bounded by `budget` entries (patched or not) — the R9c pacing law.
+///
+/// SAFETY CONTRACT (the blob prepatch's, verbatim): only entries whose
+/// ENTIRE publication has been consumed (buffer freed) may be patched —
+/// the consumer never re-reads a freed publication's entries, and the
+/// next pass's walk is ordered after the advance's completion by the
+/// filled[] Release/Acquire pair.
+#[allow(clippy::too_many_arguments)]
+fn master_patch_range(
+    master: &mut [FrameEntry<'static>],
+    master_evt: &[u32],
+    master_patchable: &[bool],
+    from: usize,
+    upto_evt: usize,
+    sess_lo_tmpl: u64,
+    sess_hi_tmpl: u64,
+    compute_elig: bool,
+    budget: usize,
+) -> (usize, u64) {
+    debug_assert_eq!(master.len(), master_evt.len());
+    debug_assert_eq!(master.len(), master_patchable.len());
+    let mut idx = from;
+    // budget is saturated against the remaining length FIRST (usize::MAX
+    // means "unbounded" — a naive from + budget would wrap).
+    let end = from + budget.min(master.len().saturating_sub(from));
+    let mut patched = 0u64;
+    while idx < end {
+        if master_evt[idx] as usize >= upto_evt {
+            break;
+        }
+        if master_patchable[idx] {
+            let e = &mut master[idx];
+            e.sess_lo = sess_lo_tmpl;
+            e.sess_hi = sess_hi_tmpl;
+            let static_ok = compute_elig
+                && !e.blocks.is_empty()
+                && e.memo
+                    == Some(nf_protocol::packet::FrameMemo {
+                        valid_count: e.blocks.len() as u16,
+                    });
+            e.elig = (e.elig & 3) | ((static_ok as u8) << 7);
+            patched += 1;
+        }
+        idx += 1;
+    }
+    (idx, patched)
+}
+
+/// F-2: the master accessors (the Mailbox cell's discipline: the RX
+/// patches between publications, the consumer reads through entries()
+/// under the filled[] ordering — both go through the cell).
+#[inline]
+#[allow(clippy::mut_from_ref)] // the UnsafeCell handoff — see SAFETY
+fn master_mut(mb: &Mailbox) -> &mut [FrameEntry<'static>] {
+    // SAFETY: the RX thread is the only writer (the consumer's reads are
+    // ordered by the filled[] Release/Acquire pair; the patch frontier
+    // guarantees no in-flight entry is touched).
+    unsafe {
+        (*mb.master.get())
+            .as_mut()
+            .expect("rxbuild: master not built")
+            .as_mut()
+    }
+}
+
+/// F-2: the RX thread's per-pass rxbuild bookkeeping (the patch cursor
+/// + the telemetry window).
+struct RxBuildState {
+    /// The master patch cursor (frontier-driven, restarts at every bake
+    /// point — the event numbering restarts with the pass).
+    mpp_idx: usize,
+    /// Cumulative master patches (the telemetry).
+    patches: u64,
+    /// The pass-window start (the last flush's cumulative reading).
+    pass_start: u64,
+    /// The pass-local frame index (the next publication's start).
+    idx: usize,
+}
+
+impl RxBuildState {
+    fn new() -> Self {
+        Self {
+            mpp_idx: 0,
+            patches: 0,
+            pass_start: 0,
+            idx: 0,
+        }
+    }
+}
+
+/// F-2: close the current pass's patch telemetry window (the warm
+/// flush's `force` law verbatim: the EOS marker ALWAYS records — a
+/// zero-patch window must overwrite a stale nonzero reading; the reset
+/// serves record conditionally — a serve after a drained EOS emitted
+/// nothing since the marker's flush and must not erase it).
+fn rxbuild_flush_pass_end(stats: &RxStats, rxs: &mut RxBuildState, force: bool) {
+    stats.rxbuild_patches.store(rxs.patches, Ordering::Relaxed);
+    if force || rxs.patches != rxs.pass_start {
+        stats
+            .rxbuild_last_pass
+            .store(rxs.patches - rxs.pass_start, Ordering::Relaxed);
+        rxs.pass_start = rxs.patches;
+    }
+}
+
+/// F-2: the bake point — the pass-local frame index and the patch cursor
+/// restart, and (for the full synchronous re-bakes) EVERY patchable
+/// entry rewritten from the fresh template (the consumer is parked —
+/// nothing is in flight; `inner.reset` just did the blob's twin).
+fn rxbuild_bake_full(
+    mb: &Mailbox,
+    rxs: &mut RxBuildState,
+    sess_lo_tmpl: u64,
+    sess_hi_tmpl: u64,
+    compute_elig: bool,
+) {
+    let m = master_mut(mb);
+    let (_, patched) = master_patch_range(
+        m,
+        &mb.master_evt,
+        &mb.master_patchable,
+        0,
+        usize::MAX,
+        sess_lo_tmpl,
+        sess_hi_tmpl,
+        compute_elig,
+        usize::MAX,
+    );
+    rxs.patches += patched;
+    rxs.mpp_idx = 0;
+    rxs.idx = 0;
+}
+
 /// RX thread main loop: poll ahead into free buffers, serve resets.
 /// `pin_cpu_id` pins the RX thread to an absolute CPU (None = unpinned).
 /// `init_session` is the construction pass's session (pass 0) — the R12 SoA
@@ -439,6 +626,9 @@ fn warm_flush_pass_end(
 /// tracked here and refreshed at every bake point (reset serve, EOS-park
 /// reset serve, auto-advance).
 /// `warm_enabled` (F-1, HFT_RXWARM) arms the frame-entry warm start.
+/// `rxbuild_enabled` (F-2, HFT_RXBUILD) arms publish-by-reference (the
+/// master array in the Mailbox; takes precedence over `warm_enabled` —
+/// both set runs rxbuild).
 #[allow(clippy::disallowed_types)]
 fn rx_thread(
     mut inner: ReplayTransport,
@@ -446,10 +636,14 @@ fn rx_thread(
     pin_cpu_id: Option<usize>,
     init_session: [u8; 10],
     warm_enabled: bool,
+    rxbuild_enabled: bool,
 ) {
     if let Some(cpu) = pin_cpu_id {
         let _ = pin_cpu(cpu);
     }
+    // F-2: rxbuild takes precedence — a both-armed run is rxbuild (the
+    // construction already normalizes; this is the defense in depth).
+    let warm_enabled = warm_enabled && !rxbuild_enabled;
     // R12c: the baked-session compare template for the entries' elig
     // bytes (bit 7). The consumer proves the bit exact for a group by
     // matching the group's first entry against its OWN live template
@@ -478,6 +672,14 @@ fn rx_thread(
     let refresh_tmpl = |s: &[u8; 10], lo: &mut u64, hi: &mut u64| {
         *lo = u64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]);
         *hi = u64::from_le_bytes([s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9]]);
+    };
+    // F-2: the same template words as a pure function (the prepatch
+    // closure needs the NEXT pass's words before refresh_tmpl runs).
+    let tmpl_words = |s: &[u8; 10]| -> (u64, u64) {
+        (
+            u64::from_le_bytes([s[0], s[1], s[2], s[3], s[4], s[5], s[6], s[7]]),
+            u64::from_le_bytes([s[2], s[3], s[4], s[5], s[6], s[7], s[8], s[9]]),
+        )
     };
     // R12 verdict: the ladder is default OFF (the 8573C refutation — see
     // nf_testkit::soa::ladder8_best); the elig byte's session/memo compute
@@ -556,6 +758,14 @@ fn rx_thread(
     let mut warm_fixes: u64 = 0;
     let mut warm_uncovered: u64 = 0;
     let mut warm_pass_start_fixes: u64 = 0;
+    // F-2 (HFT_RXBUILD — CHECKLIST F-2 / ROADMAP1 §6-I1): the
+    // publish-by-reference state. The master lives in the Mailbox
+    // (construction-built from the freshly-baked blob); `rxs.idx` is the
+    // pass-local frame index (the next publication's master slice start);
+    // `rxs.mpp_idx` is the master patch cursor (the prepatch's frontier
+    // drives it exactly as it drives the blob's `pp_idx`). HFT_RXBUILD
+    // unset/0 is the rollback — the classic path below is verbatim.
+    let mut rxs = RxBuildState::new();
     let mut turn: u64 = 0;
     let mut served_resets: u64 = 0;
     // R8 phase-3 (auto-advance): the pass currently baked into the blob —
@@ -593,6 +803,7 @@ fn rx_thread(
     let prepatch_step = |inner: &mut ReplayTransport,
                           next_sess: &[u8; 10],
                           pp_idx: &mut usize,
+                          rxs: &mut RxBuildState,
                           ring_covered: u64,
                           floor_turn: u64,
                           turn_evt_end: &[usize; 32],
@@ -634,6 +845,29 @@ fn rx_thread(
             // previous passes' markers) — the whole pass is consumed —
             // patch everything remaining below the list's end.
             *pp_idx = inner.patch_range(next_sess, *pp_idx, upto_evt, budget);
+            // F-2: the master's twin patch — the SAME consumed-event
+            // frontier, the master's own cursor. The I-7 floor and the
+            // overwrite guard above bound BOTH patchers (a frontier below
+            // the pass start carries no valid event index; a too-old
+            // frontier aliases the event ring — skip both, the advance's
+            // synchronous tail is the catch-all for each).
+            if rxbuild_enabled {
+                let (lo, hi) = tmpl_words(next_sess);
+                let m = master_mut(&mb);
+                let (ni, np) = master_patch_range(
+                    m,
+                    &mb.master_evt,
+                    &mb.master_patchable,
+                    rxs.mpp_idx,
+                    upto_evt,
+                    lo,
+                    hi,
+                    compute_elig,
+                    budget,
+                );
+                rxs.mpp_idx = ni;
+                rxs.patches += np;
+            }
         }
     };
     loop {
@@ -668,6 +902,14 @@ fn rx_thread(
                         sess_hi_tmpl,
                         compute_elig,
                     );
+                }
+                // F-2: the blocking reset's bake point — close the
+                // (possibly abandoned) pass's patch window, then the FULL
+                // synchronous master rewrite (the consumer is parked;
+                // inner.reset just did the blob's twin — the same law).
+                if rxbuild_enabled {
+                    rxbuild_flush_pass_end(&mb.rx_stats, &mut rxs, false);
+                    rxbuild_bake_full(&mb, &mut rxs, sess_lo_tmpl, sess_hi_tmpl, compute_elig);
                 }
                 // R8 phase-3b: a full synchronous re-bake invalidates the
                 // prepatch cursor — restart it for the fresh pass.
@@ -730,6 +972,11 @@ fn rx_thread(
         // is a fraction of the scan's), so the accumulation never bubbles.
         let mut acc = 0usize;
         let mut eos = false;
+        // F-2: this publication's master slice start (the pass-local frame
+        // index at the first frame — rxbuild mode publishes
+        // master[rx_start .. rx_start + len]).
+        let rx_start = rxs.idx;
+        debug_assert!(rx_start <= u32::MAX as usize);
         let t_prod = std::time::Instant::now();
         while acc + 256 <= ENTRY_CAP {
             let tp0 = if diag {
@@ -737,7 +984,27 @@ fn rx_thread(
             } else {
                 None
             };
-            let n = if warm_enabled {
+            let n = if rxbuild_enabled {
+                // F-2: the publish-by-reference walk — poll_rxbuild only
+                // advances the pacing skeleton and counts frames into
+                // `rxs.idx` (no frame line read, no entry build, no
+                // mailbox entry store — the publication carries the slice
+                // bounds alone; the entries live in the construction-built
+                // master, written once and patched at the boundaries).
+                let mut wctx = crate::render::WarmEmitCtx {
+                    out: &mut [],
+                    warm: &mut [],
+                    idx: rxs.idx,
+                    fixes: 0,
+                    uncovered: 0,
+                    sess_lo_tmpl: 0,
+                    sess_hi_tmpl: 0,
+                    compute_elig: false,
+                };
+                let n = inner.poll_rxbuild(&mut scratch, &mut wctx);
+                rxs.idx = wctx.idx;
+                n
+            } else if warm_enabled {
                 // F-1: the warm walk — `poll_warm` derives each entry in
                 // registers from the walk's own live facts (the frame meta
                 // and the frame line's session words — both loaded by the
@@ -782,6 +1049,14 @@ fn rx_thread(
                 // F-1: the verified entries are already in the mailbox
                 // window (poll_warm wrote them); only the driver clock
                 // remains.
+                let buf = unsafe { &mut *mb.bufs[i].get() };
+                buf.clock = inner.now_ns();
+                acc += n;
+            } else if rxbuild_enabled {
+                // F-2: nothing to copy — the frames are counted into
+                // rxs.idx and the publication will carry the slice bounds;
+                // only the driver clock remains (per-poll, the classic
+                // cadence — the last poll's value is the publication's).
                 let buf = unsafe { &mut *mb.bufs[i].get() };
                 buf.clock = inner.now_ns();
                 acc += n;
@@ -865,6 +1140,9 @@ fn rx_thread(
             // store below.
             let buf = unsafe { &mut *mb.bufs[i].get() };
             buf.len = acc as u32;
+            if rxbuild_enabled {
+                buf.rx_start = rx_start as u32;
+            }
         }
         turn_evt_end[(turn & TOFF_MASK) as usize] = evt_end;
         mb.rx_stats
@@ -895,6 +1173,7 @@ fn rx_thread(
                     &mut inner,
                     &next_sess,
                     &mut pp_idx,
+                    &mut rxs,
                     turn,
                     pass_start_turn,
                     &turn_evt_end,
@@ -955,6 +1234,12 @@ fn rx_thread(
                     true,
                 );
             }
+            // F-2: the pass's frames are all published — close its patch
+            // window NOW, FORCED (the advance's tail patches below belong
+            // to the NEXT pass's window by construction).
+            if rxbuild_enabled {
+                rxbuild_flush_pass_end(&mb.rx_stats, &mut rxs, true);
+            }
             mb.pub_wake.fetch_add(1, Ordering::Release);
             futex_wake(&mb.pub_wake);
             turn += 1;
@@ -996,6 +1281,7 @@ fn rx_thread(
                             &mut inner,
                             &next_sess,
                             &mut pp_idx,
+                            &mut rxs,
                             turn - 1,
                             pass_start_turn,
                             &turn_evt_end,
@@ -1039,6 +1325,31 @@ fn rx_thread(
                         sess_hi_tmpl,
                         compute_elig,
                     );
+                }
+                // F-2: the advance's bake point — the synchronous TAIL
+                // patch (everything the incremental steps left below the
+                // master's end — reset_prepatched's twin), then the
+                // cursor/index restart for the fresh pass. (The EOS marker
+                // above already closed the drained pass's window; the
+                // advance's patches land in the NEXT pass's window —
+                // they bake FOR it.)
+                if rxbuild_enabled {
+                    let (lo, hi) = tmpl_words(&sess);
+                    let m = master_mut(&mb);
+                    let (_, np) = master_patch_range(
+                        m,
+                        &mb.master_evt,
+                        &mb.master_patchable,
+                        rxs.mpp_idx,
+                        usize::MAX,
+                        lo,
+                        hi,
+                        compute_elig,
+                        usize::MAX,
+                    );
+                    rxs.patches += np;
+                    rxs.mpp_idx = 0;
+                    rxs.idx = 0;
                 }
                 pass = next_pass;
                 // I-7: the new pass's first publication lands on `turn`
@@ -1102,6 +1413,13 @@ fn rx_thread(
                                 sess_hi_tmpl,
                                 compute_elig,
                             );
+                        }
+                        // F-2: the EOS-park serve's bake point (the unarmed
+                        // transports' drained-pass reset — the full
+                        // synchronous rewrite, as the CMD_RESET serve).
+                        if rxbuild_enabled {
+                            rxbuild_flush_pass_end(&mb.rx_stats, &mut rxs, false);
+                            rxbuild_bake_full(&mb, &mut rxs, sess_lo_tmpl, sess_hi_tmpl, compute_elig);
                         }
                         pp_idx = 0;
                         served_resets += 1;
@@ -1215,13 +1533,27 @@ impl PipelinedReplayTransport {
         // every measured window; unset/0 is the rollback (the classic
         // path verbatim).
         let warm = std::env::var("HFT_RXWARM").as_deref() == Ok("1");
-        Self::with_coalesce_cpu_auto_forced(gt, schedule, session, coalesce, rx_cpu, sess_fn, warm)
+        // F-2 (HFT_RXBUILD): publish-by-reference — HFT_RXBUILD=1 arms
+        // the master array; takes precedence over the warm start (a
+        // both-armed run is rxbuild).
+        let rxbuild = std::env::var("HFT_RXBUILD").as_deref() == Ok("1");
+        Self::with_coalesce_cpu_auto_forced(
+            gt,
+            schedule,
+            session,
+            coalesce,
+            rx_cpu,
+            sess_fn,
+            warm && !rxbuild,
+            rxbuild,
+        )
     }
 
-    /// F-1 (HFT_RXWARM): [`Self::with_coalesce_cpu_auto`] with the warm
-    /// start FORCED on/off — the tests' and local A/B's explicit path
-    /// (the env would be process-global and racy across parallel test
-    /// transports).
+    /// F-1/F-2: [`Self::with_coalesce_cpu_auto`] with the warm start and
+    /// the publish-by-reference master FORCED on/off — the tests' and
+    /// local A/B's explicit path (the envs would be process-global and
+    /// racy across parallel test transports).
+    #[allow(clippy::too_many_arguments)]
     pub fn with_coalesce_cpu_auto_forced(
         gt: &[u8],
         schedule: ReplaySchedule,
@@ -1230,11 +1562,24 @@ impl PipelinedReplayTransport {
         rx_cpu: Option<usize>,
         sess_fn: Option<fn(u64) -> [u8; 10]>,
         warm: bool,
+        rxbuild: bool,
     ) -> Self {
         let mut inner = ReplayTransport::new(gt, schedule, session);
         inner.set_poll_coalesce(coalesce);
         let triples = inner.shared_triples();
         let _ = triples;
+        // F-2: the master is built ONCE here — construction, outside every
+        // measured window, from the freshly-baked blob (the construction
+        // bake already wrote the session at every patchable site). The
+        // elig compute flag mirrors the RX thread's env read.
+        let compute_elig = std::env::var("HFT_VEC_LADDER").as_deref() == Ok("1");
+        #[allow(clippy::disallowed_types)] // construction-time boxes only
+        let (master, master_evt, master_patchable) = if rxbuild {
+            let (m, e, p) = inner.build_frame_master(compute_elig);
+            (Some(m), e, p)
+        } else {
+            (None, Box::from([]), Box::from([]))
+        };
         #[allow(clippy::disallowed_types)]
         let mb: Arc<Mailbox> = Arc::new(Mailbox {
             bufs: std::array::from_fn(|_| UnsafeCell::new(EntryBuf::new())),
@@ -1256,6 +1601,10 @@ impl PipelinedReplayTransport {
             rx_stats: RxStats::zeroed(),
             cons_stats: ConsStats::zeroed(),
             warm_enabled: warm,
+            master: UnsafeCell::new(master),
+            master_evt,
+            master_patchable,
+            rxbuild_enabled: rxbuild,
         });
         let rx = std::thread::Builder::new()
             .stack_size(512 * 1024)
@@ -1271,7 +1620,7 @@ impl PipelinedReplayTransport {
             .spawn({
                 #[allow(clippy::disallowed_types)]
                 let mb: Arc<Mailbox> = Arc::clone(&mb);
-                move || rx_thread(inner, mb, rx_cpu, session, warm)
+                move || rx_thread(inner, mb, rx_cpu, session, warm, rxbuild)
             })
             .expect("r8 rx thread spawn");
         Self {
@@ -1546,17 +1895,40 @@ impl PipelinedReplayTransport {
 
     /// The current batch's entries (valid after next_batch() returned true,
     /// until the next next_batch/reset call). Ready to scan — built by the
-    /// RX thread from its locally-hot lines.
+    /// RX thread from its locally-hot lines, or — in rxbuild mode — a
+    /// slice of the construction-built master (publish-by-reference: the
+    /// publication carried the slice bounds; the entries are L1/L2-hot
+    /// on the consumer side and were patched only below the consumed
+    /// frontier, so this turn's slice is stable for its whole life).
     #[inline]
     pub fn entries(&self) -> &[FrameEntry<'_>] {
         let t = self.cur.expect("r8 pipeline: no current batch");
-        // SAFETY: consumer-owned for this turn; the entries' target bytes
-        // outlive the pipeline (joined in Drop) and are not read after the
-        // buffer is freed.
-        unsafe {
-            let buf = &*self.mb.bufs[(t & NBUF_MASK) as usize].get();
-            let n = buf.len as usize;
-            &buf.entries[..n]
+        if self.mb.rxbuild_enabled {
+            // SAFETY: consumer-owned view for this turn; the master's
+            // contents for this slice were ordered by the filled[]
+            // Release/Acquire pair (the patch frontier guarantees no
+            // in-flight entry is touched), and the target bytes outlive
+            // the pipeline (the EntryBuf contract, extended to the
+            // master).
+            unsafe {
+                let buf = &*self.mb.bufs[(t & NBUF_MASK) as usize].get();
+                let n = buf.len as usize;
+                let start = buf.rx_start as usize;
+                let master = (*self.mb.master.get())
+                    .as_ref()
+                    .expect("rxbuild: master not built");
+                debug_assert!(start + n <= master.len());
+                &master[start..start + n]
+            }
+        } else {
+            // SAFETY: consumer-owned for this turn; the entries' target bytes
+            // outlive the pipeline (joined in Drop) and are not read after the
+            // buffer is freed.
+            unsafe {
+                let buf = &*self.mb.bufs[(t & NBUF_MASK) as usize].get();
+                let n = buf.len as usize;
+                &buf.entries[..n]
+            }
         }
     }
 
@@ -1578,6 +1950,30 @@ impl PipelinedReplayTransport {
             self.mb.rx_stats.warm_fixes.load(Ordering::Relaxed),
             self.mb.rx_stats.warm_uncovered.load(Ordering::Relaxed),
             self.mb.rx_stats.warm_last_pass_fixes.load(Ordering::Relaxed),
+        )
+    }
+
+    /// F-2 (HFT_RXBUILD) telemetry: (cumulative master patches, patches
+    /// in the last ENDED pass, the master's frame count). The
+    /// steady-state law: every patchable entry patched exactly once per
+    /// pass boundary (the count is a multiple of the patchable frames;
+    /// the content parity suite is the correctness pin).
+    pub fn rx_build_stats(&self) -> (u64, u64, usize) {
+        let frames = if self.mb.rxbuild_enabled {
+            // SAFETY: read-only, Relaxed — the diagnostics contract.
+            unsafe {
+                (*self.mb.master.get())
+                    .as_ref()
+                    .map(|m| m.len())
+                    .unwrap_or(0)
+            }
+        } else {
+            0
+        };
+        (
+            self.mb.rx_stats.rxbuild_patches.load(Ordering::Relaxed),
+            self.mb.rx_stats.rxbuild_last_pass.load(Ordering::Relaxed),
+            frames,
         )
     }
 
@@ -1604,6 +2000,27 @@ impl PipelinedReplayTransport {
             rx.warm_fixes.load(Ordering::Relaxed),
             rx.warm_uncovered.load(Ordering::Relaxed),
             rx.warm_last_pass_fixes.load(Ordering::Relaxed),
+        );
+        // F-2: the publish-by-reference telemetry line (always printed —
+        // the CI arm greps it; enabled=false patches=0 is the classic
+        // path's reading).
+        let frames = if self.mb.rxbuild_enabled {
+            // SAFETY: read-only, Relaxed — the diagnostics contract.
+            unsafe {
+                (*self.mb.master.get())
+                    .as_ref()
+                    .map(|m| m.len())
+                    .unwrap_or(0)
+            }
+        } else {
+            0
+        };
+        eprintln!(
+            "RXBUILD_DIAGNOSTIC {label}: enabled={} patches={} last_pass_patches={} frames={} (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)",
+            self.mb.rxbuild_enabled,
+            rx.rxbuild_patches.load(Ordering::Relaxed),
+            rx.rxbuild_last_pass.load(Ordering::Relaxed),
+            frames,
         );
         eprintln!(
             "DIAG cons {label}: parks={} park_ms={:.1} slow_waits={} slow_ms={:.1}",
@@ -1973,6 +2390,7 @@ mod tests {
                 None,
                 Some(sess_program),
                 false,
+                false,
             );
             let mut warm = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
                 &gt,
@@ -1982,6 +2400,7 @@ mod tests {
                 None,
                 Some(sess_program),
                 true,
+                false,
             );
             for p in 1..=4u64 {
                 let sess = sess_program(p);
@@ -2046,6 +2465,7 @@ mod tests {
             None,
             Some(sess_program),
             false,
+            false,
         );
         let mut warm = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
             &gt,
@@ -2055,6 +2475,7 @@ mod tests {
             None,
             Some(sess_program),
             true,
+            false,
         );
         // Drain pass 1 fully (the fill), then abandon pass 2 mid-flight.
         for t in [&mut classic, &mut warm] {
@@ -2108,6 +2529,7 @@ mod tests {
             None,
             None,
             true,
+            false,
         );
         for p in 0..4u64 {
             classic.reset(*b"PIPETEST01");
@@ -2132,4 +2554,189 @@ mod tests {
         assert_eq!(last_pass, 0, "constant-session steady state must be zero-fix");
     }
 
+    /// F-2: publish-by-reference vs classic parity — the SAME schedule
+    /// drained side by side, the classic transport building every entry
+    /// per publication and the rxbuild transport publishing master
+    /// slices, every entry of every batch compared over ALL ten payload
+    /// fields, across BOTH pacing modes and multi-pass ROTATING sessions
+    /// (the prepatch-extended master patch's path). Steady-state law:
+    /// cumulative patches are a multiple of the patchable frame count
+    /// (every patchable entry exactly once per pass boundary).
+    #[test]
+    fn t_rxbuild_parity_vs_classic() {
+        for coalesce in [1usize, 128] {
+            let gt = mini_gt(300);
+            let sched = mini_sched(300);
+            let mut classic = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
+                &gt,
+                sched.clone(),
+                *b"PIPETEST01",
+                coalesce,
+                None,
+                Some(sess_program),
+                false,
+                false,
+            );
+            let mut rxbuild = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
+                &gt,
+                sched,
+                *b"PIPETEST01",
+                coalesce,
+                None,
+                Some(sess_program),
+                false,
+                true,
+            );
+            for p in 1..=4u64 {
+                let sess = sess_program(p);
+                classic.reset_pass(p, sess);
+                rxbuild.reset_pass(p, sess);
+                let mut frames = 0usize;
+                loop {
+                    let c_ok = classic.next_batch();
+                    let r_ok = rxbuild.next_batch();
+                    assert_eq!(c_ok, r_ok, "coalesce {coalesce} pass {p}: EOS mismatch");
+                    if !c_ok {
+                        break;
+                    }
+                    let ce = classic.entries();
+                    let re = rxbuild.entries();
+                    assert_eq!(
+                        ce.len(),
+                        re.len(),
+                        "coalesce {coalesce} pass {p}: batch length mismatch"
+                    );
+                    for (c, r) in ce.iter().zip(re.iter()) {
+                        assert!(
+                            !entry_content_neq(c, r),
+                            "coalesce {coalesce} pass {p}: rxbuild entry diverged from classic"
+                        );
+                    }
+                    frames += ce.len();
+                }
+                assert_eq!(frames, 60, "coalesce {coalesce} pass {p}: frame count");
+            }
+            let (patches, _, master_frames) = rxbuild.rx_build_stats();
+            assert_eq!(master_frames, 60, "coalesce {coalesce}: master frame count");
+            // Every pass boundary patches every patchable entry exactly
+            // once (60 patchable frames here; the trailing construction
+            // -> pass 1 boundary included; the post-pass-4 advance races
+            // shutdown and may or may not complete).
+            assert!(
+                patches >= 240 && patches % 60 == 0,
+                "coalesce {coalesce}: patch law broken (patches {patches})"
+            );
+            let (c_patches, _, c_frames) = classic.rx_build_stats();
+            assert_eq!(c_patches, 0, "coalesce {coalesce}: classic path never patches");
+            assert_eq!(c_frames, 0, "coalesce {coalesce}: classic path builds no master");
+        }
+    }
+
+    /// F-2: the mid-pass abandon shape — an abandoned pass leaves a
+    /// partially-patched master; the next pass must still publish the
+    /// correct entries (the reset serve's full rewrite is the
+    /// catch-all). Pinned against the classic transport side by side.
+    #[test]
+    fn t_rxbuild_mid_pass_abandon() {
+        let gt = mini_gt(300);
+        let sched = mini_sched(300);
+        let mut classic = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
+            &gt,
+            sched.clone(),
+            *b"PIPETEST01",
+            8,
+            None,
+            Some(sess_program),
+            false,
+            false,
+        );
+        let mut rxbuild = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
+            &gt,
+            sched,
+            *b"PIPETEST01",
+            8,
+            None,
+            Some(sess_program),
+            false,
+            true,
+        );
+        // Drain pass 1 fully, then abandon pass 2 mid-flight.
+        for t in [&mut classic, &mut rxbuild] {
+            t.reset_pass(1, sess_program(1));
+            let mut frames = 0usize;
+            while t.next_batch() {
+                frames += t.entries().len();
+            }
+            assert_eq!(frames, 60);
+        }
+        for t in [&mut classic, &mut rxbuild] {
+            t.reset_pass(2, sess_program(2));
+            assert!(t.next_batch());
+            let _ = t.entries();
+        }
+        // The abandon: both transports target pass 3 next.
+        classic.reset_pass(3, sess_program(3));
+        rxbuild.reset_pass(3, sess_program(3));
+        let mut frames = 0usize;
+        loop {
+            let c_ok = classic.next_batch();
+            let r_ok = rxbuild.next_batch();
+            assert_eq!(c_ok, r_ok);
+            if !c_ok {
+                break;
+            }
+            for (c, r) in classic.entries().iter().zip(rxbuild.entries().iter()) {
+                assert!(!entry_content_neq(c, r), "post-abandon divergence");
+            }
+            frames += rxbuild.entries().len();
+        }
+        assert_eq!(frames, 60, "post-abandon pass frame count");
+        let (patches, _, master_frames) = rxbuild.rx_build_stats();
+        assert_eq!(master_frames, 60);
+        assert!(patches >= 180 && patches % 60 == 0, "patch law after abandon (patches {patches})");
+    }
+
+    /// F-2: the unarmed plain-reset shape (hft_bench's span arm — one
+    /// constant session, reset() per pass). The master patch is
+    /// value-identical per pass; the entries must match the classic
+    /// transport's exactly, forever.
+    #[test]
+    fn t_rxbuild_constant_session() {
+        let gt = mini_gt(300);
+        let sched = mini_sched(300);
+        let mut classic = PipelinedReplayTransport::with_coalesce(&gt, sched.clone(), *b"PIPETEST01", 128);
+        let mut rxbuild = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
+            &gt,
+            sched,
+            *b"PIPETEST01",
+            128,
+            None,
+            None,
+            false,
+            true,
+        );
+        for p in 0..4u64 {
+            classic.reset(*b"PIPETEST01");
+            rxbuild.reset(*b"PIPETEST01");
+            let mut frames = 0usize;
+            loop {
+                let c_ok = classic.next_batch();
+                let r_ok = rxbuild.next_batch();
+                assert_eq!(c_ok, r_ok, "pass {p}: EOS mismatch");
+                if !c_ok {
+                    break;
+                }
+                for (c, r) in classic.entries().iter().zip(rxbuild.entries().iter()) {
+                    assert!(!entry_content_neq(c, r), "pass {p}: divergence");
+                }
+                frames += rxbuild.entries().len();
+            }
+            assert_eq!(frames, 60, "pass {p}");
+        }
+        // The blocking reset serves patch all 60 patchable entries each
+        // (4 passes drained + the armed-mode drain's own boundaries).
+        let (patches, _, master_frames) = rxbuild.rx_build_stats();
+        assert_eq!(master_frames, 60);
+        assert!(patches >= 240 && patches % 60 == 0, "patch law (patches {patches})");
+    }
 }

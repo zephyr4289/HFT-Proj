@@ -971,11 +971,146 @@ impl ReplayTransport {
         self.meta.iter().filter(|m| m.len != 0).count()
     }
 
+    /// F-2 (HFT_RXBUILD / CHECKLIST F-2 / ROADMAP1 §6-I1): the
+    /// publish-by-reference MASTER — built ONCE at construction (outside
+    /// every measured window), event-ordered over the pass's emitted
+    /// frames (tombstones skipped — the master records the published
+    /// subsequence, so the consumer's walk needs no empty-slot checks).
+    /// Every frame of every pass is byte-identical except the 10 session
+    /// bytes; the master's `bytes`/`blocks`/`memo`/`first_seq`/`feed`
+    /// fields are construction-frozen and its `sess_lo`/`sess_hi`/`elig`
+    /// fields are the only per-pass state (patched at the session
+    /// boundaries by `pipeline::master_patch_range` — the prepatch's
+    /// consumed-event frontier maps a freed publication to its master
+    /// slice exactly as it maps to the blob's patch sites).
+    ///
+    /// Returns `(master, per-entry event index, per-entry patchable)`.
+    /// The event-index table is the patch frontier's mapping; the
+    /// patchable flag mirrors the constructor's session-split rule (the
+    /// same pure function of `session_split` and the event kind — HB/EOS
+    /// frames and second-session packets never change).
+    ///
+    /// SAFETY-of-lifetime (the EntryBuf contract, extended): the entries'
+    /// slices are re-built at `'static` from raw parts pointing into this
+    /// transport's blob and triple store — both outlive the pipeline (the
+    /// RX thread owns this transport until the pipeline's Drop joins it),
+    /// and the master is never dereferenced after the pipeline drops.
+    /// ALLOC_DELTA=0: fixed-capacity, allocated here once.
+    #[allow(clippy::disallowed_types, clippy::type_complexity)] // construction-time Vecs only
+    pub(crate) fn build_frame_master(
+        &self,
+        compute_elig: bool,
+    ) -> (
+        Box<[nf_protocol::packet::FrameEntry<'static>]>,
+        Box<[u32]>,
+        Box<[bool]>,
+    ) {
+        use nf_protocol::packet::{FrameEntry, FrameMemo};
+        let n = self.rendered_frame_count();
+        let mut master: Vec<FrameEntry<'static>> = Vec::with_capacity(n);
+        let mut evts: Vec<u32> = Vec::with_capacity(n);
+        let mut patchable: Vec<bool> = Vec::with_capacity(n);
+        // The construction bake (patch_sessions at construction) guarantees
+        // the blob's frame lines carry the construction session — the
+        // master's initial sess words read from the same authoritative
+        // bytes the classic build reads at poll time.
+        let tmpl_lo = u64::from_le_bytes([
+            self.session[0],
+            self.session[1],
+            self.session[2],
+            self.session[3],
+            self.session[4],
+            self.session[5],
+            self.session[6],
+            self.session[7],
+        ]);
+        let tmpl_hi = u64::from_le_bytes([
+            self.session[2],
+            self.session[3],
+            self.session[4],
+            self.session[5],
+            self.session[6],
+            self.session[7],
+            self.session[8],
+            self.session[9],
+        ]);
+        let tp = self.triples.as_ptr();
+        for (evt, m) in self.meta.iter().enumerate() {
+            if m.len == 0 {
+                continue; // tombstone: never emitted, never in the master
+            }
+            let base = m.offset as usize;
+            // SAFETY: `offset`/`len` are construction-valid (the same
+            // contract poll_impl's frame slice relies on); the reads below
+            // touch only [base, base + len).
+            let fptr = unsafe { self.frames.as_ptr().add(base) };
+            // SAFETY: as poll_impl's session reads — len >= HEADER_LEN for
+            // every pushed frame; unaligned u64 reads are defined.
+            let (sess_lo, sess_hi) = unsafe {
+                (
+                    (fptr as *const u64).read_unaligned(),
+                    (fptr.add(2) as *const u64).read_unaligned(),
+                )
+            };
+            // SAFETY: the slice targets (blob + triple store) outlive the
+            // pipeline (the RX thread is joined in Drop) and are never
+            // dereferenced after the pipeline drops — the master carries
+            // the EntryBuf contract verbatim.
+            let bytes: &'static [u8] =
+                unsafe { std::slice::from_raw_parts(fptr, m.len as usize) };
+            let blocks: &'static [(u64, u32, u32)] = if m.blk_count == 0 {
+                &[]
+            } else {
+                unsafe {
+                    std::slice::from_raw_parts(
+                        tp.add(m.blk_base as usize),
+                        m.blk_count as usize,
+                    )
+                }
+            };
+            // R12c: the elig byte — the exact poll-time formula (the parity
+            // suite pins the master's fields to the classic build's).
+            let elig_ok = (compute_elig
+                && m.blk_count != 0
+                && m.valid == m.blk_count
+                && sess_lo == tmpl_lo
+                && sess_hi == tmpl_hi) as u8;
+            let ev = &self.schedule.events[evt];
+            let patch = match self.schedule.session_split {
+                Some((split_m, _)) => match ev.kind {
+                    SchedKind::Packet { first_msg, .. } => first_msg < split_m,
+                    SchedKind::Heartbeat { .. } | SchedKind::EndOfSession { .. } => false,
+                },
+                None => true,
+            };
+            master.push(FrameEntry {
+                bytes,
+                feed: m.feed,
+                blocks,
+                memo: (m.blk_count != 0).then_some(FrameMemo { valid_count: m.valid }),
+                first_seq: m.first_seq,
+                sess_lo,
+                sess_hi,
+                elig: (m.feed & 3) | (elig_ok << 7),
+            });
+            evts.push(evt as u32);
+            patchable.push(patch);
+        }
+        debug_assert_eq!(master.len(), evts.len());
+        debug_assert_eq!(master.len(), patchable.len());
+        (
+            master.into_boxed_slice(),
+            evts.into_boxed_slice(),
+            patchable.into_boxed_slice(),
+        )
+    }
+
     #[inline(always)]
     pub fn poll_clamped(&mut self, batch: &mut FrameBatch, max_vt: Option<u64>) -> usize {
         batch.clear();
-        // F-1: the classic instantiation. The warm context is compile-time
-        // dead at WARM = false — the dummy below never touches memory.
+        // F-1/F-2: the classic instantiation (MODE 0). The warm/rxbuild
+        // context is compile-time dead at MODE 0 — the dummy below never
+        // touches memory.
         let mut dummy = WarmEmitCtx {
             out: &mut [],
             warm: &mut [],
@@ -986,7 +1121,7 @@ impl ReplayTransport {
             sess_hi_tmpl: 0,
             compute_elig: false,
         };
-        self.poll_impl::<false>(batch, &mut dummy, max_vt)
+        self.poll_impl::<0>(batch, &mut dummy, max_vt)
     }
 
     /// F-1 (HFT_RXWARM): the warm twin of [`Self::poll_clamped`] — the
@@ -1013,18 +1148,37 @@ impl ReplayTransport {
     #[inline]
     pub(crate) fn poll_warm(&mut self, batch: &mut FrameBatch, ctx: &mut WarmEmitCtx<'_>) -> usize {
         batch.clear();
-        self.poll_impl::<true>(batch, ctx, None)
+        self.poll_impl::<1>(batch, ctx, None)
     }
 
-    /// The shared poll skeleton (F-1): the pacing preamble, the event
-    /// walk, the tombstone skip, the session reads and the DLP prefetch
-    /// block are SINGLE-SOURCED for both instantiations; only the per-
-    /// frame EMIT differs (classic: the FrameBatch slot push + the legacy
-    /// batch_event map; warm: the derive + check-and-fix + verified-entry
-    /// store). The const parameter makes every branch compile-time — the
-    /// classic instantiation's codegen is the pre-F-1 codegen.
+    /// F-2 (HFT_RXBUILD): the publish-by-reference twin — the SAME pacing
+    /// skeleton (single-sourced in `poll_impl`; the parity suite pins the
+    /// instantiations to identical observables), with the per-frame work
+    /// reduced to COUNTING: the entries live in the construction-built
+    /// master array (see `build_frame_master`) and the publication carries
+    /// only the master slice bounds (`ctx.idx` is the pass-local frame
+    /// index — the walk advances it per emitted frame, exactly the warm
+    /// counter's law). No frame line is read (the session reads and the
+    /// blob slice disappear with the entry build — the RX per-frame cost
+    /// is the pacing walk alone); the DLP prefetch stays (the fold's
+    /// first lines).
+    #[inline]
+    pub(crate) fn poll_rxbuild(&mut self, batch: &mut FrameBatch, ctx: &mut WarmEmitCtx<'_>) -> usize {
+        batch.clear();
+        self.poll_impl::<2>(batch, ctx, None)
+    }
+
+    /// The shared poll skeleton (F-1/F-2): the pacing preamble, the event
+    /// walk, the tombstone skip and the DLP prefetch block are
+    /// SINGLE-SOURCED for all instantiations; only the per-frame EMIT
+    /// differs (MODE 0 classic: the FrameBatch slot push + the legacy
+    /// batch_event map; MODE 1 warm: the derive + check-and-fix +
+    /// verified-entry store; MODE 2 rxbuild: count-only — the master's
+    /// slice bounds are all the publication carries). The const parameter
+    /// makes every branch compile-time — the classic instantiation's
+    /// codegen is the pre-F-1 codegen.
     #[inline(always)]
-    fn poll_impl<const WARM: bool>(
+    fn poll_impl<const MODE: u8>(
         &mut self,
         batch: &mut FrameBatch,
         w: &mut WarmEmitCtx<'_>,
@@ -1075,7 +1229,7 @@ impl ReplayTransport {
         }
         let vclock = self.virtual_clock;
 
-        let cap = if WARM {
+        let cap = if MODE == 1 {
             w.out.len().min(FrameBatch::capacity())
         } else {
             FrameBatch::capacity()
@@ -1094,7 +1248,7 @@ impl ReplayTransport {
         let mut emitted = 0usize;
         let tp = self.triples.as_ptr();
 
-        while self.event_idx < limit_evt && (if WARM { emitted } else { batch.len() }) < cap {
+        while self.event_idx < limit_evt && (if MODE != 0 { emitted } else { batch.len() }) < cap {
             let evt = self.event_idx;
             if exact_pacing && self.vts[evt] > vclock {
                 break;
@@ -1112,25 +1266,33 @@ impl ReplayTransport {
             // in-bounds of `frames` by construction; the debug assert keeps
             // the invariant honest under mutation-heavy test builds.
             debug_assert!(end <= self.frames.len());
-            let frame = unsafe { self.frames.get_unchecked_mut(base..end) };
-            // R8: session compare words, read from the frame line this
-            // thread already holds (the reset-time bake guarantees the
-            // bytes). In pipelined mode the consumer's steady scan then
-            // never touches the cross-core frame lines at all.
-            let fptr = frame.as_ptr();
-            // SAFETY: len >= HEADER_LEN (>= 20) for every pushed frame;
-            // unaligned u64 reads are defined.
-            let (sess_lo, sess_hi) = unsafe {
-                (
-                    (fptr as *const u64).read_unaligned(),
-                    (fptr.add(2) as *const u64).read_unaligned(),
-                )
-            };
-            if WARM {
+            if MODE == 2 {
+                // F-2: count-only — the entries live in the master (built
+                // once at construction, patched at the session boundaries);
+                // the publication carries the slice bounds. `w.idx` is the
+                // pass-local frame index (the warm counter's law).
+                w.idx += 1;
+                emitted += 1;
+            } else {
+                let frame = unsafe { self.frames.get_unchecked_mut(base..end) };
+                // R8: session compare words, read from the frame line this
+                // thread already holds (the reset-time bake guarantees the
+                // bytes). In pipelined mode the consumer's steady scan then
+                // never touches the cross-core frame lines at all.
+                let fptr = frame.as_ptr();
+                // SAFETY: len >= HEADER_LEN (>= 20) for every pushed frame;
+                // unaligned u64 reads are defined.
+                let (sess_lo, sess_hi) = unsafe {
+                    (
+                        (fptr as *const u64).read_unaligned(),
+                        (fptr.add(2) as *const u64).read_unaligned(),
+                    )
+                };
+                if MODE == 1 {
                 // F-1: derive the entry in registers from the walk's live
                 // facts — the exact formula of the pipeline's classic
                 // accumulate-loop build (the parity suite pins the two
-                // instantizations together). SAFETY: as poll_warm's doc —
+                // instantiations together). SAFETY: as poll_warm's doc —
                 // the target bytes outlive the pipeline and are never read
                 // after the consumer frees the buffer.
                 let bytes: &'static [u8] =
@@ -1180,7 +1342,7 @@ impl ReplayTransport {
                 }
                 w.idx += 1;
                 emitted += 1;
-            } else {
+                } else {
                 // R8: the session prefix was patched at reset() time — poll's
                 // release loop is a pure slice + push (the 10B copy and its
                 // branch are gone from the hot path).
@@ -1202,6 +1364,7 @@ impl ReplayTransport {
                 // inline slot index).
                 if exact_pacing {
                     self.batch_event[slot_idx] = evt as u32;
+                }
                 }
             }
             // R4/R8: DLP warm-up — the blob is append-ordered, so the NEXT
@@ -1249,8 +1412,8 @@ impl ReplayTransport {
             }
         }
 
-        self.batch_event_len = if WARM { 0 } else { batch.len() };
-        if WARM {
+        self.batch_event_len = if MODE == 0 { batch.len() } else { 0 };
+        if MODE != 0 {
             emitted
         } else {
             batch.len()

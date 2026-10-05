@@ -1,0 +1,48 @@
+[package]
+name = "nf-arbitrator-tests"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies.nf-arbitrator]
+path = "/home/z/my-project/HFT-Proj/crates/nf-arbitrator/"
+default-features = false
+
+[dependencies.nf-protocol]
+path = "/home/z/my-project/HFT-Proj/crates/nf-arbitrator/../nf-protocol/"
+
+[dependencies.nf-testkit]
+path = "/home/z/my-project/HFT-Proj/crates/nf-arbitrator/../nf-testkit/"
+
+[dependencies.nf-transport]
+path = "/home/z/my-project/HFT-Proj/crates/nf-arbitrator/../nf-transport/"
+
+[[bin]]
+name = "nf-arbitrator-tests"
+path = "main.rs"
+
+[[bin]]
+name = "trybuild000"
+path = "/home/z/my-project/HFT-Proj/crates/nf-arbitrator/tests/ui/cf1_private_field_construction.rs"
+
+[[bin]]
+name = "trybuild001"
+path = "/home/z/my-project/HFT-Proj/crates/nf-arbitrator/tests/ui/cf2_private_field_read.rs"
+
+[[bin]]
+name = "trybuild002"
+path = "/home/z/my-project/HFT-Proj/crates/nf-arbitrator/tests/ui/cf3_destructure.rs"
+
+[[bin]]
+name = "trybuild003"
+path = "/home/z/my-project/HFT-Proj/crates/nf-arbitrator/tests/ui/cf4_lookalike_type.rs"
+
+[[bin]]
+name = "trybuild004"
+path = "/home/z/my-project/HFT-Proj/crates/nf-arbitrator/tests/ui/cf5_hold_across_calls.rs"
+
+[[bin]]
+name = "trybuild005"
+path = "/home/z/my-project/HFT-Proj/crates/nf-arbitrator/tests/ui/cf6_orphan_clone.rs"
+
+[workspace]

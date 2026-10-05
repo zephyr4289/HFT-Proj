@@ -383,6 +383,36 @@ grep -q "span_rate_msg_per_sec" /tmp/bench_rxwarm_fronta.json
 grep -q "RXWARM_DIAGNOSTIC" /tmp/bench_rxwarm_fronta.json
 grep -q "enabled=true" /tmp/bench_rxwarm_fronta.json
 
+echo "=== 11rb. R17/F-2: Publish-by-Reference Master Array ARMED (the Front A 5B lever, round 2) ==="
+# CHECKLIST F-2 / ROADMAP1 §6-I1: draw 22 refuted F-1 (the W compare
+# stream binds, -22.6/-33.8/-48.2% on 3/3 healthy hosts) and fired this
+# gate. HFT_RXBUILD replaces the RX's ENTIRE per-frame emit with a
+# count-only pacing walk: the entries live in a construction-built
+# master array (event-ordered, tombstone-free, ALLOC_DELTA=0), the
+# publication carries (rx_start, len) slice bounds (~16B/turn vs
+# ~64KB/batch), and the prepatch's consumed-event frontier drives the
+# master's sess/elig patch exactly as it drives the blob's (the I-7
+# floor + overwrite guard bound both). DEFAULT OFF (this arm prices it
+# per draw; HFT_RXBUILD unset/0 is the rollback — the classic path
+# verbatim, the record submission untouched). Decision rule per the
+# CHECKLIST: >= +15% healthy Front A over >= 3 draws -> the default-flip
+# protocol; short of that -> the kill. Two sub-runs:
+# (a) the sustained soak — the rxbuild path feeds the full sustained
+#     battery (per-pass bit-parity asserts + ALLOC_DELTA=0);
+# (b) the Front A pricing — hft_bench's RX-pipelined span arm (the
+#     same binary section 16 runs classically; the rxbuild-vs-default
+#     span_rate delta on the SAME draw is the lever's price).
+# RXBUILD_DIAGNOSTIC carries enabled/patches/last_pass_patches/frames.
+HFT_RXBUILD=1 cargo run --release -p nf-engine --bin bench -- --hydra-only 2>&1 | tee /tmp/bench_rxbuild.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_rxbuild.txt
+grep -q "allocs=0" /tmp/bench_rxbuild.txt
+grep -q "RXBUILD_DIAGNOSTIC" /tmp/bench_rxbuild.txt
+grep -q "enabled=true" /tmp/bench_rxbuild.txt
+HFT_RXBUILD=1 cargo run --release -p nf-engine --bin hft_bench -- --sample data/tests/sample-mini.itch --runs 5 --warmup 2 --output-format json 2>&1 | tee /tmp/bench_rxbuild_fronta.json
+grep -q "span_rate_msg_per_sec" /tmp/bench_rxbuild_fronta.json
+grep -q "RXBUILD_DIAGNOSTIC" /tmp/bench_rxbuild_fronta.json
+grep -q "enabled=true" /tmp/bench_rxbuild_fronta.json
+
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)
