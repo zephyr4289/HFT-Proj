@@ -874,3 +874,127 @@ the 2B campaign would be the scarcest waste of all. Interim verdicts
 from the partial sweep corroborate the closed axes: 11k −3.1% (A1's
 no-flip, the wobble continues downward), 11e −3.8% (P0-7's 5th
 consecutive negative).
+
+**Draw 20 (8573C healthy RECORD-CLASS, run 37277372408, Wave-1 shard 5;
+commit 865482e — the draw-20 fish; the battery ran CLEAN through every
+arm — no race strike).** kbench `fold512_r` 1t = **34.93** GB/s
+(the record class), 2cpu_distinct 69.73; 11b **1,233,118,283** BIT-EXACT
+allocs=0; Front A pure ingest **3,256,577,062** PASS (2B gate) @ 0.734
+cyc/msg. Full arm table: 11e −2.2% (P0-7's 6th straight — armed prepatch
+confirmed again), 11k −1.4% (A1 stays closed), 11l +0.7% / 11m −2.1%
+(tripwires quiet), 11n +0.3%, 11r +1.1% / 11s +0.9% / 11t +0.5% (the
+kernel rollback triple, all within noise), 11u +0.3%/+0.5% (A3-a stays
+closed), 11wm −1.8% (A3-b stays refuted), 11v +0.9% (dfold tripwire),
+11w −18.8% (rxdesc, 9th consecutive), 11z null 1,491.3M (~18.7 cyc/span
+— the floor replicates a 5th time).
+
+**THE T-1 REPLICATION — ROUTE T'S BUILD DECISION IS DEAD (2/2 healthy
+draws):**
+
+```text
+fold512_r        34.93 GB/s   (sink 0xbedb8ba779de450f)
+fold512_t        30.29 GB/s   (sink 0xbedb8ba779de450f — BIT-EXACT)
+                 => −13.3% (draw 19: −12.4%) — the ≥ +8% build bar is
+                    missed by ~21 points on both healthy draws. The kill
+                    is conclusive; the formal refutation needs the 3rd
+                    draw per the law, but no build work happens.
+fold512_supply   34.95  (+0.1% — L3 streaming FREE at 1t, 2/2 draws;
+                        D-1's ≥28 GB/s gate clears with ~25% margin)
+fold512_pre      34.50  (−1.2%)
+fold512_noend    34.13  (−2.3% — draw 19's −3.9% replicates in
+                        direction; the ending work is a 2-4% kernel-level
+                        cost on this class — C-1's pipelining ceiling is
+                        modest, as ROADMAP3 §4.3's own math warned)
+```
+
+The 2B program's shape is now fully priced: the kernel axis is dead
+(Route T), supply is free (D-1), endings are a 2-4% lever (C-1/C-2), and
+the null floor holds ~17-19 cyc/span. What remains is S+residual (B-1
+wide-store, B-2/B-3 Route S kill tests) and the honest ~1.6-1.8B ceiling
+— or the record-class fishing itself (draw 18a's 1.2391B stands as the
+fleet best).
+
+## 10. I-7 — the prepatch-race hardening round (SHIPPED — this revision)
+
+The three-strike class (R9's +39, R12's 11j −47,297, draw 19's +35 on a
+healthy draw that killed 8 arms) is root-caused, fixed, and pinned.
+
+**The mechanism (the full chain, each link measured or read from the
+code):**
+
+1. Every pass ends with the RX publishing an empty EOS-marker
+   publication; the consumer frees it inside `next_batch` before
+   returning false. The marker's event-ring slot records the sentinel
+   `usize::MAX` — "the whole pass is consumed — patch everything."
+2. At the NEXT pass's first publication(s), the consumer cannot have
+   freed anything yet (it is still between passes), so the incremental
+   prepatch's freed-frontier still maps to that marker — and reads the
+   sentinel. It then bakes the NEXT pass's session into the CURRENT
+   pass's unconsumed head regions (up to 64 sites per publication, and
+   deeper while the consumer lags — the tardiness is the timing
+   component that makes the fleet flake rare).
+3. Entries built by LATER publications read the over-patched blob and
+   carry the foreign session words; the live frame bytes are equally
+   wrong for any cold-path re-parse — the documented "the prepatch can
+   never be observed mid-flight" contract (render.rs `patch_range`) is
+   violated.
+4. The consumer's steady scan cold-paths on the session mismatch;
+   `session_dispatch` opens a session boundary and sets `State::Init`.
+5. The anchor law (`ingest_auto`: `State::Init → self.w = first`,
+   UNCONDITIONALLY, before the duplicate check) re-anchors the watermark
+   DOWN to the first post-flip frame's `first_seq`. If that frame is a
+   duplicate of an already-emitted packet (its primary rode an earlier
+   publication), the dup re-emits its messages: **the pass count lands
+   at 505,849 + N where N is one packet's message payload — +35 (draw
+   19), +39 (R9).** The adjacent-pair test schedules never straddle a
+   publication boundary with an early-gated region, which is exactly why
+   the class survived every existing suite for 20 rounds.
+
+**The fix (nf-transport/pipeline.rs, the RX thread only):**
+
+* `pass_start_turn` — the current pass's first publication turn, set at
+  the auto-advance. The incremental prepatch now SKIPS any freed
+  frontier below it: previous-pass turns (including the marker whose
+  sentinel the advance's synchronous bake already consumed) carry no
+  valid event index for the current pass. The advance's
+  `reset_prepatched` tail remains the catch-all, so no legitimate bake
+  work is lost — the marker-sentinel window simply closes.
+* The overwrite guard is corrected to `ring_covered − t ≥ TOFF_RING`
+  (was `>`): at exactly TOFF_RING distance the aliased slot already
+  holds the just-recorded turn's own value, and reading it would take a
+  LARGER event end as the frontier — the same over-patch class. (Dead
+  at NBUF=16 today — the runahead caps the lag at 16 — but it is the
+  identical boundary bug and costs nothing to close.)
+* No new env, no default flip: the fix lives inside the prepatch, whose
+  whole-mechanism rollback (`HFT_PREPATCH=0`, arm 11e) already exists.
+  Side effect: the armed path is slightly CHEAPER — the old code
+  double-patched the head every pass (64+ sites with the wrong session,
+  then re-patched them correctly at the next advance) and forced a
+  mid-pass cold path; both are gone.
+
+**The repro harness (the I-7 spec's pattern — chaos × forced prepatch ×
+high pass count — plus a deterministic pin):**
+
+* `t_prepatch_marker_sentinel_head_invariant` (nf-transport): an
+  ENGINEERED straddle schedule — phase-separated feeds so the 64
+  earliest-gated regions each have their primary in publication #1 and
+  their duplicate in publication #2 — plus a tardy consumer parked
+  through the RX's full runahead. Asserts every entry of every batch
+  carries ITS pass's session, in the frame bytes AND the inline words.
+  **RED on the unfixed code (pass 1, batch 1: bytes read `…02` — the
+  next-NEXT session — where `…01` was baked), GREEN with the fix.**
+* `t_i7_prepatch_chaos_sustained_soak` (nf-testkit): the sustained
+  auto-advance shape at multi-publication scale on a delayed dual-feed
+  (dups straddle publication boundaries organically), 160 passes under
+  deterministic LCG chaos — tardy starts (~35% of passes), mid-pass
+  stalls, periodic mid-pass abandons — asserting the per-pass reference
+  tuple (count, hash, msg_hash) and the per-entry session invariant.
+  **RED on the unfixed code (same foreign-session evidence, first
+  chaos pass), GREEN with the fix (1.3 s).**
+
+**Validation:** 30/30 workspace suites green; clippy `-D warnings`
+clean; the historically-flaky `t_rxdesc_parity_matrix` 3/3 green; local
+hydra smoke BIT-EXACT `0x881639cead506f25` allocs=0 with ~3.3k sustained
+passes through the fixed window. The fleet re-prices the armed path on
+the next draw via 11e (and the whole battery is now protected from the
+strike that killed draw 19's back half).
