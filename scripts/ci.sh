@@ -280,20 +280,19 @@ HFT_WORKER_BATCH=256 cargo run --release -p nf-engine --bin bench -- --hydra-onl
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_wbatch_256.txt
 grep -q "allocs=0" /tmp/bench_wbatch_256.txt
 
-echo "=== 11wm. R17: Assist-Watermark Deep-Soak (the A3-b pricing on the ring) ==="
+echo "=== 11wm. R17: Assist-Watermark Deep-Soak, SIBLINGS (the A3-b pricing where the assist lives) ==="
 # THE A3 BISECT, SECOND AXIS: the R12-era ring's assist fired on LANE-RING
-# FULLNESS (deep saturation, ~2x2048 pending); R16b moved the trigger to
-# the submission lead (pending > 2048) — and that logic lives in the
-# SHARED HydraSpanSink, so it executes on the ring path too (draw 16's
-# telemetry: 597 assist chunks under distinct, 245,655 under siblings).
-# This arm parks the watermark at the pace ceiling (8192) — the assist
-# engages only at the deep-saturation regime, the R12-era shape. 11b
-# (watermark 2048) vs 11wm (8192) per draw prices the trigger change on
-# the restored default; the R16B_RXDESC assist_chunks telemetry rides
-# every arm. (The knob is HFT_ASSIST_WATERMARK; 0 disarms the assist
-# entirely — the 11wm verdict decides whether that third point is worth
-# an arm.)
-HFT_ASSIST_WATERMARK=8192 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_awm8192.txt
+# FULLNESS (deep saturation); R16b moved the trigger to the submission
+# lead (pending > 2048) in the SHARED HydraSpanSink — so it executes on
+# the ring path too. Draw 16 priced the watermark on DISTINCT (+0.4%,
+# draw 17) — but under distinct the assist is DORMANT (597/242 chunks);
+# the R12-era 1,186.1M reference shape is SIBLINGS, where the assist
+# runs 245K-295K chunks per draw. THIS arm parks the watermark at the
+# pace ceiling (8192 = deep-saturation-only, the R12-era trigger shape)
+# UNDER SIBLINGS: 11k (siblings, wm 2048) vs 11wm (siblings, wm 8192)
+# per draw is the A3-b price against the R12-era reference. The
+# R16B_RXDESC assist_chunks telemetry rides both arms.
+HFT_FABRIC_PLACE=siblings HFT_ASSIST_WATERMARK=8192 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_awm8192.txt
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_awm8192.txt
 grep -q "allocs=0" /tmp/bench_awm8192.txt
 
