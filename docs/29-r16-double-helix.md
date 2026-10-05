@@ -958,6 +958,81 @@ through every arm on the hardened stack with zero pass-count divergence
 (the strike class that killed draw 19's back half and threatened every
 record attempt). The race window is closed; the battery is protected.
 
+**Draw 22 — THE F-1 VERDICT DRAW, A TRIPLE-HEADER (run 37284744327,
+commit d7b86ad — the F-1 stack's first fleet draw; Wave-1 shards 2, 6,
+7, ALL healthy 8573C: kbench `fold512_r` 1t = 34.03 / 30.72 / 33.81;
+battery CLEAN through every arm on all three — I-7 holds through its
+second fleet draw, zero divergence).** 11b per shard: **1,117,324,394 /
+1,075,249,743 / 1,091,274,556** (median 1,091.3M — a mid-band draw, the
+kernel-correlation law holds; draw 18a's 1.2391B fleet best stands).
+Default Front A (musl 30-run medians): **3,219,220,537 @ 0.7145 /
+2,543,776,321 @ 0.9042 / 3,292,976,899 @ 0.6985 cyc/msg** — all PASS
+the 2B gate. Arm table (vs own-shard 11b): 11e −1.6%/−2.9%/−4.1%
+(armed prepatch confirmed, 8th straight), 11k +0.5%/+1.9%/+0.5% (A1
+stays closed), 11l −4.4%/−3.5%/−4.6% (tripwire), 11m −2.3%/−1.5%/−1.7%,
+11n +0.0%/+0.3%/+1.1%, 11r +0.7%/+1.5%/+2.8%, 11s +0.5%/+0.7%/+0.4%,
+11t +0.8%/+0.5%/+0.3%, 11u −0.1%/−0.0%/+0.6% (A3-a stays closed), 11wm
++1.3%/+2.0%/+0.4% (A3-b stays refuted), 11v −1.0%/+0.7%/+0.3% (dfold
+tripwire), 11w −6.7%/−11.3%/−3.3% (rxdesc, 11th straight; rx_fixes
+128/0/256 — the check-and-fix law working), 11z null 1,461.1M /
+1,371.2M / 1,489.0M (+30.8%/+27.6%/+36.4% over 11b — the floor scales
+with host class).
+
+**THE 11wn FIRST READING — THE WARM FRONT A PREMIUM IS DEEPLY NEGATIVE
+ON 3/3 INDEPENDENT HEALTHY HOSTS; THE KILL RULE FIRES IN SUBSTANCE AND
+THE DECISION GATE ROUTES TO F-2:**
+
+```text
+                      default Front A      warm Front A       premium
+shard 2 (kbench 34.03)  3,219,220,537       2,130,581,283     −33.8%
+                       @ 0.7145 cyc/msg    @ 1.08  cyc/msg
+shard 6 (kbench 30.72)  2,543,776,321       1,967,855,253     −22.6%
+                       @ 0.9042 cyc/msg    @ 1.17  cyc/msg
+shard 7 (kbench 33.81)  3,292,976,899       1,706,781,250     −48.2%
+                       @ 0.6985 cyc/msg    @ 1.35  cyc/msg
+                       MEDIAN PREMIUM: −33.8%   (sign-unanimous 3/3;
+                       7-14x beyond the ±3.4% same-draw noise floor and
+                       beyond the ±10% cross-host band — noise cannot
+                       explain it; the weakest host regresses LEAST, the
+                       strongest MOST — the penalty scales with the rate
+                       the W stream must sustain)
+warm sustained          949.3M / 937.2M / 922.0M  vs default
+                       1,117.3M / 1,075.2M / 1,091.3M
+                       = −15.0% / −12.9% / −15.5% (warm FAILS even the
+                       1B R8 gate on 3/3 hosts)
+zero-fix law            fixes=21,996 (the pass-1 fill exactly), 
+                       uncovered=0, last_pass_fixes=0 — HOLDS on 3/3
+                       hosts: the mechanism is CORRECT on fleet silicon,
+                       BIT-EXACT, allocs=0, no persistent fixes
+RX prod_ms (shard 2)    default 3872.4 ms -> warm 3484.5 ms (−10.0%):
+                       the RX's OWN production time FELL — the removed
+                       slot-push/build µops are real — but total
+                       throughput fell with it: the W compare stream
+                       (~1.6 MB/pass cycling L2 at up to ~6,300 passes/s
+                       ≈ 10+ GB/s of added read traffic) externalizes
+                       its cost onto the consumer walk and the fold
+                       supply. The risk register's prong (1) fired
+                       EXACTLY as written: the W stream binds, C8's
+                       working-set warning class materialized.
+```
+
+**The F-1 verdict:** the warm start is REFUTED as the Front A 5B lever
+on the fleet — not because the check-and-fix law fails (it holds
+perfectly: zero fixes on pass ≥ 2, 3/3 hosts) but because the warm
+array's read stream is a new working set the span path cannot afford.
+The pre-declared kill rule (Front A < +15% healthy, ≥3 draws) opens its
+tally at draw 22 with 3/3 independent healthy hosts sign-unanimous at
+−22.6…−48.2%; the magnitude makes the remaining replication a formality
+(any future 11wn reading extends it — the arm stays aboard as the
+pricing instrument). `HFT_RXWARM` stays default-OFF exactly as shipped;
+the record path is untouched. The decision gate per the CHECKLIST
+routes to **F-2 (publish-by-reference master array)** — F-1's warm
+median 2.13B lands far short of the 4.6B build bar, and the roadmap's
+own residual (the packed 48-byte warm record, half the stream) cannot
+recover a −34% deficit. The v2 note is recorded as closed-with-F-1: the
+fundamental added-read-stream cost is the failure mode, not the record
+width.
+
 ## 10. I-7 — the prepatch-race hardening round (SHIPPED — this revision)
 
 The three-strike class (R9's +39, R12's 11j −47,297, draw 19's +35 on a
@@ -1043,7 +1118,11 @@ passes through the fixed window. The fleet re-prices the armed path on
 the next draw via 11e (and the whole battery is now protected from the
 strike that killed draw 19's back half).
 
-## 11. F-1 — the RX frame-entry warm start (SHIPPED — this revision; CHECKLIST F-1 / ROADMAP2 §6.1)
+## 11. F-1 — the RX frame-entry warm start (SHIPPED default-off; REFUTED
+AS THE FRONT A LEVER AT DRAW 22 — the §9 draw-22 entry: warm premium
+−22.6/−33.8/−48.2% on 3/3 healthy hosts, the W stream binds; `HFT_RXWARM`
+stays OFF, arm 11wn stays aboard as the pricing instrument; CHECKLIST
+F-1 / ROADMAP2 §6.1)
 
 The Front A 5B lever, shipped as specified: `HFT_RXWARM=1` arms it,
 unset/0 is the rollback (the classic path verbatim — the default
