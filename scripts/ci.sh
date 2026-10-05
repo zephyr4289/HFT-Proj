@@ -356,62 +356,60 @@ grep -q "HYDRA_NULL_MODE_DIAGNOSTIC" /tmp/bench_nullmode.txt
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_nullmode.txt
 grep -q "allocs=0" /tmp/bench_nullmode.txt
 
-echo "=== 11wn. R17/F-1: RX Frame-Entry Warm Start ARMED (the Front A 5B lever) ==="
+echo "=== 11wn. R17/F-1: RX Frame-Entry Warm Start ARMED (the refuted lever's pricing instrument) ==="
 # CHECKLIST F-1 / ROADMAP2 §6.1: the RX's per-frame entry build is the
 # measured Front A co-wall (prod_ms 58-86%). HFT_RXWARM replaces the slot
 # push + accumulate-loop build with the frame-indexed warm array +
 # check-and-fix (the rxdesc law: the walk re-derives each entry from live
 # facts every pass and the COMPARE is the correctness — zero added store
-# traffic, the R12b sidecar failure mode designed out). DEFAULT OFF (this
-# arm prices it per draw; HFT_RXWARM unset/0 is the rollback — the
-# classic path verbatim). Kill rule (CHECKLIST F-1): rx_warm_fixes > 0
-# persistent, or Front A < +15% healthy — decided on >= 3 draws per the
-# R9c->R9d law, never one. Two sub-runs:
+# traffic, the R12b sidecar failure mode designed out). REFUTED at draw
+# 22 (3/3 healthy, median -33.8%: the W L2-stream externalizes its cost
+# onto the consumer walk + fold supply); the arm stays aboard as the
+# pricing instrument. POST-F-2-FLIP: HFT_RXBUILD=0 is pinned explicitly
+# — without it the rxbuild default would win and the arm would price
+# nothing (the warm start only exists on the classic path). Kill rule
+# (CHECKLIST F-1) stands: rx_warm_fixes > 0 persistent. Two sub-runs:
 # (a) the sustained soak — the warm path feeds the full sustained battery
 #     (per-pass bit-parity asserts + ALLOC_DELTA=0) on the same silicon;
-# (b) the Front A pricing — hft_bench's RX-pipelined span arm (the same
-#     binary section 16 runs classically; the warm-vs-default span_rate
-#     delta on the SAME draw is the lever's price). RXWARM_DIAGNOSTIC
-#     carries enabled/fixes/uncovered/last_pass_fixes per run.
-HFT_RXWARM=1 cargo run --release -p nf-engine --bin bench -- --hydra-only 2>&1 | tee /tmp/bench_rxwarm.txt
+# (b) the Front A pricing — hft_bench's RX-pipelined span arm. The
+#     warm-vs-rollback-classic span_rate delta on the SAME draw is the
+#     lever's residual price. RXWARM_DIAGNOSTIC carries
+#     enabled/fixes/uncovered/last_pass_fixes per run.
+HFT_RXWARM=1 HFT_RXBUILD=0 cargo run --release -p nf-engine --bin bench -- --hydra-only 2>&1 | tee /tmp/bench_rxwarm.txt
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_rxwarm.txt
 grep -q "allocs=0" /tmp/bench_rxwarm.txt
 grep -q "RXWARM_DIAGNOSTIC" /tmp/bench_rxwarm.txt
 grep -q "enabled=true" /tmp/bench_rxwarm.txt
-HFT_RXWARM=1 cargo run --release -p nf-engine --bin hft_bench -- --sample data/tests/sample-mini.itch --runs 5 --warmup 2 --output-format json 2>&1 | tee /tmp/bench_rxwarm_fronta.json
+HFT_RXWARM=1 HFT_RXBUILD=0 cargo run --release -p nf-engine --bin hft_bench -- --sample data/tests/sample-mini.itch --runs 5 --warmup 2 --output-format json 2>&1 | tee /tmp/bench_rxwarm_fronta.json
 grep -q "span_rate_msg_per_sec" /tmp/bench_rxwarm_fronta.json
 grep -q "RXWARM_DIAGNOSTIC" /tmp/bench_rxwarm_fronta.json
 grep -q "enabled=true" /tmp/bench_rxwarm_fronta.json
 
-echo "=== 11rb. R17/F-2: Publish-by-Reference Master Array ARMED (the Front A 5B lever, round 2) ==="
-# CHECKLIST F-2 / ROADMAP1 §6-I1: draw 22 refuted F-1 (the W compare
-# stream binds, -22.6/-33.8/-48.2% on 3/3 healthy hosts) and fired this
-# gate. HFT_RXBUILD replaces the RX's ENTIRE per-frame emit with a
-# count-only pacing walk: the entries live in a construction-built
-# master array (event-ordered, tombstone-free, ALLOC_DELTA=0), the
-# publication carries (rx_start, len) slice bounds (~16B/turn vs
-# ~64KB/batch), and the prepatch's consumed-event frontier drives the
-# master's sess/elig patch exactly as it drives the blob's (the I-7
-# floor + overwrite guard bound both). DEFAULT OFF (this arm prices it
-# per draw; HFT_RXBUILD unset/0 is the rollback — the classic path
-# verbatim, the record submission untouched). Decision rule per the
-# CHECKLIST: >= +15% healthy Front A over >= 3 draws -> the default-flip
-# protocol; short of that -> the kill. Two sub-runs:
-# (a) the sustained soak — the rxbuild path feeds the full sustained
+echo "=== 11rb. R17/F-2: Publish-by-Reference ROLLBACK (the classic-path pricing arm — the default IS rxbuild since the F-2 verdict) ==="
+# CHECKLIST F-2 / ROADMAP1 §6-I1: draws 23-25 decided the default-flip
+# (4/4 healthy 8573C readings at +21.6/+21.6/+33.6/+79.7/+82.6% Front A
+# — the >= +15% over >= 3 draws law satisfied; the armed sustained
+# +4.4…+5.3% besides). HFT_RXBUILD unset now runs the master array —
+# the DEFAULT battery (11b, section 16) IS the rxbuild path. This arm
+# pins HFT_RXBUILD=0 explicitly: the classic path's per-draw price (the
+# rollback evidence, the 11e/11w pattern). Two sub-runs:
+# (a) the sustained soak — the classic path feeds the full sustained
 #     battery (per-pass bit-parity asserts + ALLOC_DELTA=0);
-# (b) the Front A pricing — hft_bench's RX-pipelined span arm (the
-#     same binary section 16 runs classically; the rxbuild-vs-default
-#     span_rate delta on the SAME draw is the lever's price).
-# RXBUILD_DIAGNOSTIC carries enabled/patches/last_pass_patches/frames.
-HFT_RXBUILD=1 cargo run --release -p nf-engine --bin bench -- --hydra-only 2>&1 | tee /tmp/bench_rxbuild.txt
+# (b) the Front A pricing — hft_bench's classic span arm; the
+#     default-vs-rollback span_rate delta on the SAME draw is the
+#     flip's live price (expected positive: the rollback is the slower
+#     path).
+# RXBUILD_DIAGNOSTIC carries enabled/patches/last_pass_patches/frames
+# (enabled=false throughout this arm — the grep pins it).
+HFT_RXBUILD=0 cargo run --release -p nf-engine --bin bench -- --hydra-only 2>&1 | tee /tmp/bench_rxbuild.txt
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_rxbuild.txt
 grep -q "allocs=0" /tmp/bench_rxbuild.txt
 grep -q "RXBUILD_DIAGNOSTIC" /tmp/bench_rxbuild.txt
-grep -q "enabled=true" /tmp/bench_rxbuild.txt
-HFT_RXBUILD=1 cargo run --release -p nf-engine --bin hft_bench -- --sample data/tests/sample-mini.itch --runs 5 --warmup 2 --output-format json 2>&1 | tee /tmp/bench_rxbuild_fronta.json
+grep -q "enabled=false" /tmp/bench_rxbuild.txt
+HFT_RXBUILD=0 cargo run --release -p nf-engine --bin hft_bench -- --sample data/tests/sample-mini.itch --runs 5 --warmup 2 --output-format json 2>&1 | tee /tmp/bench_rxbuild_fronta.json
 grep -q "span_rate_msg_per_sec" /tmp/bench_rxbuild_fronta.json
 grep -q "RXBUILD_DIAGNOSTIC" /tmp/bench_rxbuild_fronta.json
-grep -q "enabled=true" /tmp/bench_rxbuild_fronta.json
+grep -q "enabled=false" /tmp/bench_rxbuild_fronta.json
 
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit

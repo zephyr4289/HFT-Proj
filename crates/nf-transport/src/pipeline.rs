@@ -346,9 +346,11 @@ struct Mailbox {
     /// session-split rule mirrored). Construction-built, immutable.
     master_patchable: Box<[bool]>,
     /// F-2: whether the RX thread publishes by reference (write-once at
-    /// construction, BEFORE the spawn). HFT_RXBUILD=1 arms; unset/0 is the
-    /// rollback (the classic path verbatim — and HFT_RXWARM keeps its own
-    /// mode; if both are set, rxbuild wins and warm is ignored).
+    /// construction, BEFORE the spawn). DEFAULT ON since the F-2 verdict
+    /// (draws 23-25: 4/4 healthy 8573C readings at +21.6…+82.6% Front A,
+    /// the armed sustained +4.4…+5.3%); HFT_RXBUILD=0 is the rollback
+    /// (the classic path verbatim — and HFT_RXWARM keeps its own mode; if
+    /// both are set, rxbuild wins and warm is ignored).
     rxbuild_enabled: bool,
 }
 
@@ -626,8 +628,9 @@ fn rxbuild_bake_full(
 /// tracked here and refreshed at every bake point (reset serve, EOS-park
 /// reset serve, auto-advance).
 /// `warm_enabled` (F-1, HFT_RXWARM) arms the frame-entry warm start.
-/// `rxbuild_enabled` (F-2, HFT_RXBUILD) arms publish-by-reference (the
-/// master array in the Mailbox; takes precedence over `warm_enabled` —
+/// `rxbuild_enabled` (F-2, HFT_RXBUILD) selects publish-by-reference (the
+/// master array in the Mailbox; DEFAULT ON since the F-2 verdict — draws
+/// 23-25, 4/4 healthy readings ≥ +15%; takes precedence over `warm_enabled` —
 /// both set runs rxbuild).
 #[allow(clippy::disallowed_types)]
 fn rx_thread(
@@ -763,8 +766,9 @@ fn rx_thread(
     // (construction-built from the freshly-baked blob); `rxs.idx` is the
     // pass-local frame index (the next publication's master slice start);
     // `rxs.mpp_idx` is the master patch cursor (the prepatch's frontier
-    // drives it exactly as it drives the blob's `pp_idx`). HFT_RXBUILD
-    // unset/0 is the rollback — the classic path below is verbatim.
+    // drives it exactly as it drives the blob's `pp_idx`). HFT_RXBUILD=0
+    // is the rollback — the classic path below is verbatim (the default
+    // flipped ON at the F-2 verdict: draws 23-25, 4/4 healthy ≥ +15%).
     let mut rxs = RxBuildState::new();
     let mut turn: u64 = 0;
     let mut served_resets: u64 = 0;
@@ -1533,10 +1537,14 @@ impl PipelinedReplayTransport {
         // every measured window; unset/0 is the rollback (the classic
         // path verbatim).
         let warm = std::env::var("HFT_RXWARM").as_deref() == Ok("1");
-        // F-2 (HFT_RXBUILD): publish-by-reference — HFT_RXBUILD=1 arms
-        // the master array; takes precedence over the warm start (a
-        // both-armed run is rxbuild).
-        let rxbuild = std::env::var("HFT_RXBUILD").as_deref() == Ok("1");
+        // F-2 (HFT_RXBUILD): publish-by-reference — DEFAULT ON since the
+        // F-2 verdict (draws 23-25: 4/4 healthy 8573C readings at
+        // +21.6…+82.6% Front A, the armed sustained +4.4…+5.3%; the
+        // R9c→R9d class-evidence law — ≥ +15% over ≥ 3 draws —
+        // satisfied). HFT_RXBUILD=0 is the rollback (the classic path
+        // verbatim); takes precedence over the warm start (a both-armed
+        // run is rxbuild).
+        let rxbuild = std::env::var("HFT_RXBUILD").as_deref() != Ok("0");
         Self::with_coalesce_cpu_auto_forced(
             gt,
             schedule,
