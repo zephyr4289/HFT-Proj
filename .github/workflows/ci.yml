@@ -152,6 +152,40 @@ jobs:
           rustc -Vv
           ./scripts/ci.sh 2>&1 | tee /tmp/ci_full_output.log
 
+      # =========================================================================
+      # R20 FEATURE FLEET MATRIX (Engineer 3 — directive §4 Priority 3):
+      # automated multi-flag permutation benchmarking across the acquired
+      # Xeon runners. Deterministic shard-modulo rotation assigns ONE
+      # feature set per shard, so the 80-shard saturation queue's economics
+      # stay EXACTLY unchanged (same job count, same fishing cadence, 20
+      # parallel slots) while every push covers all 4 arms at ~20 draws
+      # each. Forward-compatible: flags whose levers have not landed on
+      # main yet (HFT_ENDPIPE = Engineer 2's pipelined drain,
+      # HFT_VEC_INGEST = Engineer 1's vector stride scan) are read by their
+      # owners' branches and no-op here until the 3-way merge — the matrix
+      # arms them from day one.
+      # =========================================================================
+      - name: R20 Feature Fleet Matrix (Permutation Arm)
+        if: steps.gate.outputs.matched == 'true'
+        run: |
+          SHARD=${{ matrix.shard }}
+          declare -a SETS=(
+            "HFT_ENDPIPE=1"
+            "HFT_DESC_WIDE=1"
+            "HFT_VEC_INGEST=1"
+            "HFT_ENDPIPE=1 HFT_DESC_WIDE=1 HFT_VEC_INGEST=1"
+          )
+          FEATURES="${SETS[$(( SHARD % 4 ))]}"
+          echo "=== R20. Feature Fleet Matrix Arm (shard ${SHARD}): features ${FEATURES} ===" | tee -a /tmp/ci_full_output.log
+          echo "R20_MATRIX_FEATURES=${FEATURES}" | tee -a /tmp/ci_full_output.log
+          env ${FEATURES} cargo run --release -p nf-engine --bin bench -- \
+            --sample data/tests/sample-mini.itch --hydra-only --runs 3 2>&1 \
+            | tee -a /tmp/ci_full_output.log > /tmp/matrix_arm.txt
+          MATRIX_RATE=$(grep -oE "PR1_HYDRA_SUSTAINED_VERDICT rate=[0-9]+" /tmp/matrix_arm.txt | tail -1 | grep -oE "[0-9]+$" || true)
+          MATRIX_PARITY=$(grep -c "HYDRA_BITPARITY.*-> BIT-EXACT" /tmp/matrix_arm.txt || true)
+          MATRIX_WIDE=$(grep -oE "R20_WIDE_DESC_VERDICT armed=[0-9]+ commits=[0-9]+ wraps=[0-9]+" /tmp/matrix_arm.txt | tail -1 || true)
+          echo "R20_MATRIX_VERDICT features=\"${FEATURES}\" rate=${MATRIX_RATE:-N/A} bitexact=${MATRIX_PARITY} shard=${SHARD} ${MATRIX_WIDE}" | tee -a /tmp/ci_full_output.log
+
       - name: Extract Shard Telemetry & Metrics
         if: steps.gate.outputs.matched == 'true' && always()
         run: |
@@ -206,6 +240,7 @@ jobs:
 
           shard_dirs = sorted(glob.glob(raw_shards_pattern))
           hits = []
+          matrix_rows = []
 
           for sdir in shard_dirs:
               if not os.path.isdir(sdir):
@@ -289,6 +324,36 @@ jobs:
                   'allocs': '0'
               })
 
+              # R20: the feature fleet matrix — this shard's permutation
+              # arm verdict (written by the shard's matrix step into the
+              # draw log; the rotation formula shard % 4 is only the
+              # fallback when the line is absent).
+              matrix_val = None
+              for fname in os.listdir(sdir):
+                  if fname.startswith('draw-shard') and fname.endswith('.log'):
+                      with open(os.path.join(sdir, fname), 'r', errors='ignore') as f:
+                          for line in f:
+                              m = re.search(r'R20_MATRIX_VERDICT features="([^"]+)" rate=([0-9]+|N/A) bitexact=([0-9]+)', line)
+                              if m:
+                                  matrix_val = {
+                                      'shard': shard_val,
+                                      'features': m.group(1),
+                                      'rate': m.group(2),
+                                      'bitexact': m.group(3),
+                                      'kbench': kbench_val,
+                                      'cpu': cpu_val,
+                                  }
+                                  break
+                      if matrix_val is not None:
+                          break
+              if matrix_val is not None:
+                  matrix_rows.append(matrix_val)
+
+          def feature_label(features):
+              if features == 'HFT_ENDPIPE=1 HFT_DESC_WIDE=1 HFT_VEC_INGEST=1':
+                  return 'FULL SYNERGY (ENDPIPE + DESC_WIDE + VEC_INGEST)'
+              return features
+
           with open(step_summary, 'a') as out:
               out.write("## 🚀 Silicon Target Acquisition & Benchmark Scoreboard (80-Shard Fleet)\n\n")
               if hits:
@@ -300,6 +365,38 @@ jobs:
               else:
                   out.write("⚠️ **No shards acquired target silicon (8573C / 8370C) across all 80 shards.**\n")
                   out.write("All shards fast-discarded in < 2s.\n")
+
+          # R20: the Feature Fleet Matrix table — every permutation arm's
+          # sustained rate per draw, plus per-feature BEST highlighting
+          # (the ≥3-draw median law governs default flips; the highlights
+          # are attribution, not claims).
+          with open(step_summary, 'a') as out:
+              out.write("\n## 🔬 R20 Feature Fleet Matrix (Permutation Attribution — shard % 4 rotation)\n\n")
+              if matrix_rows:
+                  out.write("| Shard | Feature Set | Sustained Full-Verify (msg/s) | kbench fold512_r 1t | Bit Parity |\n")
+                  out.write("| :---: | :--- | :---: | :---: | :---: |\n")
+                  for m in matrix_rows:
+                      rate_display = f"{int(m['rate']):,}" if m['rate'] != 'N/A' else 'N/A'
+                      parity = 'BIT-EXACT' if m['bitexact'] == '1' else '⚠️ CHECK'
+                      out.write(f"| Shard {m['shard']} | `{feature_label(m['features'])}` | **{rate_display}** | {m['kbench']} | {parity} |\n")
+                  # Per-feature bests + draw counts.
+                  by_feature = {}
+                  for m in matrix_rows:
+                      if m['rate'] == 'N/A':
+                          continue
+                      key = m['features']
+                      cur = by_feature.get(key)
+                      if cur is None or int(m['rate']) > int(cur['rate']):
+                          by_feature[key] = m
+                  if by_feature:
+                      out.write("\n**Per-feature best draws (attribution highlights):**\n\n")
+                      for feats, m in sorted(by_feature.items(), key=lambda kv: -int(kv[1]['rate'])):
+                          n_draws = sum(1 for r in matrix_rows if r['features'] == feats)
+                          rate_display = f"{int(m['rate']):,}"
+                          star = ' 🏆' if 'FULL SYNERGY' in feature_label(feats) else ''
+                          out.write(f"- `{feature_label(feats)}`: **{rate_display} msg/s** (Shard {m['shard']}, {m['kbench']}) — {n_draws} draw(s) this push{star}\n")
+              else:
+                  out.write("No feature-matrix verdicts landed on target silicon this push.\n")
 
           with open(github_output, 'a') as go:
               go.write(f"TOTAL_HITS={len(hits)}\n")
