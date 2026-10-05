@@ -3,6 +3,7 @@ pub mod pipeline;
 pub mod replay;
 pub mod rxdesc;
 pub mod sched_types;
+pub mod wide;
 pub mod xdp;
 
 pub type FeedId = u8;

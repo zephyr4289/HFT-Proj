@@ -719,6 +719,15 @@ fn run_hydra_sustained_5s(
         sink.rx_fixes(),
         sink.assist_chunks()
     );
+    // R20: the staged wide-commit submission telemetry (HFT_DESC_WIDE —
+    // directive §4 Priority 1). armed=0 is the scalar in-place default;
+    // armed=1 with commits>0 ran the two-vmovdqu64 window commits, and
+    // wraps should sit near commits/128 (the ring-end straddle rate).
+    let (wide_armed, wide_commits, wide_wraps) = sink.wide_telemetry();
+    println!(
+        "R20_WIDE_DESC_VERDICT armed={} commits={} wraps={} (HFT_DESC_WIDE staged 512-bit wide-commit submission telemetry)",
+        wide_armed as u8, wide_commits, wide_wraps
+    );
     assert_eq!(alloc_delta, 0, "ALLOC_DELTA must be 0 in hydra sustained loop");
     sustained_rate
 }
