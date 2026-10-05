@@ -487,6 +487,35 @@ grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_f5_budget.txt
 grep -q "allocs=0" /tmp/bench_f5_budget.txt
 grep -q "ADVANCE_DIAGNOSTIC" /tmp/bench_f5_budget.txt
 
+echo "=== 11ep. R19: HFT_ENDPIPE Software-Pipelined Chunk Drain ARMED (attribution) ==="
+# THE DIRECTIVE'S PRIMARY LEVER (Engineer 2, docs/directives/
+# ENGINEER_2_DIRECTIVE.md §4.1): HFT_ENDPIPE=1 drains the ring worker's
+# batches through 4-span quads (kernel.eval_quad — four folds, four
+# lane-0 tails, four lane endings, four FNV combines; the ending chains
+# of spans k..k+3 overlap the neighbors' folds instead of serializing
+# behind their own). The drain ALSO restores the per-group prefetch
+# spray cadence the R12 restructure had demoted to once-per-batch, and
+# deepens the lead by the quad's 4-span fold reach (EP_LEAD; HFT_PF_AHEAD
+# sweeps on top). Gates-as-arms (the 11w armed-soak precedent): bit-exact
+# golden parity + ALLOC_DELTA=0 asserted on every draw; the sustained
+# verdict prices the lever per draw (the R15 vtail protocol — local and
+# packed-corpus numbers do not transfer; only this arm decides).
+HFT_ENDPIPE=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_endpipe.txt
+grep -q "HYDRA_BITPARITY.*-> BIT-EXACT" /tmp/bench_endpipe.txt
+grep -q "allocs=0" /tmp/bench_endpipe.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_endpipe.txt
+
+# R19 Priority 2 (MLP prefetch deepening, the directive §4.2): the lead
+# sweep — 8 and 12 spans ahead of the quad's reach (the 8-12 span window;
+# HFT_PF_LINES=0 disarms the spray entirely for the no-spray control).
+# Attribution telemetry only (the verdict lines above are the gate).
+HFT_ENDPIPE=1 HFT_PF_AHEAD=8 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_endpipe_pf8.txt
+grep -q "HYDRA_BITPARITY.*-> BIT-EXACT" /tmp/bench_endpipe_pf8.txt
+grep -q "allocs=0" /tmp/bench_endpipe_pf8.txt
+HFT_ENDPIPE=1 HFT_PF_AHEAD=12 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_endpipe_pf12.txt
+grep -q "HYDRA_BITPARITY.*-> BIT-EXACT" /tmp/bench_endpipe_pf12.txt
+grep -q "allocs=0" /tmp/bench_endpipe_pf12.txt
+
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)
