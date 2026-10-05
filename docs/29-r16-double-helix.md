@@ -1670,3 +1670,47 @@ parity asserts pin the content law). The per-publication budget rides
 prices 1024 on the sustained shape for the fleet's ~3x-shorter pass
 periods, where the mid-pass absorption share matters more than the
 drain window's.
+
+**Draw 28 (run 37308816594, commit b986864 — the clippy-fix fish; the
+prior push's run 37308395393 is VOID, every shard died at CI's
+`clippy --all-targets` on the patch-law pins' manual range form — the
+local workspace clippy pass does not lint cfg(test) code, a tooling
+gap now closed by the `(240..=300).contains()` form).** The F-4/F-5
+fleet verdicts, shard 9 healthy 8573C kbench 32.67:
+
+```text
+F-3 round 1 (11sl)      armed 4,044,074,381 vs control 4,620,047,492
+                        = -12.5% (draw 27 read -1.2%) — tally 0/2
+                        healthy at >= +15%; one more negative kills;
+                        the SoA round 2 dies with it
+F-4 (11nb)              4,548,142,886 vs control = -1.6% healthy,
+                        -1.9% noisy — the reuse stalls do not bind
+                        (the RX runs ~6x under post-F-2; the mailbox
+                        is never the wall) — tally 0/1
+F-5 (the drain stack)   the default sustained 1,260,036,403 — the
+                        FLEET-BEST 11b, on a MID-BAND host (the old
+                        best 1,239.1M was set on stronger silicon;
+                        draw 27's same-band host read 1,205M — the
+                        stack is worth ~+4% sustained on its first
+                        fleet draw)
+F-5 (the budget arm)    advance 31.2us -> 25.6us at budget 1024, the
+                        sustained +0.003% (neutral — the advance is
+                        fully hidden behind the consumer-bound shape;
+                        the R9c budget-64 default law HOLDS, 11pb
+                        stays as the per-draw instrument); eos_parks=0
+                        across every sustained run (the no-park law
+                        holds on fleet silicon)
+invariants              17x BIT-EXACT, allocs=0, all constraints
+                        passed, the patch law (last_pass 21,996 /
+                        21,932 = the rotating-session law), RXBUILD
+                        enabled=true, nbuf=16 on the defaults
+```
+
+The residual program's shape after draw 28: Front A's remaining +2-6%
+rides the HOST lottery (the default reads 4.70B at kbench 32.67 and
+4.90B at 33.31 — the record-class band clears 5.0B on the current
+default, no further lever required); the 2B program's 1.30B+ carries
+~+4% more into the record-class band than at draw 27. The 11sl/11nb
+kill tallies close on the next healthy draws; both arms stay aboard
+as the per-draw instruments (the house law: the kill is written from
+>= 3 readings, not assumed).
