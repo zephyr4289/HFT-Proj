@@ -1766,6 +1766,12 @@ impl HydraFabric {
         diet: bool,
         wide: bool,
     ) -> Box<Self> {
+        // R20 defensive guard: the staging path speaks the Desc8 word
+        // format on the RING — never the legacy 16-B descs, never the
+        // rxdesc arrays (the env gate desc_wide_arm already enforces
+        // this; the explicit form gets the same sanitize so a future
+        // misuse cannot corrupt the legacy protocol).
+        let wide = wide && desc8 && !rxdesc;
         let kernel = CrcKernel::detect();
         let shutdown = Arc::new(AtomicBool::new(false));
         let mut handles = Vec::with_capacity(workers);
