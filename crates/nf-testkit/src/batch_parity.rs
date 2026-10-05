@@ -771,6 +771,7 @@ fn t_f1_rxwarm_chaos_sustained_soak() {
         Some(prog),
         true,
         false,
+        16,
     );
 
     // Deterministic LCG chaos (the I-7 soak's exact program).
@@ -910,6 +911,7 @@ fn t_f2_rxbuild_chaos_sustained_soak() {
         Some(prog),
         false,
         true,
+        16,
     );
 
     // Deterministic LCG chaos (the I-7 soak's exact program).
@@ -966,16 +968,30 @@ fn t_f2_rxbuild_chaos_sustained_soak() {
         checked >= PASSES - PASSES / ABANDON_EVERY,
         "the rxbuild soak must check every drained pass (checked {checked})"
     );
-    // The patch law: every patchable entry exactly once per boundary (all
-    // frames are patchable in this schedule — the master's frame count is
-    // the modulus; abandons consume boundaries too, so the count is only
-    // ever a whole multiple).
+    // The patch law, boundary-aligned form (the F-5 lesson): every
+    // COMPLETED boundary patches the full patchable list exactly once —
+    // the advance's synchronous tail guarantees the floor; the ceiling
+    // forbids any double-patch (the I-7 over-patch class). The final
+    // read RACES the last in-flight pass's INCREMENTAL prepatch (legal
+    // absorption below the freed frontier — the count is only ever
+    // boundary-aligned AT the boundaries, and the read sits mid-pass;
+    // the observed mid-flight delta is the first freed publication's
+    // share) and the post-final advance (which may or may not complete
+    // before Drop) — hence the +1 boundary of ceiling headroom. The
+    // once-per-entry law itself is pinned by the content parity asserts
+    // above (every pass BIT-EXACT against the classic twin).
     let (patches, _, frames) = t.rx_build_stats();
     assert!(frames > 0, "the master must be built");
     assert!(patches > 0, "the master must be patched across passes");
-    assert_eq!(
-        patches % frames as u64,
-        0,
-        "the patch law: every patchable entry exactly once per boundary (patches {patches}, frames {frames})"
+    let f = frames as u64;
+    assert!(
+        patches >= PASSES * f,
+        "the patch law's floor: every completed boundary patches the full list once \
+         (patches {patches}, frames {frames}, passes {PASSES})"
+    );
+    assert!(
+        patches <= (PASSES + 1) * f,
+        "the patch law's ceiling: no boundary ever patches the list twice \
+         (patches {patches}, frames {frames}, passes {PASSES})"
     );
 }

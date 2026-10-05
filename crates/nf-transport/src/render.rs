@@ -855,6 +855,12 @@ impl ReplayTransport {
     /// R9: whether construction aliased any duplicate-feed deliveries onto
     /// a primary's blob region (diagnostics; the event-indexed prepatch is
     /// aliasing-compatible by construction).
+    /// F-5 diagnostics: the blob patch-site list's length (the prepatch
+    /// cursor's domain — printed by the advance probe to size the tails).
+    pub fn patch_site_count(&self) -> usize {
+        self.patch_evts.len()
+    }
+
     pub fn blob_aliasing(&self) -> bool {
         self.aliased_frames > 0
     }
@@ -903,7 +909,13 @@ impl ReplayTransport {
     ) -> usize {
         let frames = self.frames.as_mut_ptr();
         let mut idx = from_idx;
-        let end = (from_idx + budget).min(self.patch_evts.len());
+        // F-5: budget is saturated against the remaining length FIRST
+        // (usize::MAX means "unbounded" — the idle EOS-drain's shape; a
+        // naive from_idx + budget would wrap in release and silently
+        // no-op the walk — the exact overflow class the F-2 ship caught
+        // and fixed in master_patch_range; this is that fix applied to
+        // the blob twin, fired by the drain's unbounded budget).
+        let end = from_idx + budget.min(self.patch_evts.len().saturating_sub(from_idx));
         // SAFETY: same per-offset contract as patch_sessions; the walk is
         // bounded by the patch list's own length.
         unsafe {

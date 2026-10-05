@@ -74,8 +74,23 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 /// point left is the per-pass reset handshake. Power of two (mask + shift
 /// protocols below); a pass is ~12.3 publications, so 16 buffers ≈ 1.3
 /// passes of slack.
-const NBUF: u64 = 16;
-const NBUF_MASK: u64 = NBUF - 1;
+///
+/// F-4 (CHECKLIST F-4 / ROADMAP2 §6.3): the depth is now RUNTIME —
+/// `HFT_NBUF=32` doubles the runahead (at 5B the publication cadence
+/// rises ~4.3x over the sustained shape and the 16-deep ring prices
+/// buffer-reuse stalls); 16 stays the default (the R8 phase-3 measured
+/// shape). The arrays are sized at the maximum and the protocol values
+/// (mask/shift/ring) are precomputed ONCE at construction — the hot
+/// paths read register-cached locals, never the env. The I-7 turn-event
+/// ring is sized at 2×NBUF so the overwrite-guard window keeps its
+/// 2x-max-lag headroom at every depth (at 16: 32 slots — the R9 shape
+/// verbatim; at 32: 64).
+const NBUF_DEFAULT: u64 = 16;
+const NBUF_MAX: u64 = 32;
+/// The static array bound for the Mailbox's per-buffer fields (bufs /
+/// filled / freed) and the RX's turn-event ring (2×NBUF_MAX).
+const NBUF_SLOTS: usize = NBUF_MAX as usize;
+const TOFF_SLOTS: usize = (2 * NBUF_MAX) as usize;
 /// Frames per publication (and the EntryBuf slot count — they are ONE
 /// constant: the accumulate loop writes entries[acc..acc+n) with acc
 /// bounded by this cap). 1024 measured best on the runner pool: the
@@ -215,6 +230,17 @@ struct RxStats {
     /// F-2: patches in the last ENDED pass (the EOS-marker flush's
     /// window).
     rxbuild_last_pass: AtomicU64,
+    /// F-5 (CHECKLIST F-5 / ROADMAP1 §6-I2): nanoseconds spent in the
+    /// AUTO-ADVANCE's synchronous bake (the blob tail `reset_prepatched`
+    /// and the master tail `master_patch_range` — everything the
+    /// incremental prepatch left below the frontier). The steady-window
+    /// law: this is the pass boundary's exposed cost on the sustained
+    /// critical path (the consumer's reset_pass waits on the whole bake
+    /// before pass k+1's first batch); the per-publication prepatch
+    /// budget drains it during the pass instead.
+    advance_ns: AtomicU64,
+    /// F-5: auto-advances served (the advance_ns denominator).
+    advances: AtomicU64,
 }
 
 #[repr(align(64))]
@@ -245,6 +271,8 @@ impl RxStats {
             warm_last_pass_fixes: AtomicU64::new(0),
             rxbuild_patches: AtomicU64::new(0),
             rxbuild_last_pass: AtomicU64::new(0),
+            advance_ns: AtomicU64::new(0),
+            advances: AtomicU64::new(0),
         }
     }
 }
@@ -260,21 +288,38 @@ impl ConsStats {
     }
 }
 
-/// The deep entry mailbox + command channel (NBUF buffers; see NBUF).
+/// The deep entry mailbox + command channel (NBUF buffers; see
+/// NBUF_DEFAULT — F-4 made the depth runtime, the arrays are sized at
+/// NBUF_MAX and the protocol values below select the live depth).
 struct Mailbox {
+    /// F-4: the live mailbox depth (16 default / 32 armed; power of two,
+    /// written ONCE at construction before the spawn — the hot paths read
+    /// it through the precomputed mask/shift below).
+    nbuf: u64,
+    /// F-4: NBUF-1 (the buffer-index mask — `turn & nbuf_mask`).
+    nbuf_mask: u64,
+    /// F-4: log2(NBUF) (the use-count shift — `turn >> nbuf_shift`
+    /// replaces the compile-time `turn / NBUF`).
+    nbuf_shift: u32,
+    /// F-4: the I-7 turn-event ring depth (2×NBUF — the overwrite-guard
+    /// window keeps its 2x-max-lag headroom at every depth).
+    toff_ring: u64,
+    /// F-4: toff_ring-1.
+    toff_mask: u64,
     /// RX-built entry buffers; ownership transfers by the turn/use counters
-    /// (SPSC: RX writes, consumer reads).
-    bufs: [UnsafeCell<EntryBuf>; NBUF as usize],
+    /// (SPSC: RX writes, consumer reads). Sized at NBUF_MAX; slots >= nbuf
+    /// are never touched (construction-initialized, no per-pass cost).
+    bufs: [UnsafeCell<EntryBuf>; NBUF_SLOTS],
     /// RX -> consumer: buffer `i` holds turn `T` (Release after the entry
     /// writes; the consumer's Acquire orders all reads). Initialized to
     /// NEVER; the RX publishes turns in order and is bounded by the
     /// freed-count protocol below, so an exact `== turn` match is
     /// unambiguous.
-    filled: [Pad; NBUF as usize],
+    filled: [Pad; NBUF_SLOTS],
     /// Consumer -> RX: how many times buffer `i` has been freed (one per
     /// consumed OR skipped publication). The RX may write buffer `i` for
     /// turn `T` (its `T/NBUF + 1`-th use) once `freed[i] >= T/NBUF`.
-    freed: [Pad; NBUF as usize],
+    freed: [Pad; NBUF_SLOTS],
     cmd: AtomicU8,
     shutdown: AtomicBool,
     /// R8: futex wake word for the cold-path handshake — the consumer's
@@ -714,14 +759,36 @@ fn rx_thread(
     // per-pass tuple asserts stay armed either way.
     let prepatch_enabled =
         std::env::var("HFT_PREPATCH").as_deref() != Ok("0");
+    // F-4: the runtime depth's protocol values — read ONCE from the
+    // construction-written Mailbox (immutable; register-cached through
+    // the loop below). At the default these are the R8/R9 shapes
+    // verbatim (mask 15, shift 4, ring 32).
+    let nbuf = mb.nbuf;
+    let nbuf_mask = mb.nbuf_mask;
+    let nbuf_shift = mb.nbuf_shift;
+    let toff_ring = mb.toff_ring;
+    let toff_mask = mb.toff_mask;
+    // F-5 (CHECKLIST F-5 / docs/29 §13): the per-publication prepatch
+    // budget — the R9c RFO-burst law's pacing constant, now env-tunable
+    // so the drain-during-the-pass shape is priceable per draw. Default
+    // 64 = the R9c measured shape (tuned for the CLASSIC render path's
+    // ~24us publication period); at 1024 the ~22 publications/pass
+    // absorb the full 21,996-site patchable set during the pass and the
+    // advance's synchronous tail (advance_ns below) empties. Read ONCE
+    // at thread start, outside every measured window.
+    let prepatch_budget: usize = std::env::var("HFT_PREPATCH_BUDGET")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .filter(|b| (64..=8192).contains(b))
+        .unwrap_or(64);
     // R9: the per-turn EVENT-INDEX ring — turn_evt_end[t] is the exclusive
     // end event index of turn t's publication (usize::MAX for EOS-marker
     // turns: the whole pass is consumed). The prepatch maps a freed turn
-    // to the events whose frames it carried; 32 slots cover the deepest
-    // runahead at ENTRY_CAP with the same overwrite guard as before.
-    const TOFF_RING: u64 = 32;
-    const TOFF_MASK: u64 = TOFF_RING - 1;
-    let mut turn_evt_end: [usize; TOFF_RING as usize] = [0; TOFF_RING as usize];
+    // to the events whose frames it carried; 2×NBUF slots cover the
+    // deepest runahead at ENTRY_CAP with the same overwrite guard as
+    // before (F-4: the ring scales with the live depth — 32 slots at
+    // NBUF=16, the R9 shape verbatim; 64 at NBUF=32).
+    let mut turn_evt_end: [usize; TOFF_SLOTS] = [0; TOFF_SLOTS];
     let mut pp_idx: usize = 0;
     // RX-local scratch batch (poll writes slots here; the transform below
     // re-reads them from this core's L1).
@@ -810,13 +877,13 @@ fn rx_thread(
                           rxs: &mut RxBuildState,
                           ring_covered: u64,
                           floor_turn: u64,
-                          turn_evt_end: &[usize; 32],
+                          turn_evt_end: &[usize; TOFF_SLOTS],
                           budget: usize| {
         let mut frontier: Option<u64> = None;
-        for i in 0..NBUF as usize {
+        for i in 0..nbuf as usize {
             let c = mb.freed[i].load(Ordering::Acquire);
             if c > 0 {
-                let t = NBUF * (c - 1) + i as u64;
+                let t = nbuf * (c - 1) + i as u64;
                 if frontier.is_none_or(|f| t > f) {
                     frontier = Some(t);
                 }
@@ -840,10 +907,10 @@ fn rx_thread(
             // of frames the consumer has not freed). If the frontier is
             // that old, skip the incremental step entirely; the
             // synchronous tail at the advance point stays correct.
-            if ring_covered.saturating_sub(t) >= TOFF_RING {
+            if ring_covered.saturating_sub(t) >= toff_ring {
                 return;
             }
-            let upto_evt = turn_evt_end[(t & TOFF_MASK) as usize];
+            let upto_evt = turn_evt_end[(t & toff_mask) as usize];
             // usize::MAX (EOS-marker turn): only reachable for a marker of
             // the CURRENT pass here (the floor already excluded the
             // previous passes' markers) — the whole pass is consumed —
@@ -931,11 +998,11 @@ fn rx_thread(
         if mb.shutdown.load(Ordering::Acquire) {
             return;
         }
-        let i = (turn & NBUF_MASK) as usize;
+        let i = (turn & nbuf_mask) as usize;
         // Buffer i is free for `turn` (its (turn/NBUF + 1)-th use) once the
         // consumer freed it turn/NBUF times.
-        if turn >= NBUF {
-            let needed = turn / NBUF;
+        if turn >= nbuf {
+            let needed = turn >> nbuf_shift;
             let mut backoff = 0u32;
             while mb.freed[i].load(Ordering::Acquire) < needed {
                 if mb.shutdown.load(Ordering::Acquire) {
@@ -1148,7 +1215,7 @@ fn rx_thread(
                 buf.rx_start = rx_start as u32;
             }
         }
-        turn_evt_end[(turn & TOFF_MASK) as usize] = evt_end;
+        turn_evt_end[(turn & toff_mask) as usize] = evt_end;
         mb.rx_stats
             .prod_ns
             .fetch_add(t_prod.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -1181,7 +1248,7 @@ fn rx_thread(
                     turn,
                     pass_start_turn,
                     &turn_evt_end,
-                    64,
+                    prepatch_budget,
                 );
             }
         }
@@ -1194,9 +1261,9 @@ fn rx_thread(
             // The end-of-stream marker is its OWN (empty) publication —
             // the consumer's next_batch returns false on it. Without it
             // the consumer would spin on a turn that never comes.
-            let j = (turn & NBUF_MASK) as usize;
-            if turn >= NBUF {
-                let needed = turn / NBUF;
+            let j = (turn & nbuf_mask) as usize;
+            if turn >= nbuf {
+                let needed = turn >> nbuf_shift;
                 let mut backoff = 0u32;
                 while mb.freed[j].load(Ordering::Acquire) < needed {
                     if mb.shutdown.load(Ordering::Acquire) {
@@ -1224,7 +1291,7 @@ fn rx_thread(
             mb.rx_turn.store(turn + 1, Ordering::Release);
             // R8 phase-3b: the marker's frontier mapping — the whole pass
             // is consumed once the marker frees.
-            turn_evt_end[(turn & TOFF_MASK) as usize] = usize::MAX;
+            turn_evt_end[(turn & toff_mask) as usize] = usize::MAX;
             // F-1: the pass's frames are all published — close its warm
             // telemetry window NOW, FORCED (a zero-fix steady pass must
             // overwrite the previous reading; the bake/index restart
@@ -1258,8 +1325,8 @@ fn rx_thread(
                 // rendering — the per-pass reset handshake (two futex
                 // round-trips + a blob patch on the critical path, ~86us
                 // per pass on the Zen3 runner) collapses into overlap.
-                let j = ((turn - 1) & NBUF_MASK) as usize;
-                let need = (turn - 1) / NBUF + 1;
+                let j = ((turn - 1) & nbuf_mask) as usize;
+                let need = ((turn - 1) >> nbuf_shift) + 1;
                 let mut backoff = 0u32;
                 loop {
                     if mb.shutdown.load(Ordering::Acquire) {
@@ -1278,9 +1345,19 @@ fn rx_thread(
                     // being drained (its own turns and marker are ≥ it).
                     if prepatch_enabled {
                         let next_sess = sess_fn(pass + 1);
-                        // The EOS-drain wait: the RX is idle here — a large
-                        // budget drains the frontier fast while the loop's
-                        // free-checks stay responsive.
+                        // The EOS-drain wait: the RX is idle here BY
+                        // CONSTRUCTION (every publication is out; the only
+                        // pending obligation is the advance, which fires on
+                        // the marker's free — after the LAST drain free).
+                        // F-5: the budget is UNBOUNDED — the patch bursts
+                        // can never stall a pending publication (there is
+                        // none), so the R9c pacing law does not apply; each
+                        // iteration patches everything below the CURRENT
+                        // frontier and the advance's synchronous tail
+                        // collapses to the final publication's share (the
+                        // per-publication budget above keeps the mid-pass
+                        // steps paced on the render critical path, where
+                        // the R9c law DOES apply).
                         prepatch_step(
                             &mut inner,
                             &next_sess,
@@ -1289,7 +1366,7 @@ fn rx_thread(
                             turn - 1,
                             pass_start_turn,
                             &turn_evt_end,
-                            1024,
+                            usize::MAX,
                         );
                     }
                     mb.rx_stats.bufwait_laps.fetch_add(1, Ordering::Relaxed);
@@ -1307,6 +1384,26 @@ fn rx_thread(
                 let next_pass = pass + 1;
                 let sess = sess_fn(next_pass);
                 refresh_tmpl(&sess, &mut sess_lo_tmpl, &mut sess_hi_tmpl);
+                // F-5: the advance's synchronous bake is the pass
+                // boundary's exposed cost on the sustained critical path
+                // (the consumer's reset_pass waits on the whole bake) —
+                // timed ALWAYS-ON (two Instant reads per PASS, ~50ns on a
+                // ~400us pass period; the prod_ns pattern). The budget
+                // lever above drains this tail during the pass.
+                let t_adv = std::time::Instant::now();
+                // F-5 (HFT_EXP_DIAG): the advance-tail attribution — where
+                // the prepatch cursors stood at the boundary (the blob
+                // site list and the master entry list; the residual is the
+                // final publication's share, consumed with the marker).
+                if diag {
+                    eprintln!(
+                        "DIAG advance-probe: pp_idx={}/{} rxs.mpp_idx={}/{}",
+                        pp_idx,
+                        inner.patch_site_count(),
+                        rxs.mpp_idx,
+                        mb.master_evt.len()
+                    );
+                }
                 // R8 phase-3b (kill-switched): only the un-prepatched tail
                 // bakes synchronously; with the prepatch disabled that is
                 // the full blob (the pre-prepatch behavior).
@@ -1355,6 +1452,10 @@ fn rx_thread(
                     rxs.mpp_idx = 0;
                     rxs.idx = 0;
                 }
+                mb.rx_stats
+                    .advance_ns
+                    .fetch_add(t_adv.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                mb.rx_stats.advances.fetch_add(1, Ordering::Relaxed);
                 pass = next_pass;
                 // I-7: the new pass's first publication lands on `turn`
                 // (the marker took turn−1) — the incremental prepatch's
@@ -1545,6 +1646,15 @@ impl PipelinedReplayTransport {
         // verbatim); takes precedence over the warm start (a both-armed
         // run is rxbuild).
         let rxbuild = std::env::var("HFT_RXBUILD").as_deref() != Ok("0");
+        // F-4 (HFT_NBUF): the mailbox depth — 16 (the R8 phase-3 measured
+        // shape, the default) or 32 (the buffer-reuse-stall pricing arm;
+        // CHECKLIST F-4 / ROADMAP2 §6.3). Read once at construction;
+        // anything but "16"/"32" fails safe to the default.
+        let nbuf = match std::env::var("HFT_NBUF").as_deref() {
+            Ok("32") => 32u64,
+            Ok("16") => 16u64,
+            _ => NBUF_DEFAULT,
+        };
         Self::with_coalesce_cpu_auto_forced(
             gt,
             schedule,
@@ -1554,13 +1664,14 @@ impl PipelinedReplayTransport {
             sess_fn,
             warm && !rxbuild,
             rxbuild,
+            nbuf,
         )
     }
 
-    /// F-1/F-2: [`Self::with_coalesce_cpu_auto`] with the warm start and
-    /// the publish-by-reference master FORCED on/off — the tests' and
-    /// local A/B's explicit path (the envs would be process-global and
-    /// racy across parallel test transports).
+    /// F-1/F-2/F-4: [`Self::with_coalesce_cpu_auto`] with the warm start,
+    /// the publish-by-reference master, and the mailbox depth FORCED —
+    /// the tests' and local A/B's explicit path (the envs would be
+    /// process-global and racy across parallel test transports).
     #[allow(clippy::too_many_arguments)]
     pub fn with_coalesce_cpu_auto_forced(
         gt: &[u8],
@@ -1571,7 +1682,21 @@ impl PipelinedReplayTransport {
         sess_fn: Option<fn(u64) -> [u8; 10]>,
         warm: bool,
         rxbuild: bool,
+        nbuf: u64,
     ) -> Self {
+        debug_assert!(
+            nbuf == 16 || nbuf == 32,
+            "mailbox depth must be 16 or 32 (power-of-two protocol)"
+        );
+        let nbuf = if nbuf == 16 || nbuf == 32 {
+            nbuf
+        } else {
+            NBUF_DEFAULT
+        };
+        let nbuf_mask = nbuf - 1;
+        let nbuf_shift = nbuf.trailing_zeros();
+        let toff_ring = 2 * nbuf;
+        let toff_mask = toff_ring - 1;
         let mut inner = ReplayTransport::new(gt, schedule, session);
         inner.set_poll_coalesce(coalesce);
         let triples = inner.shared_triples();
@@ -1590,6 +1715,11 @@ impl PipelinedReplayTransport {
         };
         #[allow(clippy::disallowed_types)]
         let mb: Arc<Mailbox> = Arc::new(Mailbox {
+            nbuf,
+            nbuf_mask,
+            nbuf_shift,
+            toff_ring,
+            toff_mask,
             bufs: std::array::from_fn(|_| UnsafeCell::new(EntryBuf::new())),
             filled: std::array::from_fn(|_| Pad::never()),
             freed: std::array::from_fn(|_| Pad::zeroed()),
@@ -1656,7 +1786,7 @@ impl PipelinedReplayTransport {
              the session alone cannot identify the program pass"
         );
         if let Some(t) = self.cur.take() {
-            self.mb.freed[(t & NBUF_MASK) as usize].fetch_add(1, Ordering::Release);
+            self.mb.freed[(t & self.mb.nbuf_mask) as usize].fetch_add(1, Ordering::Release);
         }
         self.resets += 1;
         let n = self.resets;
@@ -1703,7 +1833,7 @@ impl PipelinedReplayTransport {
         // published (the RX acks only after its in-flight publication
         // lands, and it never skips turns).
         for _t in self.turn..ack_turn {
-            self.mb.freed[(_t & NBUF_MASK) as usize].fetch_add(1, Ordering::Release);
+            self.mb.freed[(_t & self.mb.nbuf_mask) as usize].fetch_add(1, Ordering::Release);
         }
         self.turn = ack_turn;
     }
@@ -1730,7 +1860,7 @@ impl PipelinedReplayTransport {
             "reset_pass on an unarmed transport: use reset(session)"
         );
         if let Some(t) = self.cur.take() {
-            self.mb.freed[(t & NBUF_MASK) as usize].fetch_add(1, Ordering::Release);
+            self.mb.freed[(t & self.mb.nbuf_mask) as usize].fetch_add(1, Ordering::Release);
         }
         self.resets += 1;
         // R16b: a clean end-of-pass and a mid-pass abandon need OPPOSITE
@@ -1810,7 +1940,7 @@ impl PipelinedReplayTransport {
             }
             let stop = rt.min(cap);
             while self.turn < stop {
-                self.mb.freed[(self.turn & NBUF_MASK) as usize]
+                self.mb.freed[(self.turn & self.mb.nbuf_mask) as usize]
                     .fetch_add(1, Ordering::Release);
                 self.turn += 1;
             }
@@ -1830,9 +1960,9 @@ impl PipelinedReplayTransport {
     /// until the next call.
     pub fn next_batch(&mut self) -> bool {
         if let Some(t) = self.cur.take() {
-            self.mb.freed[(t & NBUF_MASK) as usize].fetch_add(1, Ordering::Release);
+            self.mb.freed[(t & self.mb.nbuf_mask) as usize].fetch_add(1, Ordering::Release);
         }
-        let i = (self.turn & NBUF_MASK) as usize;
+        let i = (self.turn & self.mb.nbuf_mask) as usize;
         // Polite acquire: a bounded spin for the common fast case, then a
         // futex park. An UNCAPPED spin here starved the RX on the SMT
         // sibling (Zen3's weak PAUSE hint) — the RX's 6us batch stretched
@@ -1919,7 +2049,7 @@ impl PipelinedReplayTransport {
             // the pipeline (the EntryBuf contract, extended to the
             // master).
             unsafe {
-                let buf = &*self.mb.bufs[(t & NBUF_MASK) as usize].get();
+                let buf = &*self.mb.bufs[(t & self.mb.nbuf_mask) as usize].get();
                 let n = buf.len as usize;
                 let start = buf.rx_start as usize;
                 let master = (*self.mb.master.get())
@@ -1933,7 +2063,7 @@ impl PipelinedReplayTransport {
             // outlive the pipeline (joined in Drop) and are not read after the
             // buffer is freed.
             unsafe {
-                let buf = &*self.mb.bufs[(t & NBUF_MASK) as usize].get();
+                let buf = &*self.mb.bufs[(t & self.mb.nbuf_mask) as usize].get();
                 let n = buf.len as usize;
                 &buf.entries[..n]
             }
@@ -1946,7 +2076,7 @@ impl PipelinedReplayTransport {
     pub fn now_ns(&self) -> u64 {
         let t = self.cur.expect("r8 pipeline: no current batch");
         // SAFETY: same ownership + publication ordering as `entries`.
-        unsafe { (*self.mb.bufs[(t & NBUF_MASK) as usize].get()).clock }
+        unsafe { (*self.mb.bufs[(t & self.mb.nbuf_mask) as usize].get()).clock }
     }
 
     /// F-1 (HFT_RXWARM) telemetry: (cumulative fixes, uncovered frames,
@@ -1992,13 +2122,28 @@ impl PipelinedReplayTransport {
         let rx = &self.mb.rx_stats;
         let cs = &self.mb.cons_stats;
         eprintln!(
-            "DIAG rx {label}: publications={} polls={} prod_ms={:.1} bufwait_laps={} resets={} eos_parks={}",
+            "DIAG rx {label}: publications={} polls={} prod_ms={:.1} bufwait_laps={} resets={} eos_parks={} nbuf={}",
             rx.publications.load(Ordering::Relaxed),
             rx.polls.load(Ordering::Relaxed),
             rx.prod_ns.load(Ordering::Relaxed) as f64 / 1e6,
             rx.bufwait_laps.load(Ordering::Relaxed),
             rx.resets.load(Ordering::Relaxed),
             rx.eos_parks.load(Ordering::Relaxed),
+            self.mb.nbuf,
+        );
+        // F-5: the auto-advance telemetry line (always printed — the
+        // pass boundary's exposed bake cost on the sustained critical
+        // path; the steady-window law reads advance_ms/advances against
+        // the pass period, and the prepatch budget lever drains it).
+        eprintln!(
+            "ADVANCE_DIAGNOSTIC {label}: advances={} advance_ms={:.1} us_per_advance={:.1} (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)",
+            rx.advances.load(Ordering::Relaxed),
+            rx.advance_ns.load(Ordering::Relaxed) as f64 / 1e6,
+            if rx.advances.load(Ordering::Relaxed) > 0 {
+                rx.advance_ns.load(Ordering::Relaxed) as f64 / rx.advances.load(Ordering::Relaxed) as f64 / 1e3
+            } else {
+                0.0
+            },
         );
         // F-1: the warm-start telemetry line (always printed — the CI arm
         // greps it; enabled=false fixes=0 is the classic path's reading).
@@ -2399,6 +2544,7 @@ mod tests {
                 Some(sess_program),
                 false,
                 false,
+                16,
             );
             let mut warm = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
                 &gt,
@@ -2409,6 +2555,7 @@ mod tests {
                 Some(sess_program),
                 true,
                 false,
+                16,
             );
             for p in 1..=4u64 {
                 let sess = sess_program(p);
@@ -2474,6 +2621,7 @@ mod tests {
             Some(sess_program),
             false,
             false,
+            16,
         );
         let mut warm = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
             &gt,
@@ -2484,6 +2632,7 @@ mod tests {
             Some(sess_program),
             true,
             false,
+            16,
         );
         // Drain pass 1 fully (the fill), then abandon pass 2 mid-flight.
         for t in [&mut classic, &mut warm] {
@@ -2538,6 +2687,7 @@ mod tests {
             None,
             true,
             false,
+            16,
         );
         for p in 0..4u64 {
             classic.reset(*b"PIPETEST01");
@@ -2584,6 +2734,7 @@ mod tests {
                 Some(sess_program),
                 false,
                 false,
+                16,
             );
             let mut rxbuild = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
                 &gt,
@@ -2594,6 +2745,7 @@ mod tests {
                 Some(sess_program),
                 false,
                 true,
+                16,
             );
             for p in 1..=4u64 {
                 let sess = sess_program(p);
@@ -2629,14 +2781,120 @@ mod tests {
             // Every pass boundary patches every patchable entry exactly
             // once (60 patchable frames here; the trailing construction
             // -> pass 1 boundary included; the post-pass-4 advance races
-            // shutdown and may or may not complete).
+            // shutdown and may or may not complete). F-5 lesson: the
+            // final read also races the last in-flight pass's
+            // INCREMENTAL prepatch absorption — the count is
+            // boundary-aligned only AT boundaries, so the pin is the
+            // floor/ceiling pair (the advance's tail guarantees the
+            // floor; the ceiling forbids any double-patch).
             assert!(
-                patches >= 240 && patches % 60 == 0,
+                patches >= 240 && patches <= 300,
                 "coalesce {coalesce}: patch law broken (patches {patches})"
             );
             let (c_patches, _, c_frames) = classic.rx_build_stats();
             assert_eq!(c_patches, 0, "coalesce {coalesce}: classic path never patches");
             assert_eq!(c_frames, 0, "coalesce {coalesce}: classic path builds no master");
+        }
+    }
+
+    /// F-4 (HFT_NBUF=32): the deep-mailbox parity pin — the SAME schedule,
+    /// BOTH pacing modes, multi-pass ROTATING sessions, drained side by
+    /// side through the depth-32 classic pipeline and the depth-16 classic
+    /// pipeline (the default's observables are the reference: identical
+    /// batches, identical entry contents, identical EOS alignment — the
+    /// ring protocol must be depth-transparent), plus the depth-32 rxbuild
+    /// twin against the depth-32 classic (the F-2 lever rides the same
+    /// ring; the master slice bounds and the patch law must hold at the
+    /// doubled runahead, where the consumer's frees lag up to 32 turns —
+    /// the I-7 overwrite-guard window scales to 64 with the ring).
+    #[test]
+    fn t_nbuf32_parity_vs_depth16() {
+        for coalesce in [1usize, 128] {
+            let gt = mini_gt(300);
+            let sched = mini_sched(300);
+            let mut d16 = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
+                &gt,
+                sched.clone(),
+                *b"PIPETEST01",
+                coalesce,
+                None,
+                Some(sess_program),
+                false,
+                false,
+                16,
+            );
+            let mut d32 = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
+                &gt,
+                sched.clone(),
+                *b"PIPETEST01",
+                coalesce,
+                None,
+                Some(sess_program),
+                false,
+                false,
+                32,
+            );
+            let mut d32r = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
+                &gt,
+                sched,
+                *b"PIPETEST01",
+                coalesce,
+                None,
+                Some(sess_program),
+                false,
+                true,
+                32,
+            );
+            for p in 1..=4u64 {
+                let sess = sess_program(p);
+                d16.reset_pass(p, sess);
+                d32.reset_pass(p, sess);
+                d32r.reset_pass(p, sess);
+                let mut frames = 0usize;
+                loop {
+                    let a_ok = d16.next_batch();
+                    let b_ok = d32.next_batch();
+                    let r_ok = d32r.next_batch();
+                    assert_eq!(a_ok, b_ok, "coalesce {coalesce} pass {p}: d16/d32 EOS mismatch");
+                    assert_eq!(a_ok, r_ok, "coalesce {coalesce} pass {p}: d32 classic/rxbuild EOS mismatch");
+                    if !a_ok {
+                        break;
+                    }
+                    let ae = d16.entries();
+                    let be = d32.entries();
+                    let re = d32r.entries();
+                    assert_eq!(
+                        ae.len(),
+                        be.len(),
+                        "coalesce {coalesce} pass {p}: d16/d32 batch length mismatch"
+                    );
+                    assert_eq!(
+                        be.len(),
+                        re.len(),
+                        "coalesce {coalesce} pass {p}: d32 classic/rxbuild batch length mismatch"
+                    );
+                    for (a, b) in ae.iter().zip(be.iter()) {
+                        assert!(
+                            !entry_content_neq(a, b),
+                            "coalesce {coalesce} pass {p}: depth-32 entry diverged from depth-16"
+                        );
+                    }
+                    for (b, r) in be.iter().zip(re.iter()) {
+                        assert!(
+                            !entry_content_neq(b, r),
+                            "coalesce {coalesce} pass {p}: depth-32 rxbuild entry diverged"
+                        );
+                    }
+                    frames += ae.len();
+                }
+                assert_eq!(frames, 60, "coalesce {coalesce} pass {p}: frame count");
+            }
+            let (patches, _, master_frames) = d32r.rx_build_stats();
+            assert_eq!(master_frames, 60, "coalesce {coalesce}: d32 master frame count");
+            assert!(
+                patches >= 240 && patches <= 300,
+                "coalesce {coalesce}: d32 patch law broken (patches {patches})"
+            );
         }
     }
 
@@ -2657,6 +2915,7 @@ mod tests {
             Some(sess_program),
             false,
             false,
+            16,
         );
         let mut rxbuild = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
             &gt,
@@ -2667,6 +2926,7 @@ mod tests {
             Some(sess_program),
             false,
             true,
+            16,
         );
         // Drain pass 1 fully, then abandon pass 2 mid-flight.
         for t in [&mut classic, &mut rxbuild] {
@@ -2722,6 +2982,7 @@ mod tests {
             None,
             false,
             true,
+            16,
         );
         for p in 0..4u64 {
             classic.reset(*b"PIPETEST01");

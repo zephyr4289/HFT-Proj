@@ -446,6 +446,47 @@ grep -q "LADDER_DIAGNOSTIC span: vectorized=true" /tmp/bench_f3_armed.json
 grep -q "RXBUILD_DIAGNOSTIC" /tmp/bench_f3_armed.json
 grep -q "enabled=true" /tmp/bench_f3_armed.json
 
+echo "=== 11nb. R17/F-4: Mailbox Depth NBUF=32 ARMED (the buffer-reuse-stall pricing) ==="
+# CHECKLIST F-4 / ROADMAP2 §6.3: at 5B the publication cadence rises ~4.3x
+# over the sustained shape and the 16-deep ring prices buffer-reuse stalls
+# (the RX laps the free-wait on Front A even at local rates). The depth is
+# RUNTIME since this stack (arrays sized at 32, mask/shift/ring precomputed
+# at construction; the I-7 turn-event ring scales to 2xNBUF so the
+# overwrite-guard window keeps its 2x-max-lag headroom). HFT_NBUF=32 arms;
+# the default stays 16 (the R8 phase-3 measured shape). The premium reads
+# against the SAME draw's 11sl CONTROL sub-run (gnu, 5 runs, depth 16 —
+# the same-toolchain denominator; section 16's 30-run default is the
+# cross-check). The depth-32 parity is pinned by
+# t_nbuf32_parity_vs_depth16 (both pacing modes x rotating sessions, the
+# depth-16 observables as the reference + the rxbuild twin's patch law).
+# Local A/B (Granite Rapids): 1.145 vs 1.295 cyc/msg median = -11% cycles.
+HFT_NBUF=32 cargo run --release -p nf-engine --bin hft_bench -- --sample data/tests/sample-mini.itch --runs 5 --warmup 2 --output-format json 2>&1 | tee /tmp/bench_f4_nbuf32.json
+grep -q "span_rate_msg_per_sec" /tmp/bench_f4_nbuf32.json
+grep -q "DIAG rx span:.*nbuf=32" /tmp/bench_f4_nbuf32.json
+grep -q "RXBUILD_DIAGNOSTIC" /tmp/bench_f4_nbuf32.json
+grep -q "enabled=true" /tmp/bench_f4_nbuf32.json
+
+echo "=== 11pb. R17/F-5: Prepatch Budget 1024 ARMED (the advance-tail drain pricing) ==="
+# CHECKLIST F-5 / ROADMAP1 §6-I2 / docs/29 §13: the sustained pass
+# boundary's synchronous bake was measured at 113.9us/advance on the local
+# box (9.7% of the sustained wall) with the R9c budget 64 leaving ~20.6k of
+# the 21,996-entry master list for the advance tail. The stack now: (a)
+# the EOS-drain wait's budget is UNBOUNDED (the RX is idle by construction
+# there — every publication is out; the R9c pacing law never applied to
+# that phase), collapsing us_per_advance to 58.8 locally (the residual =
+# the final publication's share, consumed with the marker); (b) the blob
+# twin of the F-2 overflow fix (patch_range's from+budget wrapped at
+# usize::MAX — the same class the F-2 ship caught in master_patch_range);
+# (c) this arm prices the per-publication budget 64 -> 1024 (22 pubs x
+# 1024 >= the full patchable set — the mid-pass absorption on the FLEET's
+# 3x-shorter pass periods, where the drain window is proportionally
+# smaller). The ADVANCE_DIAGNOSTIC line (advances/advance_ms/us_per_
+# advance) prints per run on EVERY arm — the F-5 law's instrument.
+HFT_PREPATCH_BUDGET=1024 cargo run --release -p nf-engine --bin bench -- --hydra-only 2>&1 | tee /tmp/bench_f5_budget.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_f5_budget.txt
+grep -q "allocs=0" /tmp/bench_f5_budget.txt
+grep -q "ADVANCE_DIAGNOSTIC" /tmp/bench_f5_budget.txt
+
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)

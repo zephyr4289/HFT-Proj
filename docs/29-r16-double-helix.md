@@ -1620,3 +1620,53 @@ from the artifacts. The golden-population assert (count == 505,849)
 sits OUTSIDE the timed window in both benches (verified by reading —
 the assert reads the sink after dt) — measured at zero marginal cost;
 documented, not optimized.
+
+**Draw 27 (run 37303717986, commit 5f913b9) — the 11sl first reading +
+the default's fleet-best Front A.** Shard 20 (healthy 8573C, kbench
+33.31 — a MID-band host): **section-16 default Front A 4,897,414,050 =
+98% of the 5B target** — the new fleet best on the default, on WEAKER
+silicon than draw-25's 4.718B preview host (kbench 35.24). The weak
+8370C preview printed 5,025,472,644 (5-run report-only). The 5B gap is
++2.1% — a record-class draw clears it on the default as-is. **The 11sl
+first reading is NEGATIVE: −1.2% healthy (armed 4,366,865,795 vs
+control 4,420,945,455) and −1.8% noisy** — the local Granite Rapids
++43% did not transfer. The post-mortem: the local box's scalar default
+was BIMODAL (1.95-2.49B across 8 runs) — the shared-VM shape has a
+stall class the vector path's shorter dependency chains dodge; the
+8573C's consumer at 0.52 cyc/msg has no such stall, and the group
+path's gather+call overhead nets slightly negative there. Tally 0/3
+healthy ≥ +15% (the kill rule fires at 3); the SoA round 2 is
+PROVISIONALLY DEAD with round 1 (its premise — the gather's line count
+— prices below the call overhead the fleet just measured). The 5-run
+gnu sub-runs read ~10% under section-16's 30-run default on both hosts
+(the warmup/median shape + the toolchain confound — the control sub-run
+bounds exactly this, and the premium reads control-vs-armed).
+
+**F-4/F-5 ship note (the residual stack).** F-4: the runtime mailbox
+depth (`HFT_NBUF` ∈ {16, 32}; arrays at NBUF_MAX; the I-7 ring scales
+to 2×NBUF) + arm 11nb; local A/B −11% cycles; pinned depth-transparent
+by `t_nbuf32_parity_vs_depth16`. F-5: the ADVANCE_DIAGNOSTIC instrument
+measured the pass boundary's synchronous bake at **113.9µs/advance =
+9.7% of the local sustained wall** (the R9c budget-64 pacing left
+~20.6k of the 21,996-entry master list and ~4.1k of the 11,004-site
+blob list for the advance tail; the consumer's reset_pass waits on the
+whole bake before pass k+1's first batch). The fix: the EOS-drain
+wait's budget is UNBOUNDED — the RX is idle by construction there (no
+pending publication exists; the R9c RFO-burst law protects the
+publication cadence, which the drain phase does not have) — collapsing
+us_per_advance to 58.8 locally (the residual is the final publication's
+share, consumed with the marker: structural). Two bugs found on the
+way: (a) `render::patch_range`'s `from_idx + budget` wrapped at
+usize::MAX — the blob twin of the exact overflow class the F-2 ship
+caught in `master_patch_range`, latent because no caller passed an
+unbounded budget before; (b) the chaos soak's patch-law pin asserted
+boundary-aligned counts at a mid-boundary read — the read races the
+last in-flight pass's incremental prepatch (a legal absorption below
+the freed frontier); the pin is now the floor/ceiling pair (the
+advance's tail guarantees every completed boundary patches the full
+list exactly once; the ceiling forbids any double-patch; the BIT-EXACT
+parity asserts pin the content law). The per-publication budget rides
+`HFT_PREPATCH_BUDGET` (default 64 = the R9c law verbatim); arm 11pb
+prices 1024 on the sustained shape for the fleet's ~3x-shorter pass
+periods, where the mid-pass absorption share matters more than the
+drain window's.
