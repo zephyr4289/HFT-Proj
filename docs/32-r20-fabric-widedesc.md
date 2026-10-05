@@ -166,6 +166,47 @@ fleet-class host — numbers are mechanism checks, not evidence):
    commit citing the draws — `HFT_DESC_WIDE` stays the opt-in arm until
    then, and `HFT_DESC_WIDE=0`-style rollback remains one env var away.
 
+### 5.1 Fleet round 1 (run #443, commit 88cfddb, 8 target draws)
+
+The first pricing push landed 8 certified draws (the singleton queue
+was contested by the three parallel engineer branches — the run was
+cut at ~76/80 shards, aggregator completed):
+
+| Shard | kbench 1t | Default 11b | Matrix arm | Features | Δ vs default |
+| :---: | :---: | :---: | :---: | :--- | :---: |
+| 49 | 30.93 | 1,141.18M | 1,137.44M | `HFT_DESC_WIDE=1` | **−0.3%** |
+| 10 | 30.70 | 1,230.96M | 1,171.45M | `HFT_VEC_INGEST=1` (no-op on main) | −4.8% |
+| 28 | 30.64 | 1,212.96M | 1,183.97M | `HFT_ENDPIPE=1` (no-op on main) | −2.4% |
+| 46 | 31.13 | 1,128.08M | 1,104.26M | `HFT_VEC_INGEST=1` (no-op) | −2.1% |
+| 63 | 28.72 | 1,011.41M | 950.99M | full synergy | −6.0% |
+| 64 | 34.00 | 1,252.44M | 1,239.81M | `HFT_ENDPIPE=1` (no-op) | −1.0% |
+| 66 | 27.62 | 966.14M | 932.36M | `HFT_VEC_INGEST=1` (no-op) | −3.5% |
+| 74 | 28.07 | 1,014.78M | 955.51M | `HFT_VEC_INGEST=1` (no-op) | −5.8% |
+
+**Readings (honest, per the ≥3-draw law):**
+
+* Every draw: `HYDRA_BITPARITY → BIT-EXACT` (18 parity lines per draw),
+  `allocs=0` (200 assertions per draw) — the frozen contracts held on
+  target silicon across armed and unarmed arms.
+* The wide mechanism is healthy on the Xeon class: shard 49 armed=1
+  with commits=7,357,861 / wraps=53,947 = **0.73%** (the predicted
+  1/128 straddle rate, again).
+* The matrix arm's structural "arm-position tax" is visible and now
+  QUANTIFIED: even flags that no-op on main (VEC_INGEST, ENDPIPE —
+  their levers live on the unmerged owner branches) price at −1.0 …
+  −6.0% vs the default battery that ran earlier on the same host
+  (thermal/frequency/cache state of a later arm in the battery — the
+  known ±3.4% arm-position noise class, at its negative extreme).
+* Against that tax, `HFT_DESC_WIDE`'s **−0.3%** is the smallest delta
+  of ANY arm — a relative recovery of ~+2…+6% on its single draw. The
+  same-draw main-side DIAG corroborates: scan_ms 4213.5 → 4089.1
+  (−2.9%) and work_ms 3747.9 → 3626.9 on shard 49, the submission-side
+  components all moving down while the fold stayed flat.
+* **One draw is one draw.** The median-of-≥3-healthy-draws protocol
+  governs; the campaign continues with each subsequent push (the
+  shard%4 rotation re-arms all four feature sets every push, ~20
+  draws/arm once uncontested).
+
 ## 6. Frozen-contract compliance
 
 * `Desc8` (8 B, `rxdesc_pack_span` — one formula across rings and
