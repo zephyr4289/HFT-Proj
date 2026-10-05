@@ -270,12 +270,32 @@ echo "=== 11u. R15: Worker Drain Granularity Sweep (the supply-side rebalance) =
 # is read once per worker spawn; the default 128 is the R8 shape. Two
 # soaks per draw price the direction; the evidence ledger records whatever
 # the silicon says.
+# R17 NOTE: post-flip these soaks run on the RING path (the A3-a pricing —
+# the R15 batch cap postdates the R12-era 1,186.1M ring+siblings
+# reference; draw 16 priced both sweep points +4.6% over the 128 default).
 HFT_WORKER_BATCH=64 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_wbatch_64.txt
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_wbatch_64.txt
 grep -q "allocs=0" /tmp/bench_wbatch_64.txt
 HFT_WORKER_BATCH=256 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_wbatch_256.txt
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_wbatch_256.txt
 grep -q "allocs=0" /tmp/bench_wbatch_256.txt
+
+echo "=== 11wm. R17: Assist-Watermark Deep-Soak (the A3-b pricing on the ring) ==="
+# THE A3 BISECT, SECOND AXIS: the R12-era ring's assist fired on LANE-RING
+# FULLNESS (deep saturation, ~2x2048 pending); R16b moved the trigger to
+# the submission lead (pending > 2048) — and that logic lives in the
+# SHARED HydraSpanSink, so it executes on the ring path too (draw 16's
+# telemetry: 597 assist chunks under distinct, 245,655 under siblings).
+# This arm parks the watermark at the pace ceiling (8192) — the assist
+# engages only at the deep-saturation regime, the R12-era shape. 11b
+# (watermark 2048) vs 11wm (8192) per draw prices the trigger change on
+# the restored default; the R16B_RXDESC assist_chunks telemetry rides
+# every arm. (The knob is HFT_ASSIST_WATERMARK; 0 disarms the assist
+# entirely — the 11wm verdict decides whether that third point is worth
+# an arm.)
+HFT_ASSIST_WATERMARK=8192 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_awm8192.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_awm8192.txt
+grep -q "allocs=0" /tmp/bench_awm8192.txt
 
 echo "=== 11v. R16: Dual-Stream Fold (dfold) ARMED Soak (attribution) ==="
 # R16: the T=2 block-parity dual-stream reflect fold — same census (4
