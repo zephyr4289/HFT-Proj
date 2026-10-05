@@ -2788,7 +2788,7 @@ mod tests {
             // floor/ceiling pair (the advance's tail guarantees the
             // floor; the ceiling forbids any double-patch).
             assert!(
-                patches >= 240 && patches <= 300,
+                (240..=300).contains(&patches),
                 "coalesce {coalesce}: patch law broken (patches {patches})"
             );
             let (c_patches, _, c_frames) = classic.rx_build_stats();
@@ -2892,7 +2892,7 @@ mod tests {
             let (patches, _, master_frames) = d32r.rx_build_stats();
             assert_eq!(master_frames, 60, "coalesce {coalesce}: d32 master frame count");
             assert!(
-                patches >= 240 && patches <= 300,
+                (240..=300).contains(&patches),
                 "coalesce {coalesce}: d32 patch law broken (patches {patches})"
             );
         }
