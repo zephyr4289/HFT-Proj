@@ -1149,6 +1149,49 @@ the sustained side now pricing POSITIVE on healthy silicon, the flip
 would carry the 2B program upward with it (the armed sustained already
 exceeds the fleet-best 11b on a record-class host).
 
+**Draw 25 — THE DECISION DRAW (run 37296565194, commit de533ba — the
+draw-25 fish; Wave-1 shards 4/5/9 uploaded, shards 4/5 BOTH healthy
+8573C record-class: kbench `fold512_r` 1t = 34.90/35.24, shard 9 noisy
+8370C; battery CLEAN — I-7's fifth fleet draw).** 11b per healthy
+shard: **1,206,520,280 / 1,242,489,011 — shard 5's default reading
+EXCEEDS the standing fleet best (draw 18a's 1,239,070,083)**; the
+armed sustained runs 1,265,846,176 / 1,299,341,757.
+
+**THE 11rb DECISION READINGS — BOTH CLEAR THE BAR AT MORE THAN 5×
+THE MARGIN:**
+
+```text
+                      default Front A      rxbuild Front A     premium
+shard 4 (kbench 34.90)  2,546,609,795       4,650,287,742     +82.6%
+                       @ 0.90 cyc/msg    @ 0.49 cyc/msg
+shard 5 (kbench 35.24)  2,625,876,869       4,718,036,487     +79.7%
+                       @ 0.875 cyc/msg   @ 0.49 cyc/msg
+sustained (armed)       1,265,846,176 / 1,299,341,757 = +4.9% /
+                       +4.6% vs own-shard 11b — both above the
+                       fleet-best default; the sustained lever replicates
+stability               the DEFAULT battery spans on these hosts are
+                       BIMODAL (runs 1.93-3.66B, medians 2.5-2.6B —
+                       the slow mode dominates) while the rxbuild runs
+                       sit 3.62-4.81B with tight floors: the lever does
+                       not just raise the ceiling, it REMOVES the slow
+                       mode (the RX's per-frame work was the variance
+                       source — prod_ms 0.5ms)
+the 5B arithmetic       4.650B / 4.718B = 93% / 94% of the R16 pure-ingest
+                       target ON THE DEFAULT'S WEAK DRAWS — the residual
+                       (F-3 prefix-sum walk, F-4 NBUF=32, F-5 reset
+                       hygiene) has 0.28-0.35B to find
+```
+
+**THE DECISION TALLY CLOSES: 4/4 healthy readings at +21.6/+33.6/
++79.7/+82.6% — the ≥ +15% over ≥ 3 draws law is satisfied with more
+than double the required count-margin — THE DEFAULT-FLIP PROTOCOL
+EXECUTES** (the section-12 flip note below). The rollback
+(`HFT_RXBUILD=0`) ships with it; arm 11rb converts to the classic-path
+pricing arm (the 11e/11w pattern — the rollback evidence, per draw);
+arm 11wn pins `HFT_RXBUILD=0` explicitly so the warm instrument keeps
+pricing the classic path (without the pin, the rxbuild default would
+win and the arm would price nothing).
+
 ## 10. I-7 — the prepatch-race hardening round (SHIPPED — this revision)
 
 The three-strike class (R9's +39, R12's 11j −47,297, draw 19's +35 on a
@@ -1443,3 +1486,24 @@ decision tally opens only on healthy draws — and **draw 24 opened it:
 armed 1,246,447,190 EXCEEDS the standing fleet-best 11b)**. Tally
 2/3 — one more healthy draw at ≥ +15% triggers the default-flip
 protocol.
+
+**THE DEFAULT-FLIP (draw 25 closed the tally: 4/4 healthy readings at
++21.6/+33.6/+79.7/+82.6% — the law satisfied with more than double the
+margin).** `HFT_RXBUILD` is now DEFAULT ON (unset runs the master
+array); `HFT_RXBUILD=0` is the rollback (the classic path verbatim —
+the P0-1 ring-flip pattern: the env selects the OLD path). The default
+battery (11b, section 16, the record submission) IS the rxbuild path
+from the flip commit forward. Arm 11rb converts to the classic-path
+pricing arm (HFT_RXBUILD=0, `enabled=false` greps — the rollback
+evidence, the 11e/11w pattern); arm 11wn pins `HFT_RXBUILD=0` so the
+warm instrument keeps pricing the classic path. Local validation at
+the flip: 155/155 workspace suites green, clippy −D warnings clean;
+default sustained BIT-EXACT 0x881639cead506f25 allocs=0 with
+`enabled=true` (patches 92.5M, the rotating-session re-patch law),
+rollback `enabled=false` BIT-EXACT allocs=0, warm instrument
+`RXWARM enabled=true` fixes=21,996 (pass-1 fill) last_pass_fixes=0 —
+all three modes healthy on silicon. The record protocol re-bases: the
+standing records were set on the classic default; new record claims
+proceed through the R12 ≥3-healthy-draw law on the NEW default (draw
+25's armed previews: sustained 1,299.3M, Front A 4.718B — the numbers
+the next record-class draw hunts).
