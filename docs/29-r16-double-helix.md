@@ -615,3 +615,66 @@ cyc/span **190.0/189.3** / 11y (B+C) 962.9M at 190.7/187.9 / 11x
    diet/ring gap narrowed to ~10% on this draw class; on the median
    healthy draw it remains ~18%. The 2B arithmetic (§5.3) still needs
    ring parity first — the fish continues per the class protocol.
+
+**Draw 16 — THE R17 ERA OPENS (8573C healthy, run 37268486513, shard 16
+Wave 2; commit aaf80bc: the ring default restore + the null-mode
+instrument + the gate reorder; docs/challenge/CHECKLIST.md Phase 0).**
+kbench `fold512_r` 1t = **30.44**, `2cpu_distinct` 61.11, THP granted,
+bit-exact, allocs=0, all constraints PASS (kbench-first gate: enforced,
+healthy draw). The first draw where the DEFAULT arm is the ring:
+
+| arm | stack | rate | worker cyc/span | assist_chunks |
+|---|---|---|---|---|
+| 11b | ring+distinct (default) | 992.4M | 187.6/187.6 | 597 |
+| 11e | prepatch off | 982.4M | — | 558 |
+| 11k | **ring+SIBLINGS** | **1,057.9M** | 224.4/224.4 | **245,655** |
+| 11t | vtail off | 1,024.5M | 184.4 | 253 |
+| 11u | wbatch 64 / 256 | 1,038.8M / 1,035.6M | 183.7 | 59/165 |
+| 11v | dfold armed | 1,046.8M | 182.5 | 165 |
+| 11w | rxdesc armed (diet) | 792.2M | 210.7 | 4,162 |
+| 11z | **NULL-MODE** | **1,306.3M** | **17.1** | 752 |
+
+Verdicts (all single-draw, the ≥3-draw law governs flips):
+1. **THE NULL INSTRUMENT'S FIRST READING: the plumbing+protocol floor is
+   17.1 cyc/span.** Not 60-80 (the residual theory), not ~100 (Route R's
+   kill case), not ~30 — SEVENTEEN. The worker's real-mix 187.6 cyc/span
+   is ~91% kernel+endings+supply; the ring protocol, chunk walk, res
+   publication, and desc streaming cost almost nothing. **Route R (any
+   further ring/diet work) is dead by measurement** — there is nothing
+   to reclaim on the submission side. The worker program (Route T
+   density, the ending pipeline, supply) owns the entire 170.5 cyc/span
+   bucket. Caveat logged honestly: the null stub touches only the
+   body's first line, so the 17.1 EXCLUDES supply latency (the real
+   loads' stalls live inside the 170.5; the fold512_supply kbench row
+   prices that share per draw — CHECKLIST I-1).
+2. **A1 CONFIRMED ON THE FIRST SAME-DRAW PRICING: ring+siblings beats
+   ring+distinct +6.6%** (1,057.9 vs 992.4) — ROADMAP1 §3.1-A1's
+   predicted +5-12% band. Mechanism visible in the telemetry: under
+   siblings the assist fires 245,655 chunks (main's surplus converting
+   to in-window CRC on its own core — the R11-era record mechanism);
+   under distinct it is dormant (597) and main+RX sit on the workers'
+   hyperthreads. Needs ≥3 healthy draws before any flip (the law).
+3. **A3 IS REAL AND UNEXPLAINED BY PLACEMENT**: ring+siblings at kbench
+   30.44 = 1,057.9M vs the R12-era ring+siblings 1,186.1M @ 29.94 =
+   **-10.8% at better kbench**, with reflect/vend/vtail all
+   neutral-positive on this draw (11r/11s/11t vs 11b). The R15
+   `HFT_WORKER_BATCH=128` pacing (post-R12!) prices at +4.6% on BOTH
+   sweep points (11u-64/11u-256 vs 11b-128 — suspicious of the 128
+   default, awaiting the ≥3-draw median); the R16b assist watermark
+   (2048 pending, vs the R12 lane-fullness trigger) prices next via the
+   new 11wm arm. The reset_pass unstick changes remain the third
+   suspect.
+4. rxdesc armed on the same draw: **-20.2%** vs the ring default — the
+   fifth consecutive draw in the -18..-21% band. The R17 flip's expected
+   dividend is confirmed per-draw: the default arm no longer runs a
+   refuted path.
+5. dfold (11v) 1,046.8M = **+5.5% vs 11b** on this healthy draw (the
+   ledger had it neutral on healthy through the rxdesc era) — the ring
+   path's supply shape may favor the 4-chain overlap. Single-draw;
+   11v keeps pricing every draw.
+6. Section-16 gate reorder: this healthy draw ran the FULL enforcing
+   gate (all constraints PASS, r8 pure-ingest PASS at 2.587B, r16 5B
+   verdict FAIL-reported as designed); the discard path was not
+   exercised on-silicon yet (no noisy Intel draw in this run's waves).
+   Front A note for the Phase II program: 0.889 cyc/msg span-median —
+   the warm-start lever's target denominator on this draw class.

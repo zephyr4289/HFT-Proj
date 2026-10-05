@@ -121,3 +121,5 @@
 | 2026-10-05 | **P0-5 arm 11z null-mode** (`HFT_HYDRA_NULL=1`) | LANDED — banner + verdict + allocs=0 verified locally |
 | 2026-10-05 | **P0-6 arms retired**: 11f/11g/11h/11i/11j/11x/11y (~7 arm-runs/shard reclaimed) | LANDED — rationale in ci.sh; git history keeps them verbatim |
 | 2026-10-05 | Local battery: build + clippy `-D warnings` + 30/30 test suites | GREEN |
+| 2026-10-05 | **Draw 16** (run 37268486513, healthy 8573C kbench 30.44) — the first ring-default draw | **NULL INSTRUMENT: 17.1 cyc/span plumbing floor** (91% of the 187.6 real-mix span is kernel+endings+supply → Route R dead by measurement; C-3 answered); **A1 confirmed +6.6%** (11k ring+siblings 1,057.9M vs 11b 992.4M; assist 245K chunks live under siblings); **A3 confirmed −10.8%** vs R12-era at better kbench (11u prices batch +4.6% both points); rxdesc −20.2% (5th consecutive); dfold +5.5% (single-draw, law governs); 11wm bisect arm added for A3-b |
+| 2026-10-05 | **P0-8 in flight**: 11u (A3-a batch pacing) + new 11wm (A3-b assist watermark 8192 = R12-era deep-saturation trigger) | awaiting ≥3 healthy draws |
