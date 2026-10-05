@@ -199,9 +199,30 @@ kbench ≥ 30.0 each).
 
 ## 7. Ledger
 
-* **Draw 30 (this push)** — the gate lands unarmed (default stack
-  unchanged); the fleet prices the R18 verdict line's presence on the
-  standing default. Expected: record-band draws 5.3-5.5B (FAIL, honestly
-  reported), median healthy ~4.7-5.0B. The 6B claim remains OPEN pending
-  §5's levers — this branch's contribution is the gate they will be
-  claimed against, plus the equilibrium law that prices them.
+* **Draw 30 (run 37366527072, commit fc9b6e8 — the gate lands unarmed;
+  the default stack is byte-identical to main).** The fleet priced the
+  R18 verdict line's presence on the standing default across 4 target
+  draws before the singleton queue was displaced by the next engineers'
+  pushes (34/80 shards ran, 4 landed target silicon):
+
+  | shard | host | kbench fold512_r 1t | default Front A | cyc/msg | R18 |
+  |---|---|---|---|---|---|
+  | 40 | 8573C @ 2.30 GHz | 33.53 | 4,883,985,208 | 0.47 | FAIL (reported) |
+  | 61 | 8573C @ 2.30 GHz | 32.81 | 5,007,662,228 | 0.46 | FAIL (reported) |
+  | 76 | 8573C @ 2.30 GHz | 32.21 | 5,119,929,149 | 0.45 | FAIL (reported) |
+  | 44 | 8370C @ 2.79 GHz | 28.97 | (cancelled mid-CI by queue displacement — 5-run arms only) | — | — |
+
+  The readings sit exactly on the standing kernel-correlation curve
+  (4.44B @ 30.89 / 4.70B @ 32.67 / 4.90B @ 33.31, draws 27-29): no
+  regression and no premium — the expected signature of a
+  measurement-infrastructure-only push. Invariants per healthy shard:
+  35× BIT-EXACT, replay conformance
+  `hash=0xF6EF154EFDE905D8 count=505849 watermark=255850 violations=0`,
+  `ALLOC_DELTA=0`, golden population asserted every pass.
+
+  **The 6B claim remains OPEN**: median healthy draw ~5.0B vs the 6.0B
+  gate; the gap (0.45 → 0.383 cyc/msg) lives in §5's lever list, in
+  files owned by Engineers 2/3. This branch's contribution stands as
+  the gate the claim will be reported against, the equilibrium law
+  that prices any lever that touches it, and the attribution that
+  says where the cycles are.
