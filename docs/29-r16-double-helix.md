@@ -914,6 +914,50 @@ wide-store, B-2/B-3 Route S kill tests) and the honest ~1.6-1.8B ceiling
 — or the record-class fishing itself (draw 18a's 1.2391B stands as the
 fleet best).
 
+**Draw 21 (8573C healthy, run 37280895942, Wave-1 shard 9; commit 866860f
+— the I-7 hardening stack's FIRST fleet draw; the battery ran CLEAN
+through every arm — no race strike: the fix's target-silicon
+validation).** kbench `fold512_r` 1t = **33.02** GB/s (healthy, near the
+record band); 11b **1,162,414,834** BIT-EXACT allocs=0 (the
+kernel-correlation law holds: 30.4→992-1,050M, 33.0→1,162M,
+34.8→1,143-1,239M); Front A pure ingest **3,406,574,091** PASS (2B gate)
+@ **0.675 cyc/msg — the best healthy-class denominator of the R17 era**
+(the F-1 baseline). Full arm table: 11e −1.0% (armed prepatch confirmed,
+7th straight), 11k +2.8% (A1 stays closed — single-draw wobble inside
+the ±3.4% band), 11l +0.3% / 11m +0.4% (tripwires quiet), 11n +3.0% /
+11r +3.1% / 11s +2.8% / 11t +2.7% (the kernel rollback arms all
+positive-side noise on this strong host — the medians stand), 11u +1.4%
+(A3-a stays closed), 11wm +2.9% (A3-b stays refuted), 11v +1.3% (dfold
+tripwire), 11w −7.0% (rxdesc, 10th consecutive negative — the penalty
+compresses on strong hosts; the median stays ~−20%), 11z null
+**1,547,027,843** (+33.1% over 11b — the floor scales with host class).
+
+**THE T-1 THIRD READING — ROUTE T'S REFUTATION IS FORMAL (3/3 healthy
+draws, the kill rule's own ≥3-draw bar):**
+
+```text
+fold512_r        33.02 GB/s   (sink 0xbedb8ba779de450f)
+fold512_t        28.91 GB/s   (sink 0xbedb8ba779de450f — BIT-EXACT)
+                 => −12.5% (draw 19: −12.4%, draw 20: −13.3%)
+                    The transposed-arena no-unpck fold NEVER approached
+                    the ≥ +8% build bar on any healthy draw (missed by
+                    ~20 points every time); the fold step is not
+                    p5-census-bound on the fleet. Route T is CLOSED as
+                    a build decision — the kernel program ends with a
+                    measurement, exactly as ROADMAP2 §5.2's own rule
+                    demanded. The 2B program is S+residual only.
+fold512_supply   32.97  (−0.2% — L3 streaming FREE at 1t, 3/3 draws;
+                        D-1's ≥28 GB/s gate clears conclusively)
+fold512_noend    31.96  (−3.2% — the ending lever stays in its 2-4%
+                        band, 3/3)
+fold512_pre      32.54  (−1.5% — the prefetch spray is nearly free)
+```
+
+Draw 21 also validates I-7 on target silicon: the full battery ran
+through every arm on the hardened stack with zero pass-count divergence
+(the strike class that killed draw 19's back half and threatened every
+record attempt). The race window is closed; the battery is protected.
+
 ## 10. I-7 — the prepatch-race hardening round (SHIPPED — this revision)
 
 The three-strike class (R9's +39, R12's 11j −47,297, draw 19's +35 on a
@@ -998,3 +1042,105 @@ hydra smoke BIT-EXACT `0x881639cead506f25` allocs=0 with ~3.3k sustained
 passes through the fixed window. The fleet re-prices the armed path on
 the next draw via 11e (and the whole battery is now protected from the
 strike that killed draw 19's back half).
+
+## 11. F-1 — the RX frame-entry warm start (SHIPPED — this revision; CHECKLIST F-1 / ROADMAP2 §6.1)
+
+The Front A 5B lever, shipped as specified: `HFT_RXWARM=1` arms it,
+unset/0 is the rollback (the classic path verbatim — the default
+submission path is untouched until the ≥3-draw evidence lands). Arm
+**11wn** prices it per draw: (a) the full sustained soak (bit-parity
+asserts + ALLOC_DELTA=0 through the warm path) and (b) hft_bench's span
+arm at 5 runs — the warm-vs-default `span_rate` delta on the same draw
+is the lever's price.
+
+**The design (the rxdesc check-and-fix law, applied where it wins):**
+
+* **W** — a frame-indexed warm array of the exact `FrameEntry` payload
+  (bytes ptr/len, blocks ptr/len, feed, memo, first_seq, sess words,
+  elig byte), sized to the schedule's exact per-pass frame count
+  (`rendered_frame_count()` — construction-fixed, allocated at RX
+  thread start, outside every measured window; the rxdesc arrays'
+  pattern). RX-thread-private.
+* **The warm walk** — `poll_impl::<WARM>`, a const-generic
+  single-sourcing of `poll_clamped`'s ENTIRE pacing skeleton (preamble,
+  event walk, tombstone skip, session reads, DLP prefetches); only the
+  per-frame EMIT differs. Classic instantiation: the pre-F-1 codegen
+  (the record path is untouched at the machine-code level). Warm
+  instantiation: the entry is derived IN REGISTERS from the walk's own
+  live facts (the frame meta + the frame line's session words — both
+  loaded by the walk anyway), COMPARED against W over all ten payload
+  fields, FIXED in place on divergence, and the VERIFIED entry is
+  stored straight into the mailbox window. The scratch slot push
+  (~6 stores/frame, poll side) and the accumulate-loop build (~9 slot
+  loads + slice re-derivation + elig chain + construct, build side) are
+  REPLACED — never paralleled. Zero added store traffic: the R12b
+  sidecar's exact failure mode (added parallel SoA stores collapsing
+  Front A 41%) is designed out; nothing new crosses a cache line on the
+  steady path.
+* **The check IS the correctness** — no memoization: every entry is
+  re-derived from the live blob/meta state every pass, and the compare
+  proves the remembered payload against that derivation before it is
+  published. A divergent schedule (or a blob region that somehow
+  escaped a bake) self-corrects via the fix path and is COUNTED
+  (`rx_warm_fixes`) — never silently trusted.
+* **The pass-boundary rewrite** — at every bake point (the CMD_RESET
+  serve, the EOS-park reset serve, the auto-advance) the warm index
+  restarts and W's session-derived fields (sess words + the elig byte's
+  bit 7) are rewritten from the fresh template. After every bake the
+  blob holds the new session everywhere (the advance's
+  `reset_prepatched` synchronous tail is the catch-all), so the rewrite
+  keeps the steady-state compare clean — and the per-frame check then
+  PROVES the assumption. Telemetry windows close at the EOS marker
+  (forced — a zero-fix pass must overwrite the previous reading) and at
+  the reset serves (conditional — an abandoned partial records its
+  count; a serve after a drained EOS preserves it).
+* **Telemetry** — `RXWARM_DIAGNOSTIC {label}: enabled={} fixes={}
+  uncovered={} last_pass_fixes={}` on every run (diag_summary), plus
+  `rx_warm_stats()` for the tests. The steady-state law: fixes == 0 on
+  pass n ≥ 2. **Kill rule (CHECKLIST F-1):** `rx_warm_fixes > 0`
+  persistent, or Front A < +15% healthy — decided on ≥3 draws per the
+  R9c→R9d law, never one.
+
+**The pins (all RED-on-typo-class discipline, all green):**
+
+* `t_rxwarm_parity_vs_classic` — warm vs classic side by side over
+  BOTH pacing modes (coalesce 1 and 128), 4 passes of ROTATING
+  sessions, every entry of every batch compared over the full payload
+  (content compare — the two instances own separate blobs); asserts
+  steady-state fixes == 0 from pass 2 and the pass-1 fill count.
+* `t_rxwarm_mid_pass_abandon` — the abandoned-pass shape (partial W
+  state; the next pass still verifies clean).
+* `t_rxwarm_unarmed_constant_session` — hft_bench's span-arm shape
+  (plain reset, one session; steady state zero-fix).
+* `t_f1_rxwarm_chaos_sustained_soak` (nf-testkit) — the I-7 chaos
+  program verbatim (delayed dual-feed, ~35% tardy starts, mid-pass
+  stalls, periodic abandons, 40 passes) with the warm start ARMED:
+  per-pass tuple parity against the classic legs + the per-entry
+  session law + the steady-state zero-fix law from pass 2.
+
+**Local validation** (Granite Rapids sandbox — non-deciding per the
+house law, recorded for the ledger): 30/30 workspace suites green,
+clippy `-D warnings` clean, fmt clean. Classic default sustained:
+BIT-EXACT `0x881639cead506f25`, allocs=0, `RXWARM_DIAGNOSTIC
+enabled=false` (the record path untouched). Warm-armed sustained:
+BIT-EXACT `0x881639cead506f25`, allocs=0, **fixes=21,996 (exactly the
+per-pass frame count — the pass-1 fill), last_pass_fixes=0 through
+2,656 rotating-session passes, uncovered=0** — the steady-state law
+holds on silicon. Local Front A A/B: classic median 1.599B vs warm
+1.463B with ±20% run-to-run variance (warm's best run 1.804B — above
+every classic run) — the sandbox is latency-bound with the wrong core
+count and placement; W's ~1.6 MB L2-cycling stream costs more than the
+removed µops THERE, exactly the profile the CI's 8573C (2 MB L2/core,
+RX ~27% idle in the distinct placement) is built to absorb. The fleet
+decides.
+
+**The honest risk register:** (1) the W stream is new working set — C8's
+warning class; if 11wn prices the warm arm < +15% with the RX's prod_ms
+NOT falling, the W stream is binding and the v2 is the packed 48-byte
+warm record (half the stream, +4 unpack ops) — documented, not built;
+(2) the field-wise compare is ~10 compares, not the roadmap's idealized
+2-4 µops raw 64-byte compare (a raw compare over FrameEntry's padding
+holes is unsound; the packed-record v2 enables it); (3) the pass-1 fill
+is ~22 K fixes on the first pass — one-time, untimed warmup territory,
+recorded in the telemetry. Expected per ROADMAP2 §6.1: RX 0.30-0.35 →
+0.05-0.10 cyc/msg, Front A 4.6-6.4B on 8573C-class draws.
