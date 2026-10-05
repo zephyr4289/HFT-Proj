@@ -460,6 +460,10 @@ fn rx_thread(
     // R8 phase-3 (auto-advance): the pass currently baked into the blob —
     // construction = pass 0 with the construction session.
     let mut pass: u64 = 0;
+    // I-7: the current pass's FIRST publication turn — the incremental
+    // prepatch's floor (see prepatch_step). Freed turns below it belong to
+    // a previous pass and carry no valid event index for this pass.
+    let mut pass_start_turn: u64 = 0;
     // R8 phase-3b: the consumed-frontier → patch-range advance. `freed`
     // counts are monotone and frees happen in turn order (SPSC), so the
     // max over the per-buffer last-freed turns IS the global frontier.
@@ -467,10 +471,29 @@ fn rx_thread(
     // — no blob-offset inference, aliasing-compatible by construction.
     // Only called when armed — unarmed transports keep the blocking
     // reset's full synchronous patch.
+    //
+    // I-7 parameters:
+    // * `ring_covered` — the newest turn whose event end is ALREADY
+    //   recorded in `turn_evt_end`. Call site A (post-publication) passes
+    //   the turn it just recorded; call site B (the advance wait) passes
+    //   the marker — its own turn is not published yet. The overwrite
+    //   guard below is exact only against this value.
+    // * `floor_turn` — the current pass's first publication turn. A freed
+    //   frontier below it belongs to a PREVIOUS pass: its event-ring slot
+    //   holds that pass's event indices — or the EOS marker's usize::MAX
+    //   "whole pass consumed" sentinel, whose meaning the advance's
+    //   synchronous bake already consumed. Reading either here would
+    //   over-patch the CURRENT pass's unconsumed head with the next
+    //   pass's session: entries built after the patch carry a foreign
+    //   session, the consumer's steady scan cold-paths mid-pass, and
+    //   `State::Init`'s unconditional `w = first` re-anchor re-emits a
+    //   straddling duplicate packet — the draw-19 +35 / R9 +39
+    //   count-divergence class (docs/29 §I-7).
     let prepatch_step = |inner: &mut ReplayTransport,
                           next_sess: &[u8; 10],
                           pp_idx: &mut usize,
-                          cur_turn: u64,
+                          ring_covered: u64,
+                          floor_turn: u64,
                           turn_evt_end: &[usize; 32],
                           budget: usize| {
         let mut frontier: Option<u64> = None;
@@ -484,17 +507,30 @@ fn rx_thread(
             }
         }
         if let Some(t) = frontier {
+            // I-7: a frontier below the current pass's first publication
+            // carries no valid event index for this pass — skip the
+            // incremental step entirely (the advance's synchronous
+            // reset_prepatched bake is the catch-all for everything
+            // legitimately freeable).
+            if t < floor_turn {
+                return;
+            }
             // OVERWRITE GUARD: the event ring holds only the last 32
-            // turns. If the frontier is so old that its slot may already
-            // hold a NEWER turn's event end (a larger index — an
-            // over-patch would bake frames the consumer has not freed),
-            // skip the incremental step entirely; the synchronous tail at
-            // the advance point stays correct.
-            if cur_turn.saturating_sub(t) > TOFF_RING {
+            // turns. The slot for t is stale once a NEWER turn ≡ t (mod
+            // TOFF_RING) has been recorded — i.e. once ring_covered − t ≥
+            // TOFF_RING (I-7: ≥, not > — at exactly TOFF_RING the aliased
+            // slot already holds ring_covered's own value, and reading it
+            // would take a LARGER event end as the frontier: an over-patch
+            // of frames the consumer has not freed). If the frontier is
+            // that old, skip the incremental step entirely; the
+            // synchronous tail at the advance point stays correct.
+            if ring_covered.saturating_sub(t) >= TOFF_RING {
                 return;
             }
             let upto_evt = turn_evt_end[(t & TOFF_MASK) as usize];
-            // usize::MAX (EOS-marker turn): the whole pass is consumed —
+            // usize::MAX (EOS-marker turn): only reachable for a marker of
+            // the CURRENT pass here (the floor already excluded the
+            // previous passes' markers) — the whole pass is consumed —
             // patch everything remaining below the list's end.
             *pp_idx = inner.patch_range(next_sess, *pp_idx, upto_evt, budget);
         }
@@ -692,7 +728,20 @@ fn rx_thread(
                 // publication period cannot absorb ~250 RFOs); the
                 // frontier keeps advancing and later steps pick up the
                 // remaining sites.
-                prepatch_step(&mut inner, &next_sess, &mut pp_idx, turn, &turn_evt_end, 64);
+                //
+                // I-7: `turn`'s own event end was recorded just above (the
+                // line before the filled[] Release store), so the ring is
+                // covered through `turn` itself; the floor is the current
+                // pass's first publication.
+                prepatch_step(
+                    &mut inner,
+                    &next_sess,
+                    &mut pp_idx,
+                    turn,
+                    pass_start_turn,
+                    &turn_evt_end,
+                    64,
+                );
             }
         }
         // Polite wake: the consumer may be futex-parked on pub_wake (it
@@ -763,12 +812,24 @@ fn rx_thread(
                     // the pass's tail, keep baking what it HAS freed — the
                     // tail left for the synchronous advance shrinks as the
                     // consumer drains.
+                    //
+                    // I-7: the ring is covered through the marker (turn−1) —
+                    // this turn is not published yet; the floor is the pass
+                    // being drained (its own turns and marker are ≥ it).
                     if prepatch_enabled {
                         let next_sess = sess_fn(pass + 1);
                         // The EOS-drain wait: the RX is idle here — a large
                         // budget drains the frontier fast while the loop's
                         // free-checks stay responsive.
-                        prepatch_step(&mut inner, &next_sess, &mut pp_idx, turn, &turn_evt_end, 1024);
+                        prepatch_step(
+                            &mut inner,
+                            &next_sess,
+                            &mut pp_idx,
+                            turn - 1,
+                            pass_start_turn,
+                            &turn_evt_end,
+                            1024,
+                        );
                     }
                     mb.rx_stats.bufwait_laps.fetch_add(1, Ordering::Relaxed);
                     if backoff < 6 {
@@ -795,6 +856,12 @@ fn rx_thread(
                     inner.reset(sess);
                 }
                 pass = next_pass;
+                // I-7: the new pass's first publication lands on `turn`
+                // (the marker took turn−1) — the incremental prepatch's
+                // floor from here on: previous-pass turns (including the
+                // marker whose sentinel the advance's bake just consumed)
+                // must never map into the new pass's event numbering.
+                pass_start_turn = turn;
                 mb.rx_stats.resets.fetch_add(1, Ordering::Relaxed);
                 // SAFETY: RX-exclusive until the Release store of auto_pass.
                 unsafe {
@@ -1499,5 +1566,126 @@ mod tests {
             t.reset(*b"PIPETEST01");
         }));
         assert!(r.is_err(), "armed transport must reject plain reset");
+    }
+
+    // ─── I-7: the prepatch-race hardening pins (docs/29 §I-7) ──────────
+
+    /// I-7 session program: a distinct session per pass (the flip the
+    /// over-patch induces is only observable when consecutive passes carry
+    /// different sessions — the sustained harness's shape).
+    fn i7_sess(pass: u64) -> [u8; 10] {
+        let mut s = *b"PIPEI7S000";
+        s[6..10].copy_from_slice(&pass.to_be_bytes()[4..8]);
+        s
+    }
+
+    /// I-7: the engineered STRADDLE schedule — a dual-feed tape whose 64
+    /// earliest-gated regions (the incremental prepatch's first budget
+    /// window) each have their PRIMARY inside publication #1 and their
+    /// DUPLICATE inside publication #2. Phase-separated feeds (all feed-0
+    /// packets, then all feed-1 duplicates) make the earliest gates the
+    /// first 64 duplicate events, which land in publication #2 while their
+    /// primaries rode publication #1 — exactly the boundary straddle the
+    /// real corpus exhibits rarely (and the adjacent-pair test schedules
+    /// never do, which is why the class survived every existing test).
+    fn i7_straddle_sched(pairs: u64) -> ReplaySchedule {
+        let mut events = Vec::new();
+        for i in 0..pairs {
+            events.push(SchedEvent {
+                release_vt: i * 1000,
+                feed: 0,
+                kind: SchedKind::Packet {
+                    first_seq: i * 10 + 1,
+                    first_msg: i * 10,
+                    count: 10,
+                },
+            });
+        }
+        for i in 0..pairs {
+            events.push(SchedEvent {
+                release_vt: 1_000_000 + i * 1000,
+                feed: 1,
+                kind: SchedKind::Packet {
+                    first_seq: i * 10 + 1,
+                    first_msg: i * 10,
+                    count: 10,
+                },
+            });
+        }
+        ReplaySchedule {
+            events,
+            session_split: None,
+        }
+    }
+
+    /// I-7 — the draw-19 +35 / R9 +39 count-divergence class, pinned at
+    /// the transport level. The previous pass's EOS marker parks the freed
+    /// frontier on a turn whose event-ring slot holds the usize::MAX
+    /// "whole pass consumed" sentinel. At the CURRENT pass's first
+    /// publication the consumer cannot have freed anything yet (it is
+    /// still between passes), so the incremental prepatch reads that
+    /// sentinel, treats the entire blob as consumed, and bakes the NEXT
+    /// pass's session into the CURRENT pass's unconsumed head —
+    /// publication #2's entries are then built from the patched bytes and
+    /// carry a foreign session. Downstream (pinned end-to-end by the
+    /// nf-testkit chaos soak): the consumer's steady scan cold-paths on
+    /// the session mismatch, `session_dispatch` opens a boundary,
+    /// `State::Init` re-anchors `w = first` UNCONDITIONALLY, and a
+    /// straddling duplicate of an already-emitted packet re-emits its
+    /// messages — the +N pass-count divergence.
+    ///
+    /// THE PIN: through the pass boundary (with a tardy consumer parked
+    /// long enough for the RX's full NBUF runahead), every entry of every
+    /// batch must carry THIS pass's session — in the frame bytes AND in
+    /// the inline sess words.
+    #[test]
+    fn t_prepatch_marker_sentinel_head_invariant() {
+        let pairs: u64 = 832;
+        let gt = mini_gt(pairs * 10);
+        let sched = i7_straddle_sched(pairs);
+        let mut t = PipelinedReplayTransport::with_coalesce_cpu_auto(
+            &gt,
+            sched,
+            i7_sess(0),
+            8,
+            None,
+            Some(i7_sess),
+        );
+        for pass in 1..=4u64 {
+            let sess = i7_sess(pass);
+            t.reset_pass(pass, sess);
+            // The tardy consumer: park past the RX's full runahead so the
+            // freed frontier sits on the previous pass's EOS marker
+            // through several publications — the fleet flake's window,
+            // forced deterministically.
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            let mut batches = 0usize;
+            let mut frames = 0usize;
+            while t.next_batch() {
+                batches += 1;
+                for e in t.entries() {
+                    frames += 1;
+                    assert_eq!(
+                        &e.bytes[..10],
+                        &sess[..],
+                        "pass {pass} batch {batches}: foreign session in frame bytes — \
+                         the EOS-marker sentinel over-patched the pass head (the I-7 class)"
+                    );
+                    let lo = u64::from_le_bytes(e.bytes[..8].try_into().unwrap());
+                    let hi = u64::from_le_bytes(e.bytes[2..10].try_into().unwrap());
+                    assert_eq!(
+                        (e.sess_lo, e.sess_hi),
+                        (lo, hi),
+                        "pass {pass} batch {batches}: inline sess words diverged \
+                         from the frame bytes"
+                    );
+                }
+            }
+            assert_eq!(frames, (pairs * 2) as usize, "pass {pass} frame count");
+            assert!(
+                batches >= 3,
+                "the corpus must span >= 3 publications per pass (got {batches})"
+            );
+        }
     }
 }

@@ -564,3 +564,141 @@ fn t_r8_pipeline_parity_canonical() {
         );
     }
 }
+
+// ─── I-7: the prepatch-race hardening soak (docs/29 §I-7) ────────────────
+
+/// I-7: the chaos harness — the sustained auto-advance shape (the fleet
+/// arm's exact structure) under DETERMINISTIC consumer chaos: tardy pass
+/// starts (the freed frontier parked on the previous pass's EOS marker
+/// through the RX's full runahead — the draw-19 window, forced), mid-pass
+/// consumer stalls, and periodic mid-pass abandons (the unstick path).
+/// The schedule is a delayed dual-feed at multi-publication scale — feed
+/// 1's duplicates lag feed 0's primaries, so regions straddle publication
+/// boundaries exactly like the real corpus (the adjacent-pair test
+/// schedules never straddle, which is why this class survived every
+/// existing suite).
+///
+/// Every completed pass must reproduce the per-session reference tuple
+/// (count, hash, msg_hash) exactly, and every entry must carry ITS pass's
+/// session in the frame bytes — the EOS-marker sentinel over-patch (the
+/// draw-19 +35 / R9 +39 count-divergence class) breaks the session
+/// invariant first and the tuple second.
+#[test]
+fn t_i7_prepatch_chaos_sustained_soak() {
+    // Multi-publication scale: ~2.1k frames per pass (~3 publications at
+    // the RX's 776-frame accumulation granularity).
+    let gt = mini_gt(120_000);
+    let cfg = ReplayConfig {
+        msgs_per_packet: Packetize::MtuBound(1400),
+        delay: [
+            DelayModel::None,
+            DelayModel::GaussianApprox {
+                mean_ns: 2_000_000,
+                sigma_ns: 800_000,
+            },
+        ],
+        guarantee_coverage: true,
+        ..Default::default()
+    };
+    let sched = build_schedule(&gt, &cfg);
+
+    fn prog(pass: u64) -> [u8; 10] {
+        const S: [[u8; 10]; 4] = [
+            *b"I7SOAKSE01",
+            *b"I7SOAKSE02",
+            *b"I7SOAKSE03",
+            *b"I7SOAKSE04",
+        ];
+        if pass == 0 {
+            S[0]
+        } else {
+            S[((pass - 1) % 4) as usize]
+        }
+    }
+
+    // Per-session sequential references (the classic legs — the parity
+    // law's ground truth, one per session in the rotation).
+    let mut want = Vec::new();
+    for k in 0..4u64 {
+        let sess = prog(k + 1);
+        let mut t = ReplayTransport::new(&gt, sched.clone(), sess);
+        t.reset(sess);
+        let mut seq = Sequencer::new();
+        let mut sink = SpanConformanceSink::new();
+        let mut batch = FrameBatch::new();
+        while t.poll(&mut batch) > 0 {
+            seq.ingest_batch(t.batch_entries(&batch), t.now_ns(), &mut sink);
+        }
+        want.push((sink.count, sink.hash, sink.msg_hash));
+    }
+
+    let mut t = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce_cpu_auto(
+        &gt,
+        sched,
+        prog(0),
+        128,
+        None,
+        Some(prog),
+    );
+
+    // Deterministic LCG chaos — reproducible failure modes, no RNG dep.
+    let mut rng: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut draw = move || {
+        rng = rng
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        rng
+    };
+
+    const PASSES: u64 = 160;
+    const ABANDON_EVERY: u64 = 37;
+    let mut checked = 0u64;
+    for pass in 1..=PASSES {
+        let sess = prog(pass);
+        t.reset_pass(pass, sess);
+        let mut seq = Sequencer::new();
+        let mut sink = SpanConformanceSink::new();
+        // Tardy start (~35% of passes): park the consumer past the RX's
+        // runahead so the freed frontier sits on the previous pass's EOS
+        // marker through several publications.
+        if draw() % 100 < 35 {
+            std::thread::sleep(std::time::Duration::from_millis(1 + draw() % 18));
+        }
+        let mut abandoned = false;
+        let mut batch_idx = 0u64;
+        while t.next_batch() {
+            batch_idx += 1;
+            for e in t.entries() {
+                assert_eq!(
+                    &e.bytes[..10],
+                    &sess[..],
+                    "pass {pass} batch {batch_idx}: foreign session in frame \
+                     bytes — the EOS-marker sentinel over-patch (the I-7 class)"
+                );
+            }
+            seq.ingest_entries(t.entries(), t.now_ns(), &mut sink);
+            // Mid-pass consumer stall (~15% of batches).
+            if draw() % 100 < 15 {
+                std::thread::sleep(std::time::Duration::from_millis(1 + draw() % 3));
+            }
+            // Periodic mid-pass abandon (the unstick path).
+            if batch_idx == 2 && pass % ABANDON_EVERY == 0 {
+                abandoned = true;
+                break;
+            }
+        }
+        if !abandoned {
+            assert_eq!(
+                (sink.count, sink.hash, sink.msg_hash),
+                want[((pass - 1) % 4) as usize],
+                "pass {pass}: sustained tuple diverged — the I-7 class's \
+                 downstream symptom (the re-anchor re-emission)"
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked >= PASSES - PASSES / ABANDON_EVERY,
+        "the soak must check every drained pass (checked {checked})"
+    );
+}
