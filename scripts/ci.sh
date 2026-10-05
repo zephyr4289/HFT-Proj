@@ -146,73 +146,36 @@ HFT_PREPATCH=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | te
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_prepatch.txt
 grep -q "allocs=0" /tmp/bench_prepatch.txt
 
-echo "=== 11f. R9: Third-Worker Placement Sweep (RX-hyperthread scavenging) ==="
-# The 3-worker shape (third lane on the RX's hyperthread) was only ever
-# measured on AMD (-15% Zen3, +2% Zen5). Post-R9 the workers' delivery
-# economics changed (aliasing + spray); this sweep measures the shape on
-# EVERY runner draw the CI sees, with the assist containing any straggler
-# lane by construction. Diagnostics only — never gated beyond the
-# bit-exact asserts the sustained arm already enforces.
-HFT_SUSTAINED_WORKERS=3 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_w3.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_w3.txt
-grep -q "allocs=0" /tmp/bench_w3.txt
+# R17 ARM RETIREMENT (the roadmaps' shard-economics ruling — every
+# reclaimed arm-minute buys deciding-arm coverage on target draws; the
+# arms live in git history verbatim):
+#   11f (third-worker placement — AMD-era verdicts only, never decided on
+#        8573C in 5+ draws)
+#   11g (worker eval2 interleave — the refutation ledger: dead at -14.7%,
+#        front-end bound; kbench's fold512_eval2 row keeps the kernel twin)
+#   11h (prefetch shape 6/32/32 — never decided a draw; Route P's
+#        prefetch-depth work moves to the planned kbench real-mix rows
+#        (pf lead 0/2/4/8), per ROADMAP2 §5.6 / ROADMAP3 §4.4)
+#   11i (assist-ring depth 4/256 — no decision since R10)
+#   11j (pipelined-tail eval_pair — the refutation ledger: dead at
+#        -11..-21%; kbench's fold512_pair row keeps the kernel twin)
 
-echo "=== 11g. R9: Worker eval2 Interleave Sweep (load-MLP experiment) ==="
-# The kbench eval-vs-eval2 parity was measured on PACKED buffers; the
-# post-aliasing real layout is L3-latency bound, where two concurrent
-# span streams double the loads in flight. Diagnostics only.
-HFT_WORKER_EVAL2=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_eval2.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_eval2.txt
-grep -q "allocs=0" /tmp/bench_eval2.txt
-
-echo "=== 11h. R9: Worker Prefetch Shape Sweep (deeper lead) ==="
-# The spray default (2,22,24) was tuned on the shared-core sandbox; the
-# dedicated worker pairs of the real runners may prefer a deeper lead.
-# Diagnostics only.
-HFT_PF_AHEAD=6 HFT_PF_LINES=32 HFT_PF_BURST=32 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_pf.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_pf.txt
-grep -q "allocs=0" /tmp/bench_pf.txt
-
-echo "=== 11i. R10: Assist-Ring Depth Sweep (the spin->CRC conversion budget) ==="
-# The deep assist ring converts lane-full backpressure spins into
-# in-window CRC on the submitting core. The depth bounds how far the
-# submit point may run ahead of the fold before the conversion saturates:
-# local sandbox 4/16/64/256 -> 266/343/422/442M. The 11b default arm
-# carries slots=64; this sweep brackets the curve per runner class
-# (shallow=4 reproduces the R8 equilibrium, deep=256 probes the lead).
-# Diagnostics only — bit-exactness is asserted by every arm's per-pass
-# tuple checks.
-HFT_ASSIST_SLOTS=4 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_assist4.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_assist4.txt
-grep -q "allocs=0" /tmp/bench_assist4.txt
-HFT_ASSIST_SLOTS=256 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_assist256.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_assist256.txt
-grep -q "allocs=0" /tmp/bench_assist256.txt
-
-echo "=== 11j. R10: Worker Pipelined-Tail Sweep (sequential-load pair eval) ==="
-# The deferred-ending schedule: consecutive span pairs evaluate through
-# eval_pair (A's vector fold, B's vector fold, A's endings, B's endings —
-# one sequential load stream, the per-span ending overhead hidden under
-# the next span's clmul chains). Unlike eval2 (dead: -28%, interleaved
-# loads thrash the streamer) the load order is unchanged. kbench's
-# fold512_pair vs fold512 rows attribute the kernel-level effect on
-# every fold512 draw. Diagnostics only.
-HFT_WORKER_PIPE=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_pipe.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_pipe.txt
-grep -q "allocs=0" /tmp/bench_pipe.txt
-
-echo "=== 11k. R16d: Siblings Placement Soak (the rollback attribution) ==="
-# THE DEFAULT FLIP: on the 2-physical-core SMT draws the R8 default
-# (siblings) stacked BOTH workers on one physical core's hyperthreads —
-# their combined fold capped at the kbench 2cpu_smt ceiling (~32.8 GB/s)
-# while 2cpu_distinct sat unused at ~61 GB/s — and the R11 distinct
-# experiment proved the system MAIN-bound (workers +15% spans, sustained
-# flat). R16b's array-driven submission (rxdesc, arm 11w's rollback)
-# removed the main-side wall, so R16d flips the 2-worker 2-core SMT
-# default to DISTINCT (workers own physical cores; main+rx become the
-# SMT siblings). 11b runs the new default; THIS arm soaks the R8
-# rollback shape for per-draw attribution. The worker DIAG lines echo
-# the pins; kbench's 2cpu_smt vs 2cpu_distinct rows price both ceilings.
+echo "=== 11k. R16d/R17: Siblings Placement Soak (ring+siblings — the A1 anomaly pricing) ==="
+# R17 RE-SCOPE (ROADMAP1 §3.1-A1): with the default flip to the ring, this
+# arm is now RING+SIBLINGS on every draw — the placement pricing that was
+# NEVER run on the ring path. The "distinct wins" attributions (draws
+# 10/11: +9.3%/+12.2%) all ran the rxdesc submission path; the cross-era
+# evidence says the ring may prefer siblings (R12-era ring+siblings
+# 1,186.1M @ kbench 29.94 vs R16-era ring+distinct 1,054.5M @ 30.23 —
+# a -11% anomaly the kernel levers cannot explain; at record-class
+# 1,234.8 vs 1,214.2 = -1.7%). The mechanism (R11 §8.1): under siblings,
+# main+RX keep their L1/L2-local sibling off the workers' cores and the
+# assist ring keeps converting main's surplus into CRC; the R16d flip
+# fixed a main-side wall that rxdesc created — with the ring restored,
+# the flip's premise partially evaporates. 11b (ring+distinct) vs 11k
+# (ring+siblings) per draw, >=3 healthy 8573C draws, then the R9c->R9d
+# law per class decides the default. kbench's 2cpu_smt vs
+# 2cpu_distinct rows price both ceilings on the same draw.
 HFT_FABRIC_PLACE=siblings cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_place_siblings.txt
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_place_siblings.txt
 grep -q "allocs=0" /tmp/bench_place_siblings.txt
@@ -330,71 +293,49 @@ HFT_CRC_DFOLD=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | t
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_dfold.txt
 grep -q "allocs=0" /tmp/bench_dfold.txt
 
-echo "=== 11w. R16b: Array-Driven Submission (rxdesc) OFF (rollback attribution) ==="
-# THE MAIN-SIDE WALL REMOVED: the sustained record (1.2348B) was
-# main-thread-bound — the per-span descriptor submission into the
-# per-lane SPSC rings (~0.4-0.6 cyc/msg: the desc store, the anchor
-# write, the space checks, the backpressure spin). rxdesc replaces the
-# rings with per-window span arrays: the submitting core's steady-state
-# per-span cost is ONE 8-byte load + compare (the check-and-fix guard
-# over the warm-started entries — the deterministic schedule replays
-# the same span sequence every pass, so each window opens by copying
-# the previous one's entries), and workers read descriptors directly
-# from the arrays (nf-transport/src/rxdesc.rs documents the protocol).
-# 11b runs rxdesc ON (with the R16d distinct placement — the Double
-# Helix: neither strand alone moves the number); THIS arm runs the
-# pre-R16 ring submission for per-draw attribution. The R16B_RXDESC
-# telemetry line reports the fix/assist counts on the default arm.
-HFT_RXDESC=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_rxdesc_off.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_rxdesc_off.txt
-grep -q "allocs=0" /tmp/bench_rxdesc_off.txt
+echo "=== 11w. R16b/R17: Array-Driven Submission (rxdesc) ARMED (attribution) ==="
+# THE R17 DEFAULT FLIP (senior roadmaps 1-3, unanimous): the fleet priced
+# the array-driven submission at -10..-21% vs the ring on BOTH silicon
+# classes across draws 10-15 (record-class -21.2%, healthy -20.6%, post-
+# diet -18.2%..-10%; the residue is supply-coupled — the diet's own draw-15
+# verdict). The sustained default is now the RING (with the R16d distinct
+# placement); THIS arm ARMS the rxdesc arrays per draw to keep the
+# attribution instrument + the R16B_RXDESC telemetry warm (the 11m
+# armed-soak precedent, inverted). The diet stack (HFT_RXDIET default on)
+# stays merged — its warm-start pattern is the Front A program's template.
+HFT_RXDESC=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_rxdesc_on.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_rxdesc_on.txt
+grep -q "allocs=0" /tmp/bench_rxdesc_on.txt
 
-echo "=== 11x. R16e: RX Desc Diet OFF (the pre-diet rxdesc worker verbatim) ==="
-# THE DRAW-11 DECOMPOSITION: rxdesc ran -20.6% vs the ring on the healthy
-# class (-21.2% record-class); the gap split 50/50 — wake-cadence idle
-# (2.7x the ring's batch iterations, 620-806K idle iters) and per-span
-# eval dilution (~+31 cyc/span: the per-span record probe, the per-span
-# division/is_inline in the spray, the grid walk). The diet (the default,
-# 11b) fixes the worker side only — the sink is untouched:
-#   STRAND A: the depth batch — a frontier hit publishes its partial run
-#   first (liveness: the sink's pending pace and the window-reuse gate
-#   spin on the fold), then waits at the frontier in bounded pause laps
-#   (HFT_FRONTIER_LAPS, default 16) instead of exiting through the outer
-#   loop's deep-pause escalation — no re-entry, no yield, no scheduler
-#   wake latency per publication gap.
-#   STRAND B: the per-span record probe becomes a next-boundary cache —
-#   one register compare per span; the resolve fires only at window
-#   boundaries (publication ordering proves the cache cannot miss: the
-#   record for base rb is published BEFORE any ready store exceeding rb,
-#   so the worker's ready Acquire exposes the record with the spans).
-#   STRAND C: the division-free grid — the chunk walk (eval + spray)
-#   tracks (chunk_id, chunk_lo) by addition; the spray's per-SPAN
-#   division/modulo/is_inline moves to per-chunk sections.
-# THIS arm runs the pre-diet worker VERBATIM (bit-identical to the
-# draw-10/11 stack) for per-draw attribution: 11b (diet) vs 11x (pre-
-# diet) vs 11w (ring) prices the diet and the four-coherence-laws stack
-# on the same draw. The worker DIAG line now carries fw=/fw_ms= (the
-# frontier-wait episodes and wall) — the wake-cadence signal; the draw
-# ledger's decomposition becomes directly readable from the artifacts.
-HFT_RXDIET=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_rxdiet_off.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_rxdiet_off.txt
-grep -q "allocs=0" /tmp/bench_rxdiet_off.txt
+# R17 ARM RETIREMENT (settled attribution — roadmaps' shard-economics
+# ruling): 11x (pre-diet rxdesc) and 11y (strand-A isolation) priced the
+# diet across draws 12-15 (4 pricings: +1.4/+0.9/+0.0/+2.6%, median
+# +1.15%, direction positive; the residue is structural to array-path
+# workers, supply-coupled on strong draws). With the R17 default flip to
+# the ring, both arms are dead config on the default path; the diet
+# stack stays merged and armed via 11w (HFT_RXDESC=1 runs the full diet).
+# The arms live in git history (and can be re-added verbatim if the
+# null-mode instrument prices the ring residual as issue-slot waste and
+# the diet program reopens — R2 §5.4's explicit condition).
 
-echo "=== 11y. R16e: strand-A isolation (HFT_FRONTIER_LAPS=0 — the diet with B+C only) ==="
-# The depth wait disarmed: the frontier hit publishes its partial and
-# bails to the outer loop's deep pause immediately — the pre-diet's wake
-# cadence with strands B+C (per-chunk resolution + the division-free
-# grid) still armed. 11b (full diet) vs 11y (B+C) vs 11x (pre-diet)
-# prices STRAND A alone per draw; the local latency-blind sandbox priced
-# it negative on the 1-worker main-bound shape (the wait's deferred
-# result publishes let the fold lag — pending_max 7,040 vs 4,496, the
-# reuse-gate spin +455ms on main) while the worker-level eval rate rose
-# +9-12% in BOTH diet shapes — the CI's worker-bound regime (draw 11:
-# 86%/79% busy at ~220 cyc/span) is where the wake cadence binds; the
-# class protocol decides the default exactly as vend/vtail were priced.
-HFT_FRONTIER_LAPS=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_flaps0.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_flaps0.txt
-grep -q "allocs=0" /tmp/bench_flaps0.txt
+echo "=== 11z. R17: Null-Mode Instrument (the non-CRC fabric ceiling) ==="
+# THE DRAW-12 LAW: "the next decomposition needs an instrument, not a
+# guess" (senior roadmaps 1-3, unanimous — P0 instrument). HFT_HYDRA_NULL
+# runs the EXACT ring schedule, chunk grid, descriptors, prefetch spray,
+# and res publishing with the CRC kernel stubbed to a span-id-derived
+# consume — the DIAG's eval cost then measures the plumbing+supply floor
+# directly, and full - null is the true kernel-extraction share per
+# draw. The bench prints HYDRA_NULL_MODE_DIAGNOSTIC loudly and SKIPS the
+# parity asserts BY DESIGN (values are wrong on purpose; the per-pass
+# tuple checks skip the hash in this mode — see bench.rs). Expected
+# reading per the residual theory: null ~ 60-80 cyc/span; ~30 means the
+# fold loop is secretly expensive; ~100 means the ring protocol is the
+# wall. ALLOC_DELTA=0 still holds (no allocation shape change). Never
+# claim-eligible; never a default — an instrument.
+HFT_HYDRA_NULL=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_nullmode.txt
+grep -q "HYDRA_NULL_MODE_DIAGNOSTIC" /tmp/bench_nullmode.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_nullmode.txt
+grep -q "allocs=0" /tmp/bench_nullmode.txt
 
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
@@ -437,8 +378,38 @@ fi
 # single-core taskset would timeslice them. The binary pins its own threads
 # topology-aware (main -> first allowed cpu, RX -> second); the classic
 # per-message arm runs on the pinned main thread (deterministic, as before).
-"$HFT_BIN" --sample data/tests/sample-mini.itch --runs 30 --warmup 5 --output-format json | tee /tmp/bench_results.json
+#
+# R17 GATE REORDER (ROADMAP3 §3.1): the kbench health line runs FIRST —
+# a host whose fold512_r 1t < 29.0 GB/s is a noisy draw per the R12
+# protocol, and the 30-run statistical gate firing on it wastes ~9
+# minutes then fails the shard on noise (run 37235246028 shard 19:
+# stddev 4.76 > 2.5, CV 106% > 25% on a uniformly-low 8370C the kbench
+# line had already disqualified). On such hosts: run the gate 5x
+# REPORT-ONLY (artifacts stay uniform for the aggregator), print the
+# DISCARD banner, and exit 0. Row absent (no fold512 — non-Intel
+# silicon): cannot judge, keep the enforcing behavior. The constraints
+# stay ENFORCED on healthy draws — that is when they are signal (they
+# caught real variance on record attempts).
+GATE_RUNS=30
+GATE_MODE="ENFORCED"
+KBENCH_1T=$(grep -m1 -oE 'KBENCH mode=fold512_r threads=1 cpu=[0-9]+ pinned=true gb_s=[0-9.]+' /tmp/kbench.txt 2>/dev/null | grep -oE 'gb_s=[0-9.]+' | cut -d= -f2 || true)
+if [ -n "$KBENCH_1T" ]; then
+  KBENCH_OK=$(python3 -c "print(1 if float('$KBENCH_1T') >= 29.0 else 0)")
+  if [ "$KBENCH_OK" != "1" ]; then
+    GATE_RUNS=5
+    GATE_MODE="REPORT-ONLY"
+    echo "SECTION16_DISCARD kbench_fold512_r_1t=${KBENCH_1T} < 29.0 — noisy-host protocol (R12); statistical gate report-only, shard exits clean"
+  fi
+else
+  echo "SECTION16_KBENCH_UNAVAILABLE — fold512_r 1t row absent; gate stays enforced (fail-safe)"
+fi
+"$HFT_BIN" --sample data/tests/sample-mini.itch --runs "$GATE_RUNS" --warmup 5 --output-format json | tee /tmp/bench_results.json
 grep -q "median_cycles" /tmp/bench_results.json
+if [ "$GATE_MODE" != "ENFORCED" ]; then
+  echo "SECTION16_REPORT_ONLY (${GATE_RUNS} runs on a discarded draw) — constraints skipped per the R12 noisy-host protocol"
+  echo "=== ALL CHECKS PASSED SUCCESSFULLY (draw discarded, report-only) ==="
+  exit 0
+fi
 python3 - <<'PYEOF'
 import json, sys
 with open('/tmp/bench_results.json') as f:

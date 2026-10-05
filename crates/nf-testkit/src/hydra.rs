@@ -1667,9 +1667,13 @@ pub struct HydraFabric {
     /// submitting sink and every worker read THIS flag, so one run never
     /// mixes formats.
     pub desc8: bool,
-    /// R16b: the shared rxdesc state (the array-driven submission path —
-    /// `HFT_RXDESC=0` is the rollback, CI arm 11w; None falls back to the
-    /// per-lane descriptor rings). Per-run constant, like `desc8`.
+    /// R16b/R17: the shared rxdesc state (the array-driven submission
+    /// path — `HFT_RXDESC=1` ARMS it, CI arm 11w; None (the default) is
+    /// the per-lane descriptor rings). R17 ruling (senior roadmaps 1–3,
+    /// unanimous): the fleet priced rxdesc at −10…−21% vs the ring across
+    /// both silicon classes (draws 10–15; residue supply-coupled), so the
+    /// sustained default is the RING + distinct placement; rxdesc stays
+    /// merged as the armed attribution arm. Per-run constant, like `desc8`.
     pub rxdesc: Option<Arc<RxdescState>>,
 }
 
@@ -1693,9 +1697,13 @@ impl HydraFabric {
         // workers must agree; the env is read once, here, outside every
         // window). Default: compact Desc8 ON.
         let desc8 = std::env::var("HFT_DESC8").as_deref() != Ok("0");
-        // R16b: the array-driven submission path (requires desc8 — the
-        // HFT_DESC8=0 rollback implies the pre-R12 ring world).
-        let rxdesc = desc8 && std::env::var("HFT_RXDESC").as_deref() != Ok("0");
+        // R16b/R17: the array-driven submission path (requires desc8 — the
+        // HFT_DESC8=0 rollback implies the pre-R12 ring world). R17: the
+        // default is the RING (the fleet verdict — draws 10–15 priced the
+        // arrays at −10…−21% on both classes, supply-coupled residue);
+        // `HFT_RXDESC=1` arms the arrays (CI arm 11w, the attribution
+        // instrument).
+        let rxdesc = desc8 && std::env::var("HFT_RXDESC").as_deref() == Ok("1");
         // R16e: the RX Desc Diet — the draw-11 worker-eval fix. The default
         // IS the diet; `HFT_RXDIET=0` is the rollback (CI arm 11x — the
         // pre-diet rxdesc worker verbatim). Read once here, outside every
