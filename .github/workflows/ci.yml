@@ -222,6 +222,7 @@ jobs:
               shard_num_file = os.path.join(sdir, 'shard_num.txt')
               cpu_file = os.path.join(sdir, 'cpu_name.txt')
               bench_hydra = os.path.join(sdir, 'bench_hydra.txt')
+              bench_results = os.path.join(sdir, 'bench_results.json')
               kbench_file = os.path.join(sdir, 'kbench.txt')
 
               shard_val = os.path.basename(sdir).replace('shard-result-', '')
@@ -233,6 +234,28 @@ jobs:
               if os.path.isfile(cpu_file):
                   with open(cpu_file, 'r', errors='ignore') as f:
                       cpu_val = f.read().strip() or cpu_val
+
+              ingest_val = "N/A"
+              if os.path.isfile(bench_results):
+                  try:
+                      import json
+                      with open(bench_results, 'r', errors='ignore') as f:
+                          bdata = json.load(f)
+                          if 'span_rate_msg_per_sec' in bdata:
+                              ingest_val = f"{int(bdata['span_rate_msg_per_sec']):,}"
+                  except Exception:
+                      pass
+              if ingest_val == "N/A":
+                  for fname in os.listdir(sdir):
+                      if fname.startswith('draw-shard') and fname.endswith('.log'):
+                          with open(os.path.join(sdir, fname), 'r', errors='ignore') as f:
+                              for line in f:
+                                  m = re.search(r'"span_rate_msg_per_sec":\s*(\d+)', line)
+                                  if m:
+                                      ingest_val = f"{int(m.group(1)):,}"
+                                      break
+                          if ingest_val != "N/A":
+                              break
 
               rate_val = "N/A"
               if os.path.isfile(bench_hydra):
@@ -259,6 +282,7 @@ jobs:
               hits.append({
                   'shard': shard_val,
                   'cpu': cpu_val,
+                  'ingest': ingest_val,
                   'rate': rate_val,
                   'kbench': kbench_val,
                   'parity': '0x881639cead506f25 (BIT-EXACT)',
@@ -268,10 +292,10 @@ jobs:
           with open(step_summary, 'a') as out:
               out.write("## 🚀 Silicon Target Acquisition & Benchmark Scoreboard (80-Shard Fleet)\n\n")
               if hits:
-                  out.write("| Draw | Shard | Host Silicon | Sustained Full-Verify (msg/s) | kbench fold512_r 1t | Bit Parity | Allocations |\n")
-                  out.write("| :---: | :---: | :--- | :---: | :---: | :---: | :---: |\n")
+                  out.write("| Draw | Shard | Host Silicon | Pure Ingest Front A (msg/s) | Sustained Full-Verify (msg/s) | kbench fold512_r 1t | Bit Parity | Allocations |\n")
+                  out.write("| :---: | :---: | :--- | :---: | :---: | :---: | :---: | :---: |\n")
                   for idx, h in enumerate(hits, 1):
-                      out.write(f"| **#{idx}** | Shard {h['shard']} | `{h['cpu']}` | **{h['rate']}** | {h['kbench']} | `{h['parity']}` | `{h['allocs']}` |\n")
+                      out.write(f"| **#{idx}** | Shard {h['shard']} | `{h['cpu']}` | **{h['ingest']}** | **{h['rate']}** | {h['kbench']} | `{h['parity']}` | `{h['allocs']}` |\n")
                   out.write(f"\n✅ **Target hits acquired:** {len(hits)} shards landed on certified Xeon silicon.\n")
               else:
                   out.write("⚠️ **No shards acquired target silicon (8573C / 8370C) across all 80 shards.**\n")
