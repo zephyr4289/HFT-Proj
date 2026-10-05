@@ -1033,6 +1033,66 @@ recover a −34% deficit. The v2 note is recorded as closed-with-F-1: the
 fundamental added-read-stream cost is the failure mode, not the record
 width.
 
+**Draw 23 — THE 11rb FIRST READING, ON TWO NOISY HOSTS (run 37292866128,
+commit 616584c — the F-2 stack's first fleet draw; Wave-1 shards 2/6
+uploaded, BOTH 8370C: kbench `fold512_r` 1t = 26.96/24.78, both
+SECTION16_DISCARD'd at 27.26/25.43 — the R12 noisy-host class, 0/2
+healthy readings; battery CLEAN on both, I-7 holds through its third
+fleet draw, every gate BIT-EXACT, allocs=0, rx_fixes=0).** The
+consolidated scoreboard medians for this draw (sustained ~958M, default
+Front A ~2.0-2.2B) sit far under draw 22's healthy trio — that is the
+HOST LOTTERY, not a code regression: an 8370C-only draw prices the
+whole battery at the weak-host class, exactly as the draw-19-era host
+drift taught (11b 935.7M/958.4M is the class's own band).
+
+**THE 11rb FIRST READING — THE PREVIEW IS MASSIVE ON BOTH HOSTS:**
+
+```text
+                      default Front A      rxbuild Front A     premium
+shard 2 (kbench 26.96)  2,224,675,764       4,548,510,952     +104.5%
+                       @ 1.26 cyc/msg     @ 0.61 cyc/msg
+shard 6 (kbench 24.78)  2,040,363,664       4,454,621,508     +118.3%
+                       @ 1.37 cyc/msg     @ 0.63 cyc/msg
+toolchain bound         the battery is musl, the arm is gnu — but the
+                       classic arm runs in BOTH (rxbuild does not touch
+                       it): gnu ≈ musl within ~2% on both shards → the
+                       premium is not a toolchain artifact
+the headline            0.61-0.63 cyc/msg on the WEAK host class BEATS
+                       the healthy class's best-ever default denominator
+                       (0.675, draw 21) — the weak host has the larger
+                       RX-share to remove, and removing it more than
+                       halves the whole denominator (Amdahl-consistent)
+sustained (armed)       954.2M / 976.5M vs own-shard 11b
+                       935.7M / 958.4M = +2.0% / +1.9% — NO penalty on
+                       the sustained shape (the RX is parallel on its
+                       own core; the small gain is the patch-budget
+                       headroom coming back)
+patch law               span patches=153,972 = 7 × 21,996,
+                       last_pass=21,996=frames on BOTH — HOLDS; sustained
+                       last_pass 21,996/21,932 (shard 6's −64 = the 5s
+                       window cutting the final pass mid-flight — the
+                       documented flush-lag artifact class, not a
+                       violation)
+RX prod_ms (span)       0.8 / 0.7 ms — the RX's measured production cost
+                       on the span arm is now LITERALLY rounding error;
+                       the mechanism works exactly as designed
+verdicts                BIT-EXACT 0x881639cead506f25, allocs=0,
+                       rx_fixes=0, R8 pure-ingest PASS at 4.55B/4.45B —
+                       the R16 5B gate is in sight on the WEAK class
+```
+
+**The draw-23 tally: 0/3 healthy readings — the decision CANNOT open on
+this draw.** Both previews are positive at +104.5/+118.3% (the bar is
++15%), sign-unanimous, mechanism-verified, and the local A/B's
++52…+62% under-prices what the fleet shows — but the protocol is the
+protocol: the default-flip needs ≥ +15% on ≥ 3 healthy draws, and this
+draw had none. The fish continues. The 8370C preview also sharpens the
+transfer question: the healthy host's default denominator (0.675) has a
+SMALLER RX-share than the weak host's (1.26-1.37), so the healthy
+premium will be smaller than +104% — but the ROADMAP1 §6-I1 budget
+(Front A 4.8-5.5B on 8573C ≈ +40…+60% over 3.4B) needs only the
+mechanism to transfer, not the weak-host multiple.
+
 ## 10. I-7 — the prepatch-race hardening round (SHIPPED — this revision)
 
 The three-strike class (R9's +39, R12's 11j −47,297, draw 19's +35 on a
@@ -1316,3 +1376,10 @@ structure is clean. Expected per ROADMAP1 §6-I1's budget table: RX
 0.20-0.30 → ~0.03 cyc/msg, Front A 4.8-5.5B on 8573C-class draws.
 Kill/flip rule per the CHECKLIST: ≥ +15% healthy Front A over ≥ 3 draws
 → the default-flip protocol; short of that → the kill.
+
+**FIRST FLEET READING (draw 23, §9's entry): the preview is massive on
+2/2 noisy 8370C hosts — +104.5%/+118.3% Front A (4.55B/4.45B @
+0.61/0.63 cyc/msg), sustained +2.0%/+1.9% with the lever armed, patch
+law holding, RX span prod_ms at 0.8/0.7 ms, BIT-EXACT, allocs=0.** The
+decision tally opens only on healthy draws (0/3 so far) — the fish
+continues until three 8573C-class readings land.
