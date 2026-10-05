@@ -504,17 +504,15 @@ HFT_ENDPIPE=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee
 grep -q "HYDRA_BITPARITY.*-> BIT-EXACT" /tmp/bench_endpipe.txt
 grep -q "allocs=0" /tmp/bench_endpipe.txt
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_endpipe.txt
-
-# R19 Priority 2 (MLP prefetch deepening, the directive §4.2): the lead
-# sweep — 8 and 12 spans ahead of the quad's reach (the 8-12 span window;
-# HFT_PF_LINES=0 disarms the spray entirely for the no-spray control).
-# Attribution telemetry only (the verdict lines above are the gate).
-HFT_ENDPIPE=1 HFT_PF_AHEAD=8 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_endpipe_pf8.txt
-grep -q "HYDRA_BITPARITY.*-> BIT-EXACT" /tmp/bench_endpipe_pf8.txt
-grep -q "allocs=0" /tmp/bench_endpipe_pf8.txt
-HFT_ENDPIPE=1 HFT_PF_AHEAD=12 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_endpipe_pf12.txt
-grep -q "HYDRA_BITPARITY.*-> BIT-EXACT" /tmp/bench_endpipe_pf12.txt
-grep -q "allocs=0" /tmp/bench_endpipe_pf12.txt
+# R19 ROUND 2 (the decomposition, after round 1's fleet refutation —
+# docs/31 §8): ENDPIPE sustained -14.5..-21.2% (median -16.7%) across 7
+# draws / 2 silicon classes vs 11b, and the deepened leads were
+# monotonically worse (853 -> 798 -> 792 on shard 42; the pf8/pf12 sweep
+# sub-runs are retired). This control runs the quad ALONE (spray off) —
+# HFT_PF_LINES=0 prices the restored spray's share of the regression.
+HFT_ENDPIPE=1 HFT_PF_LINES=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_endpipe_nospray.txt
+grep -q "HYDRA_BITPARITY.*-> BIT-EXACT" /tmp/bench_endpipe_nospray.txt
+grep -q "allocs=0" /tmp/bench_endpipe_nospray.txt
 
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit

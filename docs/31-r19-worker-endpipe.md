@@ -141,12 +141,88 @@ must-be-ordered rows (r vs noend) inverting between runs.
 3. The fleet decides: CI arm `11ep` (bit-exact + allocs=0 gated per
    draw) + the pf sweep sub-runs (HFT_PF_AHEAD=8/12).
 
-## 7. Open items / next steps
+## 7. Round 1 fleet verdict (run 37371810788 — 63 certified shards)
 
-* The 11ep fleet verdict across ≥ 3 healthy draws (the claim protocol).
-* If the ending-only ratio certifies but the fabric is neutral: price
-  the spray share separately (HFT_PF_LINES=0 vs default inside the arm)
-  — the R12 demotion fix may carry its own (separable) win.
-* If the quad is fleet-neutral on strong draws: the residue is
-  supply-coupled (the rxdesc diet precedent) — the next lever is
-  Engineer 3's descriptor packing (HFT_DESC_WIDE), not the ending.
+**The lever is REFUTED on the fabric.** Draw-adjusted sustained (11ep vs
+11b, same shard, back-to-back arms):
+
+| Shard | class (clock) | 11b default | ENDPIPE | Δ |
+|---|---|---|---|---|
+| 16 | 8370C (2.79 GHz) | 1049M | 835M | -20.4% |
+| 42 | 8370C (2.79 GHz) | 1024M | 853M | -16.7% |
+| 64 | 8370C | 1003M | 858M | -14.5% |
+| 67 | 8370C | 1018M | 840M | -17.5% |
+| 70 | 8370C | 989M | 779M | -21.2% |
+| 65 | 8573C | 1239M | 1043M | -15.8% |
+| 80 | 8573C | 1254M | 1061M | -15.4% |
+
+Median **-16.7%** (range -14.5..-21.2) across 2 silicon classes — 5x
+beyond the ±3.4% arm-position noise floor. Both frozen contracts held on
+every draw: `HYDRA_BITPARITY == 0x881639cead506f25` bit-exact,
+`ALLOC_DELTA == 0`. The kbench rows on the healthy draw: `end16p/end16s
+= 127.14/133.07 = 0.955` (the ROADMAP's own ≥ 1.5 build rule fires the
+kill), `r_quad/r = 29.41/31.07 = 0.947`. The pf sweep: deeper lead is
+monotonically worse (853 → 798 → 792 on shard 42; res_waits appear at
+lead 8+ — 1.4K-21K waits vs 0).
+
+### 7.1 The mechanism (why the modeled win inverted)
+
+The workers are ~99% busy in BOTH arms (eval_ms ≈ 4.95s of 5.0s), but
+per-span cost rose 91.9 → 118 ns (+28%) on shard 42. The modeled
+~45-50 cyc/span serial ending blob does NOT exist as *hideable* latency
+in the serial drain: the OoO engine already overlaps span k+1's fold
+with span k's ending (the end16s row proves it — the "serial" ending
+loop runs at ~28 cyc/span throughput, 2.3x below its ~50-cyc critical
+path, i.e. the machine pipelines it on its own). The drain's per-span
+structure (small register footprint, one fold loop + one ending in
+flight, one sequential load stream) is exactly what the OoO window
+wants; the quad's 4-wide state (8 zmm fold states + 4 ending sets +
+grouped emission) adds pressure the wide core pays for without latency
+to hide — a -5.3% kernel-level penalty amplified to -17% by the
+supply-coupled real mix. This is the R10 pair's historical neutrality,
+re-priced in the R17-era worker-bound regime where kernel-level losses
+now pass through to the fabric.
+
+### 7.2 The R12 spray finding, re-priced
+
+The restored per-group spray cannot be net-positive on this corpus: the
+default arm (quad + spray, lead 6) already loses 16.7%, and every
+deepening (8, 12) loses more. With the R9-era aliasing + the hardware
+streamer covering the sequential real-mix layout, the spray hints now
+cost issue slots and L1/L2 pressure without covering exposed latency —
+i.e. the R12 "demotion" was accidentally the right economics on the
+current stack (the PfCfg knobs are effectively vestigial on the ring
+path). Round 2's `HFT_PF_LINES=0` control prices the spray's exact
+share of the -16.7%.
+
+## 8. Round 2 (the decomposition) + the standing verdict
+
+Round 2 (the spray-off control) prices the quad-alone share; the arm's
+sub-run matrix after retirement of the pf sweep: (a) default ENDPIPE
+(quad + spray) — the repeated cross-draw anchor, (b) `HFT_PF_LINES=0`
+(quad alone). Whatever the split, the standing verdict on the primary
+lever is already fixed by round 1:
+
+* **The ENDPIPE quad does not ship as a default.** The lever's premise
+  (a hideable 26% serial ending blob) is measured false on the
+  production drain — the OoO engine already hides the endings; the
+  explicit 4-wide pipeline only adds register pressure. The machinery
+  stays merged as the armed attribution arm (the eval_pair/eval2/tri
+  precedent: `HFT_ENDPIPE=1`, rollback default-off, 11ep priced per
+  draw) — negative machinery with a clean differential is cheap to
+  keep and the knob documents itself.
+* **The kbench rows stay** (they killed the lever honestly and will
+  price any future ending-side idea: end16s IS the ending's true
+  throughput floor, ~133 GB/s on the healthy 8573C draw).
+* **The R12 spray demotion is documented, not "fixed"**: the finding
+  stands (the spray has been dead since R12), and the fleet data says
+  restoring it is net-negative on the current stack — the PfCfg doc's
+  per-span design description is historical, not live, on the ring
+  path.
+* **The 2B program impact** (the honest arithmetic): with the ending
+  lever refuted, the worker side has no remaining hideable-latency
+  headroom by software pipelining; the sustained path to 2B runs
+  through Route K (kernel density — the R16a/R17t programs) and the
+  main-side levers (Engineer 1's ingest scan, Engineer 3's descriptor
+  packing), not the ending. A negative result with full attribution —
+  exactly what the challenge's scoring section says counts.
