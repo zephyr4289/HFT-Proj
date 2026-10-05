@@ -722,3 +722,96 @@ Verdicts (two draws in; the law wants three):
    job, the data publishes anyway, and no gate change is warranted
    without a roadmap mandate (R3 §3.1's reorder is in; CV relaxation
    was never on the table).
+
+**Draw 18 (8573C healthy ×2 — a DOUBLE-HEADER, run 37270501728, Wave-1
+shards 1 and 10; commit 1ed07cf — the re-aimed siblings-watermark bisect
+aboard).** Both shards healthy 8573C: shard 1 kbench `fold512_r` 1t =
+**34.77** GB/s (the healthiest host ever drawn — record-class), 2cpu_distinct
+69.80, THP granted; shard 10 = **34.64** / 67.19. All arms BIT-EXACT
+`0x881639cead506f25`, allocs=0; D1 M1-M17 all PASS on both. Shard 1 went
+RED on the r8 pure-ingest gate (1.781B < 2.0B — a bimodal-RX-phase miss,
+runs 1.25-2.87B with run-30 at 2.87B) AFTER the full battery ran; counted
+per R2 §8 (the draw-17 precedent — constraint noise never blocks the push).
+
+| arm | draw 16 | draw 17 | draw 18a | draw 18b | 4-draw median |
+|---|---|---|---|---|---|
+| 11b ring+distinct | 992.4M | 1,049.6M | **1,239.1M** | 1,142.9M | 1,096.2M |
+| 11k ring+siblings | +6.6% | +0.6% | −0.6% | +3.2% | **+1.9% — wobble, NO FLIP** |
+| 11u batch 64/256 | +4.6% | +0.8% | −0.1% | +0.8% | +0.8% — noise |
+| 11v dfold | +5.5% | +1.4% | −0.0% | +1.5% | +1.5% — **record-class case CLOSED** |
+| 11w rxdesc armed | −20.2% | −22.9% | −21.9% | −20.3% | **−21.1% (7th/8th straight)** |
+| 11e prepatch off | −1.0% | −2.3% | −2.5% | −3.1% | −2.4% — armed confirmed 4/4 |
+| 11wm wm8192 vs 11k | — | (distinct +0.4%) | **−0.4%** | **−0.7%** | **REFUTED under siblings** |
+| 11z null-mode | 1,306.3M | 1,345.3M | 1,510.2M | 1,458.9M | floor replicates ×3/×4 |
+
+Verdicts (the ≥3-draw law is satisfied on every open axis — **Phase 0
+closes**):
+
+1. **NEW FLEET BEST 11b: 1,239,070,083 (draw 18a) — ABOVE the standing
+   record 1,234,801,472 (+0.35%)**, on the DEFAULT ring+distinct stack,
+   BIT-EXACT, allocs=0, 5.00 s, crc_demand 34.26 GB/s. The P0-10
+   record-class stage gate (≥1.23B) is MET. Ledger fact, not a claim —
+   the claim class is pre-declared per E-1 before any campaign. The
+   healthy-band median (1.096B) sits under the 1.15B stage-gate hope:
+   kernel-correlated, as physics demands (the 30.4-30.6 band draws
+   992-1,050M; the 34.6-34.8 band 1,143-1,239M).
+2. **The fabric-efficiency invariant holds on the healthiest host ever**:
+   34.26/69.80 = **49.1%** (18b: 31.60/67.19 = 47.0%) — the ~48-49%
+   delivered/2-core-ceiling class is stable across the entire ring era.
+3. **A1 CLOSED (no flip)**: siblings median +1.9%, sign-inconsistent
+   (−0.6%…+6.6%) — distinct stays the default; 11k keeps pricing for
+   free. Draw 16's +6.6% was the 11b position-noise-low, as suspected.
+4. **A3-b REFUTED**: the R12-era deep-saturation assist watermark (8192)
+   does NOT help under siblings (−0.4%/−0.7%, both draws) — the
+   vectorized-watermark refutation extends to the placement where the
+   assist actually runs (~300K chunks live). Do-not-do ledger entry #8
+   amended. **A3-a CLOSED** (batch pacing = +0.8% median, noise). With
+   the record-class gate met, the A3 regression question dissolves —
+   the residue was draw-class, not code.
+5. **dfold's record-class case CLOSED (C4 resolved)**: at kbench
+   34.6-34.8 the row prices −0.0%/+1.5% — neutral-positive, inside the
+   ±3.4% arm noise. No flip (default stays OFF); 11v remains the
+   tripwire. The kernel program's open questions now route entirely
+   through T-1 (`fold512_t`) and the I-1 floor rows.
+6. **P0-7 CLOSED**: the armed prepatch default confirmed on the ring
+   stack — unarmed loses 1.0-3.1% on all four healthy draws.
+7. **rxdesc: −21.1% median over 8 consecutive draws** — C1 vindicated
+   permanently; the ring default's dividend is one of the most
+   replicated facts in the ledger.
+8. **Front A**: 18b pure ingest **3,233,997,800 PASS** at 0.711 cyc/msg
+   span-median (the best R17-era denominator; draws 16/17: 0.889/0.746;
+   the 3.6246B record stands); 18a r8 FAIL 1.781B on a bimodal RX phase
+   — the F-1 warm-start lever (the 5B program) is untouched by the
+   draw-18 data and remains the Phase II centerpiece.
+9. The null floor: busy-worker eval ≈ **17.6/18.1 cyc/span** on
+   18a/18b (null sustained 1,510.2M/1,458.9M; margins +21.9%/+27.7% over
+   11b) — the third and fourth replications of the instrument; Route R
+   stays dead, the worker program owns the gap.
+
+**The draw-18 push (this revision): Phase I instruments + the T-1 kill
+test ship with the draw-19 fish.** kbench gains four 1t rows (all on the
+packed corpus, no fabric changes, no CI-arm changes — they ride arm 11c):
+`fold512_noend` (ending stubbed to a state sum — the ending-stack diet,
+priced per draw), `fold512_pre` (the worker's ahead-of-cursor spray
+shape; the roadmap's `fold512_nopre` resolved as the r-vs-pre pair — the
+kbench baseline never carried a spray to turn off), `fold512_supply`
+(the SAME reflect kernel over a ~14.3 MB L3-resident working set — each
+draw's actual streaming ceiling for 1.4 KB bodies, the 2B supply gate's
+gauge per D-1), and **`fold512_t` — the Route T kill test** (ROADMAP2
+§5.2): the transposed-arena twin, `transpose_arena_slot` +
+`fold_word_pairs_t` (the no-unpck loop, p5 census 6→4) +
+`span_fold_eval_r_t` (the ending reads the ORIGINAL wire body — hazard
+#1's ship-first variant), pinned by `t_transpose_arena_parity` (the
+exhaustive differential battery) + `t_transpose_arena_public_api` (the
+span-class battery). The sink equality with `fold512_r` prints on every
+run — the structural proof. **Decision rule: ≥ +8% at 1t on a healthy
+draw builds Route T; < +8% kills it and the kernel program ends with a
+measurement.** Local preview on the Granite Rapids sandbox (27.56 GB/s
+class — BELOW the healthy line, non-deciding): fold512_t 26.85 vs r
+27.56 (−2.6%, the unpck deletion pays nothing on a latency-bound host —
+exactly the census-vs-latency question the fleet must answer), sink
+BIT-EXACT, all four rows live, 30/30 suites green, clippy clean, local
+hydra smoke BIT-EXACT allocs=0. One `t_rxdesc_parity_matrix` flake
+recorded in a contended first-run suite (passed alone + 3× after) —
+consistent with the docs/25 §5.1 prepatch-race class: **I-7's third
+strike; its priority rises ahead of any record-fishing push.**
