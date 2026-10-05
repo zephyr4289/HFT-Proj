@@ -411,6 +411,41 @@ grep -q "span_rate_msg_per_sec" /tmp/bench_rxbuild_fronta.json
 grep -q "RXBUILD_DIAGNOSTIC" /tmp/bench_rxbuild_fronta.json
 grep -q "enabled=false" /tmp/bench_rxbuild_fronta.json
 
+echo "=== 11sl. R17/F-3: Front A Vectorized Entry-Walk Ladder ARMED (the residual 7.7% lever, round 1) ==="
+# CHECKLIST F-3 / ROADMAP3 §5.2-2: post-F-2 the Front A consumer IS the
+# wall (the RX's span prod_ms collapsed to ~0.5-0.8ms; the entry walk is
+# all that remains), and the section-16 default has NEVER priced the
+# vectorized 8-entry group ladder on Front A — 11k prices it on the
+# SUSTAINED shape only (where the fold dominates and the reading is
+# noise-neutral: -2.8..+1.9% across draws 22-26). The local A/B on
+# Granite Rapids: scalar steady_step 2.42B @ 1.34 cyc/msg vs the armed
+# group path 3.45B @ 0.93 = +43% — the mechanism (the AoS gather's 30+
+# scalar loads per 8-frame group collapse into the ladder8's VPADDQ
+# prefix-sum chain verification + the elig-gated rec path) is the F-3
+# "VPADDQ prefix-sum boundary walk" in the post-F-2 architecture. This
+# arm prices it on FRONT A per draw: (a) a same-toolchain CONTROL
+# sub-run (gnu default, 5 runs) bounding the gnu-vs-musl confound
+# against section 16's 30-run default; (b) the ARMED sub-run
+# (HFT_VEC_LADDER=1, 5 runs). The armed-vs-control span_rate delta on
+# the SAME draw is the lever's price. LADDER_DIAGNOSTIC carries
+# vectorized=true/false per sub-run (the flip-validation lesson: never
+# price an arm on faith). Decision rule (the F-2 law): >= +15% Front A
+# over >= 3 healthy 8573C draws -> the default-flip protocol for the
+# span arm's consumer; short of that -> the kill. The RXBUILD stack
+# stays the default throughout (enabled=true greps pin it).
+cargo run --release -p nf-engine --bin hft_bench -- --sample data/tests/sample-mini.itch --runs 5 --warmup 2 --output-format json 2>&1 | tee /tmp/bench_f3_control.json
+grep -q "span_rate_msg_per_sec" /tmp/bench_f3_control.json
+grep -q "LADDER_DIAGNOSTIC" /tmp/bench_f3_control.json
+grep -q "LADDER_DIAGNOSTIC span: vectorized=false" /tmp/bench_f3_control.json
+grep -q "RXBUILD_DIAGNOSTIC" /tmp/bench_f3_control.json
+grep -q "enabled=true" /tmp/bench_f3_control.json
+HFT_VEC_LADDER=1 cargo run --release -p nf-engine --bin hft_bench -- --sample data/tests/sample-mini.itch --runs 5 --warmup 2 --output-format json 2>&1 | tee /tmp/bench_f3_armed.json
+grep -q "span_rate_msg_per_sec" /tmp/bench_f3_armed.json
+grep -q "LADDER_DIAGNOSTIC" /tmp/bench_f3_armed.json
+grep -q "LADDER_DIAGNOSTIC span: vectorized=true" /tmp/bench_f3_armed.json
+grep -q "RXBUILD_DIAGNOSTIC" /tmp/bench_f3_armed.json
+grep -q "enabled=true" /tmp/bench_f3_armed.json
+
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)

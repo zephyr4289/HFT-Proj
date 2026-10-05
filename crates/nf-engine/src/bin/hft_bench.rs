@@ -371,6 +371,15 @@ fn main() {
     // attacks) + the warm-start verdict line (fixes/last_pass_fixes; the
     // CI arm greps RXWARM_DIAGNOSTIC).
     piped.diag_summary("span");
+    // F-3 (I-6): the span arm's entry-walk telemetry — which ladder shape
+    // the consumer ran (HFT_VEC_LADDER=1 arms the vectorized 8-entry group
+    // path + the RX's elig baking; unset is the scalar steady_step). The
+    // 11sl arm greps this line to prove the lever live (the flip-validation
+    // lesson: never price an arm on faith — the diagnostic says armed).
+    eprintln!(
+        "LADDER_DIAGNOSTIC span: vectorized={} (F-3 entry walk; HFT_VEC_LADDER=1 arms the 8-entry group path — the Front A consumer IS the post-F-2 wall)",
+        nf_testkit::soa::ladder8_best().is_some()
+    );
 
     cs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     scs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));

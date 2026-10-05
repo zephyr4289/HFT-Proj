@@ -1545,3 +1545,78 @@ standing records were set on the classic default; new record claims
 proceed through the R12 ≥3-healthy-draw law on the NEW default (draw
 25's armed previews: sustained 1,299.3M, Front A 4.718B — the numbers
 the next record-class draw hunts).
+
+## 13. F-3/F-4/F-5 — the residual +7.7% program (draw 26's ledger)
+
+Draw 26 re-based the program: the default IS rxbuild (sustained 1,141.4M
+on the weakest healthy band, Front A 4,642,648,016 @ 0.4954 cyc/msg =
+93% of the 5B target). The residual levers, in budget order:
+
+**F-3 ROUND 1 — the Front A vectorized entry-walk ladder (arm 11sl).**
+The roadmap's original premise ("frame boundaries from 2-byte length
+prefixes via vector prefix-sum") described an architecture that no
+longer exists at runtime: the span path's message boundaries are
+construction-baked into the triples and the R8 span emission is
+O(1)/frame. What the F-2 flip left as the Front A wall is the
+CONSUMER's entry walk — and the I-6 question ("is the entry walk still
+material post-F1/F2?") is answered by architecture alone: the RX's span
+prod_ms collapsed to 0.5-0.8ms across draws 23-26 (the count-only walk
+is ~6x under the consumer), so the consumer's per-frame ladder IS the
+denominator. The live form of the VPADDQ lever already exists, shipped
+and suite-pinned since R12c: the 8-entry group path (`ladder8` — the
+chain verification `_mm512_add_epi64(vf, vn) == vfnx`, the mask-add
+even-lane sum for the watermark advance, the elig-gated rec buffering)
+replaces the scalar `steady_step` gather's 30+ loads per group. The
+section-16 default has NEVER priced it on Front A: 11k prices the
+SUSTAINED shape only, where the fold dominates and the reading is
+noise-neutral (−2.8…+1.9%, draws 22-26). The local A/B on this
+session's Granite Rapids box: scalar 2.42B @ 1.34 cyc/msg → armed
+3.45B @ 0.93 = **+43%**, the armed band tight (3.40-3.59B) vs the
+scalar band wide (1.95-2.49B) — the same removes-the-slow-mode shape
+F-2 showed. Arm 11sl prices it per draw with BOTH sub-runs aboard (the
+gnu CONTROL bounding the toolchain confound against section 16's
+musl/gnu default, and the HFT_VEC_LADDER=1 ARMED run), the
+LADDER_DIAGNOSTIC line proving the path live per sub-run (the
+flip-validation lesson: never price an arm on faith). Decision rule
+(the F-2 law): ≥ +15% Front A over ≥ 3 healthy 8573C draws → the
+default-flip protocol for the span arm's consumer (the sustained
+default stays priced by 11k separately — the shapes disagree, so the
+flip is scoped to the span arm); short of that → the kill. Round 2 —
+the compact construction-built SoA companion (firsts/ns/elig/len
+packed at 16B/frame, 2 gather lines per group vs the AoS master's 6,
+zero RX-side cost post-F-2: the R12b refutation's premise was the
+RX-published per-pass sidecar, and the master's construction-built +
+boundary-patched pattern dissolves it) — is HELD until round 1's fleet
+pricing lands; the budget calculus (0.036 cyc/msg to the 5B claim)
+does not require it if round 1 transfers.
+
+**F-4 — the mailbox depth arm NBUF=32 (HFT_NBUF, default 16).** At
+Front A rates the publication cadence rises ~4.3x over the sustained
+shape (22.5 publications/pass at a 110us pass period vs a 400us one);
+the 16-deep mailbox gives the RX only ~0.71 passes of runahead and the
+local box already shows bufwait laps on the RX side. The lever:
+runtime NBUF ∈ {16, 32} (arrays sized at 32, mask/shift precomputed at
+construction, the I-7 turn-event ring resized to 2×NBUF so the
+overwrite-guard window keeps its 2x-lag headroom). Default stays 16
+(the R8 phase-3 measured shape); the arm prices 32 on the Front A
+shape where the cadence theory points. Rollback = the default.
+
+**F-5 — reset/auto-advance hygiene for the 2B window (the 1.30B+
+hunt).** The sustained arm's pass boundary is in-window: the consumer
+frees the EOS marker, the RX runs the advance (the synchronous blob
+tail `reset_prepatched` + the master tail `master_patch_range` at
+usize::MAX), and the consumer's reset_pass WAITS on the whole bake
+before pass k+1's first batch. With the per-publication prepatch
+budget at 64 (the R9c RFO-burst law, tuned for the CLASSIC render
+path's ~24us publication period), the incremental steps absorb only
+~1,408 of the 21,996 patchable sites per pass — the remaining ~20.6k
+blob+master sites land in the boundary tail EVERY pass. The lever: the
+budget rides an env (default 64 = today's law) so the drain-during-
+the-pass shape (1024/publication: 22 pubs × 1024 ≥ 21,996 — the tail
+empties) is priced per draw; the parks telemetry (consumer parks +
+RX eos_parks/bufwait, already always-on) surfaces per-run so the
+"futex park must NEVER fire in the steady window" law is checkable
+from the artifacts. The golden-population assert (count == 505,849)
+sits OUTSIDE the timed window in both benches (verified by reading —
+the assert reads the sink after dt) — measured at zero marginal cost;
+documented, not optimized.
