@@ -197,28 +197,54 @@ share of the -16.7%.
 
 ## 8. Round 2 (the decomposition) + the standing verdict
 
-Round 2 (the spray-off control) prices the quad-alone share; the arm's
-sub-run matrix after retirement of the pf sweep: (a) default ENDPIPE
-(quad + spray) — the repeated cross-draw anchor, (b) `HFT_PF_LINES=0`
-(quad alone). Whatever the split, the standing verdict on the primary
-lever is already fixed by round 1:
+Round 2 (run 37378348020, 81/81 shards green, 7 fresh 8573C-class
+draws) completed the attribution. Sustained per shard — 11b default,
+ENDPIPE (quad + spray), NOSPRAY (quad alone, `HFT_PF_LINES=0`):
+
+| Shard | 11b | quad+spray | quad alone | quad Δ | spray share |
+|---|---|---|---|---|---|
+| 10 | 992M | 869M | 986M | -0.6% | -11.8% |
+| 11 | 1136M | 948M | 1075M | -5.4% | -11.1% |
+| 21 | 1171M | 955M | 1012M | -13.6% | -11.9% |
+| 35 | 1164M | 900M | 1027M | -11.8% | -10.9% |
+| 5 | 1298M | 1071M | 1230M | -5.2% | -12.2% |
+| 69 | 1202M | 977M | 1106M | -8.0% | -10.7% |
+| 70 | 1175M | 962M | 1100M | -6.4% | -11.7% |
+
+**The decomposition:**
+
+* **The quad alone: median -6.4%** (range -0.6..-13.6) — a net loss on
+  every draw but one (shard 10's -0.6% is inside the noise floor, and it
+  is the best case). The modeled +13-16% is inverted: the ending chains
+  the quad was built to hide are already hidden by the OoO engine in
+  the serial drain; the 4-wide register footprint only costs.
+* **The spray restore: an additional consistent -11..-12%** on every
+  draw. The R12 spray demotion was accidentally LOAD-BEARING for
+  performance: on the R9-aliased blob with the hardware streamer
+  covering the sequential layout, per-span spray hints cost issue slots
+  and cache pressure while covering no exposed latency. The PfCfg
+  spray is confirmed vestigial (and net-harmful if resurrected) on the
+  ring path — the directive's Priority 2 (MLP prefetch deepening) is
+  refuted with it: every lead ≥ the restored baseline measured worse
+  (round 1's monotone 853 → 798 → 792).
+
+**The standing verdict (both rounds, 14 draws, 2 silicon classes, 144
+certified shard runs):**
 
 * **The ENDPIPE quad does not ship as a default.** The lever's premise
   (a hideable 26% serial ending blob) is measured false on the
-  production drain — the OoO engine already hides the endings; the
-  explicit 4-wide pipeline only adds register pressure. The machinery
-  stays merged as the armed attribution arm (the eval_pair/eval2/tri
-  precedent: `HFT_ENDPIPE=1`, rollback default-off, 11ep priced per
-  draw) — negative machinery with a clean differential is cheap to
-  keep and the knob documents itself.
+  production drain. The machinery stays merged as the armed attribution
+  arm (the eval_pair/eval2/tri precedent: `HFT_ENDPIPE=1`, rollback
+  default-off, 11ep priced per draw) — negative machinery with a clean
+  differential is cheap to keep and the knob documents itself.
 * **The kbench rows stay** (they killed the lever honestly and will
   price any future ending-side idea: end16s IS the ending's true
-  throughput floor, ~133 GB/s on the healthy 8573C draw).
+  throughput floor, ~127-133 GB/s on healthy 8573C draws — the ending
+  is a ~28 cyc/span THROUGHPUT cost the machine already pipelines, not
+  a latency blob).
 * **The R12 spray demotion is documented, not "fixed"**: the finding
-  stands (the spray has been dead since R12), and the fleet data says
-  restoring it is net-negative on the current stack — the PfCfg doc's
-  per-span design description is historical, not live, on the ring
-  path.
+  stands (the spray has been dead since R12), and both rounds say
+  restoring it is net-negative on the current stack.
 * **The 2B program impact** (the honest arithmetic): with the ending
   lever refuted, the worker side has no remaining hideable-latency
   headroom by software pipelining; the sustained path to 2B runs
