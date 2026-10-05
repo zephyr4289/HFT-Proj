@@ -815,3 +815,62 @@ hydra smoke BIT-EXACT allocs=0. One `t_rxdesc_parity_matrix` flake
 recorded in a contended first-run suite (passed alone + 3× after) —
 consistent with the docs/25 §5.1 prepatch-race class: **I-7's third
 strike; its priority rises ahead of any record-fishing push.**
+
+**Draw 19 (8573C healthy, run 37276608228, Wave-1 shard 6; commit 8f2e277 —
+the T-1/I-1 instruments' maiden draw).** kbench `fold512_r` 1t = **32.66**
+GB/s, 2cpu_distinct 66.28, THP granted; 11b **1,217,168,189** BIT-EXACT
+allocs=0 (crc_demand 33.66 GB/s → fabric efficiency 50.8% — the band's top
+edge; the kernel-correlation picture holds: the 32.7-kbench class lands
+between the 30.5 and 34.7 bands' numbers exactly as physics demands).
+
+**THE T-1 FIRST HEALTHY-DRAW READING (the Route T kill test):**
+
+```text
+fold512_r        32.66 GB/s   (sink 0xbedb8ba779de450f)
+fold512_t        28.61 GB/s   (sink 0xbedb8ba779de450f — BIT-EXACT)
+                 => −12.4% — decisively under the ≥ +8% build bar,
+                    and under zero. The pre-declared kill rule fires
+                    on its first healthy draw.
+fold512_supply   32.58  (−0.2% — L3 streaming from a 14.3 MB working
+                        set is FREE at 1t on healthy draws: the D-1
+                        supply gate clears with margin on this class)
+fold512_pre      32.22  (−1.3% — the worker's spray shape is nearly
+                        free at kernel level)
+fold512_noend    31.38  (−3.9% — counterintuitive: the ending-stubbed
+                        row SLOWER than the full kernel; flagged for
+                        replication — suspect the state-sum consume
+                        costs more than the vend ending's vector path
+                        on this class, or row noise)
+```
+
+The local preview (−2.6% on the 27.56-class Granite Rapids sandbox) and
+the fleet read (−12.4% on the 32.66-class 8573C) agree in direction:
+**deleting the 2 vpunpck does not pay anywhere measured** — the fold step
+is not p5-census-bound on the runner fleet; the transposed arena's second
+memory stream (the wire-tail reads the ending still performs) and the
+layout change cost more than the 2 shuffle uops save. Route T's expected
+value collapses; per the law the row keeps riding every draw (zero cost)
+and the formal refutation entry lands at ≥3 healthy draws — but the
+build decision is already dead unless replication contradicts by >20
+points. **Consequence (ROADMAP2 §5.2's own rule): the 2B program falls
+to S+residual work with the ~1.6-1.8B honest ceiling** — and the
+endings/supply/residual ladder (C-1/C-2, I-1 rows, Route S kill tests)
+becomes the only kernel-adjacent path left.
+
+**The battery died at 11n — the prepatch race's THIRD fleet strike.**
+Five arms ran (11b 1,217.2M / 11e 1,171.3M −3.8% / 11k 1,178.8M −3.1% /
+11l 1,221.5M +0.4% / 11m 1,183.6M −2.8%), then 11n's sustained phase
+panicked: `hydra sustained pass count divergence: 505,884 vs 505,849`
+(+35 messages) — the docs/25 §5.1 class (submission-side count divergence
+in a sweep arm; the second strike was run 37122364077's 11j at −47,297).
+The crash killed 11r/11s/11t/11u/11v/11w/11wm/11z — the incomplete-sweep
+waste on a HEALTHY draw (E-3's warning, the draw-10 precedent). The same
+family struck locally the same day (the contended-suite
+`t_rxdesc_parity_matrix` flake). **I-7 (the prepatch-race hardening
+round: chaos schedule × forced prepatch × high pass count, the
+batch-parity repro pattern) is PROMOTED to the top code priority, ahead
+of F-1** — the race now costs real draws, and a mid-record strike during
+the 2B campaign would be the scarcest waste of all. Interim verdicts
+from the partial sweep corroborate the closed axes: 11k −3.1% (A1's
+no-flip, the wobble continues downward), 11e −3.8% (P0-7's 5th
+consecutive negative).
