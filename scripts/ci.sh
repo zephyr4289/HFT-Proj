@@ -356,6 +356,33 @@ grep -q "HYDRA_NULL_MODE_DIAGNOSTIC" /tmp/bench_nullmode.txt
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_nullmode.txt
 grep -q "allocs=0" /tmp/bench_nullmode.txt
 
+echo "=== 11wn. R17/F-1: RX Frame-Entry Warm Start ARMED (the Front A 5B lever) ==="
+# CHECKLIST F-1 / ROADMAP2 §6.1: the RX's per-frame entry build is the
+# measured Front A co-wall (prod_ms 58-86%). HFT_RXWARM replaces the slot
+# push + accumulate-loop build with the frame-indexed warm array +
+# check-and-fix (the rxdesc law: the walk re-derives each entry from live
+# facts every pass and the COMPARE is the correctness — zero added store
+# traffic, the R12b sidecar failure mode designed out). DEFAULT OFF (this
+# arm prices it per draw; HFT_RXWARM unset/0 is the rollback — the
+# classic path verbatim). Kill rule (CHECKLIST F-1): rx_warm_fixes > 0
+# persistent, or Front A < +15% healthy — decided on >= 3 draws per the
+# R9c->R9d law, never one. Two sub-runs:
+# (a) the sustained soak — the warm path feeds the full sustained battery
+#     (per-pass bit-parity asserts + ALLOC_DELTA=0) on the same silicon;
+# (b) the Front A pricing — hft_bench's RX-pipelined span arm (the same
+#     binary section 16 runs classically; the warm-vs-default span_rate
+#     delta on the SAME draw is the lever's price). RXWARM_DIAGNOSTIC
+#     carries enabled/fixes/uncovered/last_pass_fixes per run.
+HFT_RXWARM=1 cargo run --release -p nf-engine --bin bench -- --hydra-only 2>&1 | tee /tmp/bench_rxwarm.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_rxwarm.txt
+grep -q "allocs=0" /tmp/bench_rxwarm.txt
+grep -q "RXWARM_DIAGNOSTIC" /tmp/bench_rxwarm.txt
+grep -q "enabled=true" /tmp/bench_rxwarm.txt
+HFT_RXWARM=1 cargo run --release -p nf-engine --bin hft_bench -- --sample data/tests/sample-mini.itch --runs 5 --warmup 2 --output-format json 2>&1 | tee /tmp/bench_rxwarm_fronta.json
+grep -q "span_rate_msg_per_sec" /tmp/bench_rxwarm_fronta.json
+grep -q "RXWARM_DIAGNOSTIC" /tmp/bench_rxwarm_fronta.json
+grep -q "enabled=true" /tmp/bench_rxwarm_fronta.json
+
 echo "=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ==="
 # R-1 Independence Grep Audit
 ! grep -E "nf_arbitrator|nf_protocol" crates/nf-testkit/src/reference.rs || (echo "R-1 violation: reference arbitrator contains forbidden imports" && exit 1)

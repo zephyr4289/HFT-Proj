@@ -74,6 +74,88 @@ struct FrameMeta {
     first_seq: u64,
 }
 
+/// F-1 (HFT_RXWARM): the RX pipeline's frame-entry warm-start emit
+/// context (see `ReplayTransport::poll_warm` and pipeline.rs's RX
+/// thread). Owned by the RX thread for the pipeline's life; `out` is the
+/// mailbox buffer window the VERIFIED entries land in — the store that
+/// REPLACES the classic per-frame slot push plus the accumulate-loop
+/// build (the R12b sidecar's added-store failure mode is designed out:
+/// nothing new crosses a cache line on the steady path).
+pub(crate) struct WarmEmitCtx<'a> {
+    /// The mailbox EntryBuf window for this publication step
+    /// (`buf.entries[acc..]`; at least 256 slots by the accumulate
+    /// loop's shape).
+    pub(crate) out: &'a mut [nf_protocol::packet::FrameEntry<'static>],
+    /// W: the frame-indexed warm array — the last pass's VERIFIED
+    /// entries (the exact `FrameEntry` payload, sess words included).
+    pub(crate) warm: &'a mut [nf_protocol::packet::FrameEntry<'static>],
+    /// The pass-local frame index (restarts at every bake point — the
+    /// schedule replays the same frame sequence every pass).
+    pub(crate) idx: usize,
+    /// Cumulative check-and-fix divergences (the rxdesc-law telemetry).
+    pub(crate) fixes: u64,
+    /// Frames emitted beyond `warm`'s capacity (a schedule that grew past
+    /// its construction size; uncovered frames still publish the
+    /// live-derived entry — the fallback IS the classic semantics).
+    pub(crate) uncovered: u64,
+    /// The current pass's baked session template (the elig bit-7
+    /// compare's reference).
+    pub(crate) sess_lo_tmpl: u64,
+    pub(crate) sess_hi_tmpl: u64,
+    /// Whether the elig byte's steady-ok bit is computed at all (the
+    /// consumer ladder's gate — see pipeline.rs).
+    pub(crate) compute_elig: bool,
+}
+
+/// The warm compare — all ten payload fields (the correspondence proof
+/// that the remembered entry IS this pass's walk fact; padding never
+/// participates).
+#[inline(always)]
+pub(crate) fn warm_entry_neq(
+    a: &nf_protocol::packet::FrameEntry<'_>,
+    b: &nf_protocol::packet::FrameEntry<'_>,
+) -> bool {
+    a.bytes.as_ptr() != b.bytes.as_ptr()
+        || a.bytes.len() != b.bytes.len()
+        || a.blocks.as_ptr() != b.blocks.as_ptr()
+        || a.blocks.len() != b.blocks.len()
+        || a.feed != b.feed
+        || a.memo != b.memo
+        || a.first_seq != b.first_seq
+        || a.sess_lo != b.sess_lo
+        || a.sess_hi != b.sess_hi
+        || a.elig != b.elig
+}
+
+/// F-1: the pass-boundary template rewrite. After every bake point the
+/// blob holds the new session everywhere (the auto-advance's synchronous
+/// tail is the catch-all; the plain reset serves re-bake in full), so the
+/// warm entries' session words and the elig byte's session-derived bit
+/// are rewritten from the fresh template to keep the steady-state
+/// compare clean — and the per-frame check then PROVES the assumption
+/// (a region that somehow escaped the bake diverges the compare and is
+/// fixed + counted, never silently trusted). The static fields are
+/// never rewritten: `poll_warm`'s compare checks them against the walk's
+/// live facts every pass.
+pub(crate) fn warm_rewrite_session(
+    warm: &mut [nf_protocol::packet::FrameEntry<'static>],
+    sess_lo_tmpl: u64,
+    sess_hi_tmpl: u64,
+    compute_elig: bool,
+) {
+    for e in warm.iter_mut() {
+        e.sess_lo = sess_lo_tmpl;
+        e.sess_hi = sess_hi_tmpl;
+        let static_ok = compute_elig
+            && !e.blocks.is_empty()
+            && e.memo
+                == Some(nf_protocol::packet::FrameMemo {
+                    valid_count: e.blocks.len() as u16,
+                });
+        e.elig = (e.elig & 3) | ((static_ok as u8) << 7);
+    }
+}
+
 /// R9: the rendered blob, backed by an anonymous mmap marked
 /// MADV_HUGEPAGE with a 2MB-ALIGNED base. WHY: the verification workers
 /// stream ~7.5MB each over the shared blob — ~1875 4KB pages per worker,
@@ -881,10 +963,73 @@ impl ReplayTransport {
     /// clock compare disappears from the release loop; (b) with
     /// `set_poll_coalesce(k > 1)` the chain advances `k` groups per call —
     /// NAPI-style receipt batching, `now_ns()` = latest released group's vt.
+    /// F-1 (HFT_RXWARM): the number of frames a full pass emits (the
+    /// non-tombstone events of the construction-fixed schedule) — the RX
+    /// pipeline's warm array's exact capacity. Computed once at pipeline
+    /// construction, outside every measured window.
+    pub fn rendered_frame_count(&self) -> usize {
+        self.meta.iter().filter(|m| m.len != 0).count()
+    }
+
     #[inline(always)]
     pub fn poll_clamped(&mut self, batch: &mut FrameBatch, max_vt: Option<u64>) -> usize {
         batch.clear();
+        // F-1: the classic instantiation. The warm context is compile-time
+        // dead at WARM = false — the dummy below never touches memory.
+        let mut dummy = WarmEmitCtx {
+            out: &mut [],
+            warm: &mut [],
+            idx: 0,
+            fixes: 0,
+            uncovered: 0,
+            sess_lo_tmpl: 0,
+            sess_hi_tmpl: 0,
+            compute_elig: false,
+        };
+        self.poll_impl::<false>(batch, &mut dummy, max_vt)
+    }
 
+    /// F-1 (HFT_RXWARM): the warm twin of [`Self::poll_clamped`] — the
+    /// SAME pacing skeleton (single-sourced in `poll_impl`; the pipeline
+    /// parity suite pins the two instantiations to identical observables),
+    /// with the per-frame emit replaced by the warm start: the entry is
+    /// derived IN REGISTERS from the walk's own live facts (the frame
+    /// meta + the frame line's session words — both loaded by the walk
+    /// anyway), COMPARED against the warm array (the check IS the
+    /// correctness — the rxdesc check-and-fix law), fixed in place on
+    /// divergence, and the VERIFIED entry is stored into `ctx.out` — the
+    /// mailbox store that replaces the classic slot push plus the
+    /// accumulate-loop build (the scratch slot round trip is the removed
+    /// cost; zero added store traffic). The legacy batch_event side table
+    /// is not maintained (the pipelined consumer never reads it —
+    /// batch_blocks/batch_memo are the single-threaded harness's paths).
+    ///
+    /// SAFETY-of-lifetime (the EntryBuf contract, pipeline.rs): the
+    /// entries' slices are re-built at `'static` from raw parts pointing
+    /// into this transport's blob and triple store — both outlive the
+    /// pipeline (the RX thread owns this transport until the pipeline's
+    /// Drop joins it) and the entries are never dereferenced after the
+    /// consumer frees the buffer.
+    #[inline]
+    pub(crate) fn poll_warm(&mut self, batch: &mut FrameBatch, ctx: &mut WarmEmitCtx<'_>) -> usize {
+        batch.clear();
+        self.poll_impl::<true>(batch, ctx, None)
+    }
+
+    /// The shared poll skeleton (F-1): the pacing preamble, the event
+    /// walk, the tombstone skip, the session reads and the DLP prefetch
+    /// block are SINGLE-SOURCED for both instantiations; only the per-
+    /// frame EMIT differs (classic: the FrameBatch slot push + the legacy
+    /// batch_event map; warm: the derive + check-and-fix + verified-entry
+    /// store). The const parameter makes every branch compile-time — the
+    /// classic instantiation's codegen is the pre-F-1 codegen.
+    #[inline(always)]
+    fn poll_impl<const WARM: bool>(
+        &mut self,
+        batch: &mut FrameBatch,
+        w: &mut WarmEmitCtx<'_>,
+        max_vt: Option<u64>,
+    ) -> usize {
         let events_len = self.meta.len();
         if self.event_idx >= events_len {
             return 0;
@@ -930,7 +1075,11 @@ impl ReplayTransport {
         }
         let vclock = self.virtual_clock;
 
-        let cap = FrameBatch::capacity();
+        let cap = if WARM {
+            w.out.len().min(FrameBatch::capacity())
+        } else {
+            FrameBatch::capacity()
+        };
         // R8: the per-frame clock compare and the legacy batch_event map are
         // needed only in the exact-pacing mode (coalesce == 1, the
         // conformance/golden/differential configuration). In the coalesced
@@ -940,8 +1089,12 @@ impl ReplayTransport {
         // vts), so the loop bounds by `e` directly.
         let exact_pacing = self.coalesce == 1;
         let limit_evt = if exact_pacing { events_len } else { e };
+        // F-1: the warm emit's frame counter (dead in the classic
+        // instantiation; the classic bounds by batch.len()).
+        let mut emitted = 0usize;
+        let tp = self.triples.as_ptr();
 
-        while self.event_idx < limit_evt && batch.len() < cap {
+        while self.event_idx < limit_evt && (if WARM { emitted } else { batch.len() }) < cap {
             let evt = self.event_idx;
             if exact_pacing && self.vts[evt] > vclock {
                 break;
@@ -960,10 +1113,6 @@ impl ReplayTransport {
             // the invariant honest under mutation-heavy test builds.
             debug_assert!(end <= self.frames.len());
             let frame = unsafe { self.frames.get_unchecked_mut(base..end) };
-            // R8: the session prefix was patched at reset() time — poll's
-            // release loop is a pure slice + push (the 10B copy and its
-            // branch are gone from the hot path).
-            let slot_idx = batch.len();
             // R8: session compare words, read from the frame line this
             // thread already holds (the reset-time bake guarantees the
             // bytes). In pipelined mode the consumer's steady scan then
@@ -977,23 +1126,83 @@ impl ReplayTransport {
                     (fptr.add(2) as *const u64).read_unaligned(),
                 )
             };
-            batch.push_indexed(
-                fptr,
-                m.len,
-                m.feed,
-                m.blk_base,
-                m.blk_count,
-                m.valid,
-                m.first_seq,
-                sess_lo,
-                sess_hi,
-            );
-            // Map batch position back to its event for the legacy
-            // batch_blocks()/batch_memo() side tables (exact-pacing callers
-            // only; the coalesced throughput arms consume the inline slot
-            // index).
-            if exact_pacing {
-                self.batch_event[slot_idx] = evt as u32;
+            if WARM {
+                // F-1: derive the entry in registers from the walk's live
+                // facts — the exact formula of the pipeline's classic
+                // accumulate-loop build (the parity suite pins the two
+                // instantizations together). SAFETY: as poll_warm's doc —
+                // the target bytes outlive the pipeline and are never read
+                // after the consumer frees the buffer.
+                let bytes: &'static [u8] =
+                    unsafe { std::slice::from_raw_parts(fptr, m.len as usize) };
+                let blocks: &'static [(u64, u32, u32)] = if m.blk_count == 0 {
+                    &[]
+                } else {
+                    // SAFETY: slot fields are construction-valid (the same
+                    // contract as the classic build in pipeline.rs).
+                    unsafe {
+                        std::slice::from_raw_parts(
+                            tp.add(m.blk_base as usize),
+                            m.blk_count as usize,
+                        )
+                    }
+                };
+                // R12c: the elig byte's steady-ok bit (see FrameEntry::elig).
+                let elig_ok = (w.compute_elig
+                    && m.blk_count != 0
+                    && m.valid == m.blk_count
+                    && sess_lo == w.sess_lo_tmpl
+                    && sess_hi == w.sess_hi_tmpl) as u8;
+                let e = nf_protocol::packet::FrameEntry {
+                    bytes,
+                    feed: m.feed,
+                    blocks,
+                    memo: (m.blk_count != 0)
+                        .then_some(nf_protocol::packet::FrameMemo { valid_count: m.valid }),
+                    first_seq: m.first_seq,
+                    sess_lo,
+                    sess_hi,
+                    elig: (m.feed & 3) | (elig_ok << 7),
+                };
+                // Check-and-fix (the rxdesc law): the compare IS the
+                // correctness — the remembered entry is only trusted
+                // because the walk's live derivation just proved it.
+                if w.idx < w.warm.len() {
+                    let j = w.idx;
+                    if warm_entry_neq(&w.warm[j], &e) {
+                        w.warm[j] = e;
+                        w.fixes += 1;
+                    }
+                    w.out[emitted] = w.warm[j];
+                } else {
+                    w.out[emitted] = e;
+                    w.uncovered += 1;
+                }
+                w.idx += 1;
+                emitted += 1;
+            } else {
+                // R8: the session prefix was patched at reset() time — poll's
+                // release loop is a pure slice + push (the 10B copy and its
+                // branch are gone from the hot path).
+                let slot_idx = batch.len();
+                batch.push_indexed(
+                    fptr,
+                    m.len,
+                    m.feed,
+                    m.blk_base,
+                    m.blk_count,
+                    m.valid,
+                    m.first_seq,
+                    sess_lo,
+                    sess_hi,
+                );
+                // Map batch position back to its event for the legacy
+                // batch_blocks()/batch_memo() side tables (exact-pacing
+                // callers only; the coalesced throughput arms consume the
+                // inline slot index).
+                if exact_pacing {
+                    self.batch_event[slot_idx] = evt as u32;
+                }
             }
             // R4/R8: DLP warm-up — the blob is append-ordered, so the NEXT
             // event's frame starts exactly at base + len: its first line
@@ -1040,8 +1249,12 @@ impl ReplayTransport {
             }
         }
 
-        self.batch_event_len = batch.len();
-        batch.len()
+        self.batch_event_len = if WARM { 0 } else { batch.len() };
+        if WARM {
+            emitted
+        } else {
+            batch.len()
+        }
     }
 
     /// Q1 indexed ingest: block triples `(seq, start, end)` for the frame at

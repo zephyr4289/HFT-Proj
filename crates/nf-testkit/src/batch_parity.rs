@@ -702,3 +702,140 @@ fn t_i7_prepatch_chaos_sustained_soak() {
         "the soak must check every drained pass (checked {checked})"
     );
 }
+
+/// F-1 (CHECKLIST F-1 / ROADMAP2 §6.1): the fleet-faithful WARM-START
+/// soak — the I-7 chaos schedule (delayed dual-feed, tardy consumer
+/// starts, mid-pass stalls, periodic mid-pass abandons) run with the RX
+/// frame-entry warm start ARMED, against the per-session classic
+/// reference legs. Asserts the three laws the lever lives inside:
+/// (1) every entry of every batch carries THIS pass's session (the
+///     bake's template rewrite is never trusted blind — the warm
+///     compare proves it per frame);
+/// (2) every drained pass's tuple is bit-identical to the classic leg
+///     (the warm path's observables ARE the classic observables);
+/// (3) steady state (pass >= 2): warm fixes == 0 — the pass-invariance
+///     law; pass 1's fill count is expected and recorded.
+#[test]
+fn t_f1_rxwarm_chaos_sustained_soak() {
+    // Same multi-publication scale as the I-7 soak (~2.1k frames/pass).
+    let gt = mini_gt(120_000);
+    let cfg = ReplayConfig {
+        msgs_per_packet: Packetize::MtuBound(1400),
+        delay: [
+            DelayModel::None,
+            DelayModel::GaussianApprox {
+                mean_ns: 2_000_000,
+                sigma_ns: 800_000,
+            },
+        ],
+        guarantee_coverage: true,
+        ..Default::default()
+    };
+    let sched = build_schedule(&gt, &cfg);
+
+    fn prog(pass: u64) -> [u8; 10] {
+        const S: [[u8; 10]; 4] = [
+            *b"F1WARMSE01",
+            *b"F1WARMSE02",
+            *b"F1WARMSE03",
+            *b"F1WARMSE04",
+        ];
+        if pass == 0 {
+            S[0]
+        } else {
+            S[((pass - 1) % 4) as usize]
+        }
+    }
+
+    // Per-session sequential references (the classic legs — ground truth).
+    let mut want = Vec::new();
+    for k in 0..4u64 {
+        let sess = prog(k + 1);
+        let mut t = ReplayTransport::new(&gt, sched.clone(), sess);
+        t.reset(sess);
+        let mut seq = Sequencer::new();
+        let mut sink = SpanConformanceSink::new();
+        let mut batch = FrameBatch::new();
+        while t.poll(&mut batch) > 0 {
+            seq.ingest_batch(t.batch_entries(&batch), t.now_ns(), &mut sink);
+        }
+        want.push((sink.count, sink.hash, sink.msg_hash));
+    }
+
+    let mut t = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
+        &gt,
+        sched,
+        prog(0),
+        128,
+        None,
+        Some(prog),
+        true,
+    );
+
+    // Deterministic LCG chaos (the I-7 soak's exact program).
+    let mut rng: u64 = 0x0123_4567_89AB_CDEF;
+    let mut draw = move || {
+        rng = rng
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        rng
+    };
+
+    const PASSES: u64 = 40;
+    const ABANDON_EVERY: u64 = 11;
+    let mut checked = 0u64;
+    for pass in 1..=PASSES {
+        let sess = prog(pass);
+        t.reset_pass(pass, sess);
+        let mut seq = Sequencer::new();
+        let mut sink = SpanConformanceSink::new();
+        if draw() % 100 < 35 {
+            std::thread::sleep(std::time::Duration::from_millis(1 + draw() % 18));
+        }
+        let mut abandoned = false;
+        let mut batch_idx = 0u64;
+        while t.next_batch() {
+            batch_idx += 1;
+            for e in t.entries() {
+                assert_eq!(
+                    &e.bytes[..10],
+                    &sess[..],
+                    "pass {pass} batch {batch_idx}: foreign session in frame bytes — \
+                     the warm path published an unverified entry (the F-1 law broken)"
+                );
+            }
+            seq.ingest_entries(t.entries(), t.now_ns(), &mut sink);
+            if draw() % 100 < 15 {
+                std::thread::sleep(std::time::Duration::from_millis(1 + draw() % 3));
+            }
+            if batch_idx == 2 && pass % ABANDON_EVERY == 0 {
+                abandoned = true;
+                break;
+            }
+        }
+        if !abandoned {
+            assert_eq!(
+                (sink.count, sink.hash, sink.msg_hash),
+                want[((pass - 1) % 4) as usize],
+                "pass {pass}: sustained tuple diverged under the warm start"
+            );
+            checked += 1;
+        }
+        // The steady-state law from pass 2: the last ENDED pass fixed
+        // nothing (pass 1's fill is the documented exception).
+        if pass >= 2 {
+            let (_, uncovered, last_pass) = t.rx_warm_stats();
+            assert_eq!(uncovered, 0, "pass {pass}: uncovered warm frames");
+            if !abandoned {
+                assert_eq!(
+                    last_pass, 0,
+                    "pass {pass}: steady-state warm fixes must be 0 (pass-invariance broken)"
+                );
+            }
+        }
+    }
+    assert!(
+        checked >= PASSES - PASSES / ABANDON_EVERY,
+        "the warm soak must check every drained pass (checked {checked})"
+    );
+}

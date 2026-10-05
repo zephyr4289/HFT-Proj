@@ -189,6 +189,18 @@ struct RxStats {
     resets: AtomicU64,
     /// EOS parks (futex waits at end-of-stream).
     eos_parks: AtomicU64,
+    /// F-1 (HFT_RXWARM): cumulative warm-start check-and-fix divergences
+    /// (the rxdesc-law telemetry; the kill rule reads the steady state:
+    /// fixes == 0 on pass >= 2).
+    warm_fixes: AtomicU64,
+    /// F-1: frames emitted beyond the warm array (a schedule that grew
+    /// past its construction size — the live-derived fallback published;
+    /// telemetry only).
+    warm_uncovered: AtomicU64,
+    /// F-1: the most recently ENDED pass's fix count (flushed at the EOS
+    /// marker publication and at the reset serves — the steady-state
+    /// signal the CI arm and the kill rule read).
+    warm_last_pass_fixes: AtomicU64,
 }
 
 #[repr(align(64))]
@@ -214,6 +226,9 @@ impl RxStats {
             bufwait_laps: AtomicU64::new(0),
             resets: AtomicU64::new(0),
             eos_parks: AtomicU64::new(0),
+            warm_fixes: AtomicU64::new(0),
+            warm_uncovered: AtomicU64::new(0),
+            warm_last_pass_fixes: AtomicU64::new(0),
         }
     }
 }
@@ -288,6 +303,11 @@ struct Mailbox {
     /// R8 phase-2: telemetry (see RxStats/ConsStats).
     rx_stats: RxStats,
     cons_stats: ConsStats,
+    /// F-1 (HFT_RXWARM): whether the RX thread runs the frame-entry warm
+    /// start (write-once at construction, BEFORE the spawn — the spawn's
+    /// happens-before makes the read race-free; the diagnostics and the
+    /// CI arm key on it).
+    warm_enabled: bool,
 }
 
 // SAFETY: the mailbox is the SPSC handoff described in the module doc —
@@ -368,18 +388,64 @@ fn pin_cpu(cpu: usize) -> bool {
     unsafe { libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &target) == 0 }
 }
 
+/// F-1: the warm bake bookkeeping at every pass boundary (the CMD_RESET
+/// serve, the EOS-park reset serve, the auto-advance): the pass-local
+/// frame index restarts and W's session-derived fields are rewritten
+/// from the fresh template (see render::warm_rewrite_session — the blob
+/// holds the new session everywhere by the time the next pass's polls
+/// run; the per-frame compare proves it).
+fn warm_bake(
+    warm: &mut [FrameEntry<'static>],
+    warm_idx: &mut usize,
+    sess_lo_tmpl: u64,
+    sess_hi_tmpl: u64,
+    compute_elig: bool,
+) {
+    *warm_idx = 0;
+    crate::render::warm_rewrite_session(warm, sess_lo_tmpl, sess_hi_tmpl, compute_elig);
+}
+
+/// F-1: close the current pass's warm telemetry window.
+///
+/// `force` marks a true pass END (the EOS marker publication): the
+/// pass's reading is ALWAYS recorded — a zero-fix steady pass must
+/// overwrite the previous pass's nonzero reading, or the kill-rule
+/// telemetry would go stale after the first divergent pass. The reset
+/// serves pass `force = false`: a serve after a drained EOS emitted
+/// nothing since the marker's flush and must not erase the drained
+/// pass's reading; a serve after a MID-PASS abandon did emit frames and
+/// records the abandoned partial's count.
+fn warm_flush_pass_end(
+    stats: &RxStats,
+    fixes: u64,
+    uncovered: u64,
+    pass_start: &mut u64,
+    force: bool,
+) {
+    stats.warm_fixes.store(fixes, Ordering::Relaxed);
+    stats.warm_uncovered.store(uncovered, Ordering::Relaxed);
+    if force || fixes != *pass_start {
+        stats
+            .warm_last_pass_fixes
+            .store(fixes - *pass_start, Ordering::Relaxed);
+        *pass_start = fixes;
+    }
+}
+
 /// RX thread main loop: poll ahead into free buffers, serve resets.
 /// `pin_cpu_id` pins the RX thread to an absolute CPU (None = unpinned).
 /// `init_session` is the construction pass's session (pass 0) — the R12 SoA
 /// sidecar's ok-bit session compare runs against the session the RX baked,
 /// tracked here and refreshed at every bake point (reset serve, EOS-park
 /// reset serve, auto-advance).
+/// `warm_enabled` (F-1, HFT_RXWARM) arms the frame-entry warm start.
 #[allow(clippy::disallowed_types)]
 fn rx_thread(
     mut inner: ReplayTransport,
     mb: Arc<Mailbox>,
     pin_cpu_id: Option<usize>,
     init_session: [u8; 10],
+    warm_enabled: bool,
 ) {
     if let Some(cpu) = pin_cpu_id {
         let _ = pin_cpu(cpu);
@@ -455,6 +521,41 @@ fn rx_thread(
     // RX-local scratch batch (poll writes slots here; the transform below
     // re-reads them from this core's L1).
     let mut scratch = FrameBatch::new();
+    // F-1 (HFT_RXWARM — CHECKLIST F-1 / ROADMAP2 §6.1): the frame-entry
+    // warm start. W holds the last pass's VERIFIED entries, frame-indexed
+    // within the pass; `poll_warm` re-derives each entry in registers from
+    // the walk's live facts and the COMPARE IS THE CORRECTNESS (the rxdesc
+    // check-and-fix law — the proven R16b pattern, docs/29 §5). Steady
+    // state the derivation matches W and the only per-frame costs are the
+    // ten-field compare plus the verified-entry store — the classic slot
+    // push (poll side, ~6 stores/frame) and the accumulate-loop build
+    // (~9 slot loads + slice re-derivation + elig chain + construct per
+    // frame) are REPLACED, never paralleled (the R12b sidecar's
+    // added-store refutation is the designed-out failure mode). Sizing:
+    // the schedule is construction-fixed, so the per-pass frame count is
+    // exact (`rendered_frame_count`); the allocation is thread-start,
+    // outside every measured window (the rxdesc arrays' pattern).
+    // HFT_RXWARM unset/0 is the rollback — the classic path below is
+    // verbatim.
+    let mut warm: Vec<FrameEntry<'static>> = if warm_enabled {
+        let empty = FrameEntry {
+            bytes: &[],
+            feed: 0,
+            blocks: &[],
+            memo: None,
+            first_seq: 0,
+            sess_lo: 0,
+            sess_hi: 0,
+            elig: 0,
+        };
+        vec![empty; inner.rendered_frame_count()]
+    } else {
+        Vec::new()
+    };
+    let mut warm_idx: usize = 0;
+    let mut warm_fixes: u64 = 0;
+    let mut warm_uncovered: u64 = 0;
+    let mut warm_pass_start_fixes: u64 = 0;
     let mut turn: u64 = 0;
     let mut served_resets: u64 = 0;
     // R8 phase-3 (auto-advance): the pass currently baked into the blob —
@@ -547,6 +648,27 @@ fn rx_thread(
                 let sess = unsafe { *mb.reset_session.get() };
                 inner.reset(sess);
                 refresh_tmpl(&sess, &mut sess_lo_tmpl, &mut sess_hi_tmpl);
+                // F-1: the bake point — close the (possibly abandoned,
+                // possibly drained) pass's telemetry window, restart the
+                // warm index, and rewrite W's session-derived fields from
+                // the fresh template (the blob now holds it everywhere —
+                // the full synchronous re-bake above).
+                if warm_enabled {
+                    warm_flush_pass_end(
+                        &mb.rx_stats,
+                        warm_fixes,
+                        warm_uncovered,
+                        &mut warm_pass_start_fixes,
+                                            false,
+                    );
+                    warm_bake(
+                        &mut warm,
+                        &mut warm_idx,
+                        sess_lo_tmpl,
+                        sess_hi_tmpl,
+                        compute_elig,
+                    );
+                }
                 // R8 phase-3b: a full synchronous re-bake invalidates the
                 // prepatch cursor — restart it for the fresh pass.
                 pp_idx = 0;
@@ -615,7 +737,34 @@ fn rx_thread(
             } else {
                 None
             };
-            let n = inner.poll(&mut scratch);
+            let n = if warm_enabled {
+                // F-1: the warm walk — `poll_warm` derives each entry in
+                // registers from the walk's own live facts (the frame meta
+                // and the frame line's session words — both loaded by the
+                // walk anyway), checks them against W (fixing on
+                // divergence — the check IS the correctness), and stores
+                // the VERIFIED entries straight into the mailbox window.
+                // The scratch slot push and the accumulate-loop build are
+                // the replaced cost (zero added store traffic).
+                let buf = unsafe { &mut *mb.bufs[i].get() };
+                let mut wctx = crate::render::WarmEmitCtx {
+                    out: &mut buf.entries[acc..],
+                    warm: &mut warm,
+                    idx: warm_idx,
+                    fixes: warm_fixes,
+                    uncovered: warm_uncovered,
+                    sess_lo_tmpl,
+                    sess_hi_tmpl,
+                    compute_elig,
+                };
+                let n = inner.poll_warm(&mut scratch, &mut wctx);
+                warm_idx = wctx.idx;
+                warm_fixes = wctx.fixes;
+                warm_uncovered = wctx.uncovered;
+                n
+            } else {
+                inner.poll(&mut scratch)
+            };
             mb.rx_stats.polls.fetch_add(1, Ordering::Relaxed);
             if let Some(t0i) = tp0 {
                 let tpd = t0i.elapsed().as_nanos() as u64;
@@ -629,71 +778,80 @@ fn rx_thread(
                 eos = true;
                 break;
             }
-            // Build entries from THIS thread's locally-hot lines (scratch
-            // slots + the blob's first lines). SAFETY: (a) RX owns buffer i
-            // for this turn until the Release store to filled[i] below;
-            // (b) the entries' slices are re-built at 'static from raw
-            // parts — the target bytes (the RX transport's blob and the
-            // shared triple store) outlive the pipeline (the RX thread is
-            // joined in Drop) and are never read after the consumer frees
-            // the buffer (see EntryBuf's contract). The re-slice ends the
-            // scratch borrow within this block.
-            //
-            // R12: the same loop fills the SoA sidecar (firsts/ns/lens/
-            // feeds + the ok bitmask) — every value is already in
-            // registers, so the sidecar costs four scalar stores and two
-            // compares per frame on the RX core (which runs ~27% idle at
-            // the R11 record), buying the consumer's eight-frame vector
-            // ladder on the SUBMITTING core (76% busy). The ok bits
-            // accumulate into a register and flush per word; the final
-            // partial word is flushed after the loop (its stale high bits
-            // are never read — see EntrySoA's contract).
-            {
+            if warm_enabled {
+                // F-1: the verified entries are already in the mailbox
+                // window (poll_warm wrote them); only the driver clock
+                // remains.
                 let buf = unsafe { &mut *mb.bufs[i].get() };
-                let tp = triples.as_ptr();
-                for k in 0..n {
-                    let f = &scratch.frames()[k];
-                    let b = f.bytes();
-                    let bytes: &'static [u8] =
-                        unsafe { std::slice::from_raw_parts(b.as_ptr(), b.len()) };
-                    let (blk_base, blk_count, valid) = (f.blk_base, f.blk_count, f.valid);
-                    let blocks: &'static [(u64, u32, u32)] = if blk_count == 0 {
-                        &[]
-                    } else {
-                        // SAFETY: slot fields are construction-valid (the
-                        // same contract as ReplayTransport::batch_entries).
-                        unsafe {
-                            std::slice::from_raw_parts(
-                                tp.add(blk_base as usize),
-                                blk_count as usize,
-                            )
-                        }
-                    };
-                    // R12c: the elig byte — the steady-eligibility facts
-                    // packed into the entry's own padding line (+~4 µops,
-                    // zero added line traffic). Bit 7: session == baked
-                    // template AND memo proves every block valid AND a
-                    // non-empty block index; bits 0..1: the feed.
-                    let elig_ok = (compute_elig
-                        && blk_count != 0
-                        && valid == blk_count
-                        && f.sess_lo == sess_lo_tmpl
-                        && f.sess_hi == sess_hi_tmpl)
-                        as u8;
-                    buf.entries[acc + k] = FrameEntry {
-                        bytes,
-                        feed: f.feed,
-                        blocks,
-                        memo: (blk_count != 0)
-                            .then_some(nf_protocol::packet::FrameMemo { valid_count: valid }),
-                        first_seq: f.first_seq,
-                        sess_lo: f.sess_lo,
-                        sess_hi: f.sess_hi,
-                        elig: (f.feed & 3) | (elig_ok << 7),
-                    };
-                }
                 buf.clock = inner.now_ns();
                 acc += n;
+            } else {
+                // Build entries from THIS thread's locally-hot lines (scratch
+                // slots + the blob's first lines). SAFETY: (a) RX owns buffer i
+                // for this turn until the Release store to filled[i] below;
+                // (b) the entries' slices are re-built at 'static from raw
+                // parts — the target bytes (the RX transport's blob and the
+                // shared triple store) outlive the pipeline (the RX thread is
+                // joined in Drop) and are never read after the consumer frees
+                // the buffer (see EntryBuf's contract). The re-slice ends the
+                // scratch borrow within this block.
+                //
+                // R12: the same loop fills the SoA sidecar (firsts/ns/lens/
+                // feeds + the ok bitmask) — every value is already in
+                // registers, so the sidecar costs four scalar stores and two
+                // compares per frame on the RX core (which runs ~27% idle at
+                // the R11 record), buying the consumer's eight-frame vector
+                // ladder on the SUBMITTING core (76% busy). The ok bits
+                // accumulate into a register and flush per word; the final
+                // partial word is flushed after the loop (its stale high bits
+                // are never read — see EntrySoA's contract).
+                {
+                    let buf = unsafe { &mut *mb.bufs[i].get() };
+                    let tp = triples.as_ptr();
+                    for k in 0..n {
+                        let f = &scratch.frames()[k];
+                        let b = f.bytes();
+                        let bytes: &'static [u8] =
+                            unsafe { std::slice::from_raw_parts(b.as_ptr(), b.len()) };
+                        let (blk_base, blk_count, valid) = (f.blk_base, f.blk_count, f.valid);
+                        let blocks: &'static [(u64, u32, u32)] = if blk_count == 0 {
+                            &[]
+                        } else {
+                            // SAFETY: slot fields are construction-valid (the
+                            // same contract as ReplayTransport::batch_entries).
+                            unsafe {
+                                std::slice::from_raw_parts(
+                                    tp.add(blk_base as usize),
+                                    blk_count as usize,
+                                )
+                            }
+                        };
+                        // R12c: the elig byte — the steady-eligibility facts
+                        // packed into the entry's own padding line (+~4 µops,
+                        // zero added line traffic). Bit 7: session == baked
+                        // template AND memo proves every block valid AND a
+                        // non-empty block index; bits 0..1: the feed.
+                        let elig_ok = (compute_elig
+                            && blk_count != 0
+                            && valid == blk_count
+                            && f.sess_lo == sess_lo_tmpl
+                            && f.sess_hi == sess_hi_tmpl)
+                            as u8;
+                        buf.entries[acc + k] = FrameEntry {
+                            bytes,
+                            feed: f.feed,
+                            blocks,
+                            memo: (blk_count != 0)
+                                .then_some(nf_protocol::packet::FrameMemo { valid_count: valid }),
+                            first_seq: f.first_seq,
+                            sess_lo: f.sess_lo,
+                            sess_hi: f.sess_hi,
+                            elig: (f.feed & 3) | (elig_ok << 7),
+                        };
+                    }
+                    buf.clock = inner.now_ns();
+                    acc += n;
+                }
             }
         }
         // R9: the turn's events end at the transport's current cursor
@@ -784,6 +942,19 @@ fn rx_thread(
             // R8 phase-3b: the marker's frontier mapping — the whole pass
             // is consumed once the marker frees.
             turn_evt_end[(turn & TOFF_MASK) as usize] = usize::MAX;
+            // F-1: the pass's frames are all published — close its warm
+            // telemetry window NOW, FORCED (a zero-fix steady pass must
+            // overwrite the previous reading; the bake/index restart
+            // happen at the advance or reset serve that follows).
+            if warm_enabled {
+                warm_flush_pass_end(
+                    &mb.rx_stats,
+                    warm_fixes,
+                    warm_uncovered,
+                    &mut warm_pass_start_fixes,
+                    true,
+                );
+            }
             mb.pub_wake.fetch_add(1, Ordering::Release);
             futex_wake(&mb.pub_wake);
             turn += 1;
@@ -855,6 +1026,20 @@ fn rx_thread(
                 } else {
                     inner.reset(sess);
                 }
+                // F-1: the advance's bake point — restart the warm index
+                // and rewrite W's session-derived fields from the fresh
+                // template (the EOS marker above already closed the
+                // drained pass's telemetry window; nothing has polled
+                // since, so no flush is needed here).
+                if warm_enabled {
+                    warm_bake(
+                        &mut warm,
+                        &mut warm_idx,
+                        sess_lo_tmpl,
+                        sess_hi_tmpl,
+                        compute_elig,
+                    );
+                }
                 pass = next_pass;
                 // I-7: the new pass's first publication lands on `turn`
                 // (the marker took turn−1) — the incremental prepatch's
@@ -899,6 +1084,25 @@ fn rx_thread(
                         let sess = unsafe { *mb.reset_session.get() };
                         inner.reset(sess);
                         refresh_tmpl(&sess, &mut sess_lo_tmpl, &mut sess_hi_tmpl);
+                        // F-1: the bake point (the EOS-park serve — the
+                        // unarmed transports' drained-pass reset; see the
+                        // CMD_RESET serve above).
+                        if warm_enabled {
+                            warm_flush_pass_end(
+                                &mb.rx_stats,
+                                warm_fixes,
+                                warm_uncovered,
+                                &mut warm_pass_start_fixes,
+                                                            false,
+                            );
+                            warm_bake(
+                                &mut warm,
+                                &mut warm_idx,
+                                sess_lo_tmpl,
+                                sess_hi_tmpl,
+                                compute_elig,
+                            );
+                        }
                         pp_idx = 0;
                         served_resets += 1;
                         mb.rx_stats.resets.fetch_add(1, Ordering::Relaxed);
@@ -1006,6 +1210,27 @@ impl PipelinedReplayTransport {
         rx_cpu: Option<usize>,
         sess_fn: Option<fn(u64) -> [u8; 10]>,
     ) -> Self {
+        // F-1 (HFT_RXWARM): the fleet path — HFT_RXWARM=1 arms the
+        // frame-entry warm start. Read once at construction, outside
+        // every measured window; unset/0 is the rollback (the classic
+        // path verbatim).
+        let warm = std::env::var("HFT_RXWARM").as_deref() == Ok("1");
+        Self::with_coalesce_cpu_auto_forced(gt, schedule, session, coalesce, rx_cpu, sess_fn, warm)
+    }
+
+    /// F-1 (HFT_RXWARM): [`Self::with_coalesce_cpu_auto`] with the warm
+    /// start FORCED on/off — the tests' and local A/B's explicit path
+    /// (the env would be process-global and racy across parallel test
+    /// transports).
+    pub fn with_coalesce_cpu_auto_forced(
+        gt: &[u8],
+        schedule: ReplaySchedule,
+        session: [u8; 10],
+        coalesce: usize,
+        rx_cpu: Option<usize>,
+        sess_fn: Option<fn(u64) -> [u8; 10]>,
+        warm: bool,
+    ) -> Self {
         let mut inner = ReplayTransport::new(gt, schedule, session);
         inner.set_poll_coalesce(coalesce);
         let triples = inner.shared_triples();
@@ -1030,6 +1255,7 @@ impl PipelinedReplayTransport {
             rx_turn: AtomicU64::new(0),
             rx_stats: RxStats::zeroed(),
             cons_stats: ConsStats::zeroed(),
+            warm_enabled: warm,
         });
         let rx = std::thread::Builder::new()
             .stack_size(512 * 1024)
@@ -1045,7 +1271,7 @@ impl PipelinedReplayTransport {
             .spawn({
                 #[allow(clippy::disallowed_types)]
                 let mb: Arc<Mailbox> = Arc::clone(&mb);
-                move || rx_thread(inner, mb, rx_cpu, session)
+                move || rx_thread(inner, mb, rx_cpu, session, warm)
             })
             .expect("r8 rx thread spawn");
         Self {
@@ -1343,6 +1569,18 @@ impl PipelinedReplayTransport {
         unsafe { (*self.mb.bufs[(t & NBUF_MASK) as usize].get()).clock }
     }
 
+    /// F-1 (HFT_RXWARM) telemetry: (cumulative fixes, uncovered frames,
+    /// last-pass fixes). The steady-state law: last_pass_fixes == 0 from
+    /// pass 2 (the kill rule is "fixes > 0 persistent"); pass 1's fill
+    /// count is expected and recorded.
+    pub fn rx_warm_stats(&self) -> (u64, u64, u64) {
+        (
+            self.mb.rx_stats.warm_fixes.load(Ordering::Relaxed),
+            self.mb.rx_stats.warm_uncovered.load(Ordering::Relaxed),
+            self.mb.rx_stats.warm_last_pass_fixes.load(Ordering::Relaxed),
+        )
+    }
+
     /// R8 phase-2 diagnostics: one always-on telemetry line per run covering
     /// the transport's whole life (RX production cost, buffer starvation,
     /// consumer parks). Read-only, post-run.
@@ -1357,6 +1595,15 @@ impl PipelinedReplayTransport {
             rx.bufwait_laps.load(Ordering::Relaxed),
             rx.resets.load(Ordering::Relaxed),
             rx.eos_parks.load(Ordering::Relaxed),
+        );
+        // F-1: the warm-start telemetry line (always printed — the CI arm
+        // greps it; enabled=false fixes=0 is the classic path's reading).
+        eprintln!(
+            "RXWARM_DIAGNOSTIC {label}: enabled={} fixes={} uncovered={} last_pass_fixes={} (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)",
+            self.mb.warm_enabled,
+            rx.warm_fixes.load(Ordering::Relaxed),
+            rx.warm_uncovered.load(Ordering::Relaxed),
+            rx.warm_last_pass_fixes.load(Ordering::Relaxed),
         );
         eprintln!(
             "DIAG cons {label}: parks={} park_ms={:.1} slow_waits={} slow_ms={:.1}",
@@ -1428,6 +1675,21 @@ mod tests {
             gt.extend_from_slice(&msg);
         }
         gt
+    }
+
+    /// F-1 test helper: CONTENT compare for entries from two DIFFERENT
+    /// transport instances (their blobs/triples are separate mappings —
+    /// pointer identity is meaningless across instances; the in-transport
+    /// warm check itself uses pointer identity, which is exact there).
+    fn entry_content_neq(a: &FrameEntry<'_>, b: &FrameEntry<'_>) -> bool {
+        a.bytes != b.bytes
+            || a.blocks != b.blocks
+            || a.feed != b.feed
+            || a.memo != b.memo
+            || a.first_seq != b.first_seq
+            || a.sess_lo != b.sess_lo
+            || a.sess_hi != b.sess_hi
+            || a.elig != b.elig
     }
 
     fn run_pass(t: &mut PipelinedReplayTransport) -> usize {
@@ -1688,4 +1950,186 @@ mod tests {
             );
         }
     }
+    // ─── F-1: the frame-entry warm start pins (CHECKLIST F-1) ──────────
+
+    /// F-1: warm vs classic parity — the SAME schedule drained side by
+    /// side through both instantiations of the shared poll skeleton,
+    /// every entry of every batch compared over ALL ten payload fields
+    /// (the warm compare's own definition — the strongest pin available),
+    /// across BOTH pacing modes (exact 1 + the throughput shape 128) and
+    /// multi-pass ROTATING sessions (the auto program — the template
+    /// rewrite's path). Steady state (pass >= 2): warm fixes == 0 — the
+    /// pass-invariance law the kill rule reads.
+    #[test]
+    fn t_rxwarm_parity_vs_classic() {
+        for coalesce in [1usize, 128] {
+            let gt = mini_gt(300);
+            let sched = mini_sched(300);
+            let mut classic = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
+                &gt,
+                sched.clone(),
+                *b"PIPETEST01",
+                coalesce,
+                None,
+                Some(sess_program),
+                false,
+            );
+            let mut warm = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
+                &gt,
+                sched,
+                *b"PIPETEST01",
+                coalesce,
+                None,
+                Some(sess_program),
+                true,
+            );
+            for p in 1..=4u64 {
+                let sess = sess_program(p);
+                classic.reset_pass(p, sess);
+                warm.reset_pass(p, sess);
+                let mut frames = 0usize;
+                loop {
+                    let c_ok = classic.next_batch();
+                    let w_ok = warm.next_batch();
+                    assert_eq!(c_ok, w_ok, "coalesce {coalesce} pass {p}: EOS mismatch");
+                    if !c_ok {
+                        break;
+                    }
+                    let ce = classic.entries();
+                    let we = warm.entries();
+                    assert_eq!(
+                        ce.len(),
+                        we.len(),
+                        "coalesce {coalesce} pass {p}: batch length mismatch"
+                    );
+                    for (c, w) in ce.iter().zip(we.iter()) {
+                        assert!(
+                            !entry_content_neq(c, w),
+                            "coalesce {coalesce} pass {p}: warm entry diverged from classic"
+                        );
+                    }
+                    frames += ce.len();
+                }
+                assert_eq!(frames, 60, "coalesce {coalesce} pass {p}: frame count");
+            }
+            let (fixes, uncovered, last_pass) = warm.rx_warm_stats();
+            assert_eq!(uncovered, 0, "coalesce {coalesce}: uncovered frames");
+            assert_eq!(
+                last_pass, 0,
+                "coalesce {coalesce}: steady-state warm fixes (pass>=2) must be 0"
+            );
+            // Pass 1's fill is expected and recorded (every frame diverged
+            // from the empty initialization) — the documented behavior.
+            assert!(
+                fixes >= 60,
+                "coalesce {coalesce}: pass-1 fill expected (fixes {fixes})"
+            );
+            let (c_fixes, _, _) = classic.rx_warm_stats();
+            assert_eq!(c_fixes, 0, "coalesce {coalesce}: classic path never fixes");
+        }
+    }
+
+    /// F-1: the mid-pass abandon shape — an abandoned pass leaves a
+    /// partial warm state; the next pass must still publish verified
+    /// entries with zero fixes (the bake's rewrite + the static-field
+    /// check self-correct; the schedule restart is the same frame
+    /// sequence). Pinned against the classic transport side by side.
+    #[test]
+    fn t_rxwarm_mid_pass_abandon() {
+        let gt = mini_gt(300);
+        let sched = mini_sched(300);
+        let mut classic = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
+            &gt,
+            sched.clone(),
+            *b"PIPETEST01",
+            8,
+            None,
+            Some(sess_program),
+            false,
+        );
+        let mut warm = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
+            &gt,
+            sched,
+            *b"PIPETEST01",
+            8,
+            None,
+            Some(sess_program),
+            true,
+        );
+        // Drain pass 1 fully (the fill), then abandon pass 2 mid-flight.
+        for t in [&mut classic, &mut warm] {
+            t.reset_pass(1, sess_program(1));
+            let mut frames = 0usize;
+            while t.next_batch() {
+                frames += t.entries().len();
+            }
+            assert_eq!(frames, 60);
+        }
+        for t in [&mut classic, &mut warm] {
+            t.reset_pass(2, sess_program(2));
+            assert!(t.next_batch());
+            let _ = t.entries();
+        }
+        // The abandon: both transports target pass 3 next.
+        classic.reset_pass(3, sess_program(3));
+        warm.reset_pass(3, sess_program(3));
+        let mut frames = 0usize;
+        loop {
+            let c_ok = classic.next_batch();
+            let w_ok = warm.next_batch();
+            assert_eq!(c_ok, w_ok);
+            if !c_ok {
+                break;
+            }
+            for (c, w) in classic.entries().iter().zip(warm.entries().iter()) {
+                assert!(!entry_content_neq(c, w), "post-abandon divergence");
+            }
+            frames += warm.entries().len();
+        }
+        assert_eq!(frames, 60, "post-abandon pass frame count");
+        let (_, uncovered, _) = warm.rx_warm_stats();
+        assert_eq!(uncovered, 0);
+    }
+
+    /// F-1: the unarmed plain-reset shape (hft_bench's span arm — one
+    /// constant session, reset() per pass). The same-session rewrite is
+    /// a no-op value-wise; steady state must be zero fixes from pass 2
+    /// and the entries must match the classic transport's exactly.
+    #[test]
+    fn t_rxwarm_unarmed_constant_session() {
+        let gt = mini_gt(300);
+        let sched = mini_sched(300);
+        let mut classic = PipelinedReplayTransport::with_coalesce(&gt, sched.clone(), *b"PIPETEST01", 128);
+        let mut warm = PipelinedReplayTransport::with_coalesce_cpu_auto_forced(
+            &gt,
+            sched,
+            *b"PIPETEST01",
+            128,
+            None,
+            None,
+            true,
+        );
+        for p in 0..4u64 {
+            classic.reset(*b"PIPETEST01");
+            warm.reset(*b"PIPETEST01");
+            let mut frames = 0usize;
+            loop {
+                let c_ok = classic.next_batch();
+                let w_ok = warm.next_batch();
+                assert_eq!(c_ok, w_ok, "pass {p}: EOS mismatch");
+                if !c_ok {
+                    break;
+                }
+                for (c, w) in classic.entries().iter().zip(warm.entries().iter()) {
+                    assert!(!entry_content_neq(c, w), "pass {p}: divergence");
+                }
+                frames += warm.entries().len();
+            }
+            assert_eq!(frames, 60, "pass {p}");
+        }
+        let (_, uncovered, last_pass) = warm.rx_warm_stats();
+        assert_eq!(uncovered, 0);
+        assert_eq!(last_pass, 0, "constant-session steady state must be zero-fix");
+    }
+
 }

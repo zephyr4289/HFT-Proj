@@ -366,6 +366,11 @@ fn main() {
         );
         scs.push(cyc);
     }
+    // F-1 (HFT_RXWARM): the RX pipeline's per-run telemetry — the Front A
+    // attribution lines (prod_ms is the entry-build share the warm start
+    // attacks) + the warm-start verdict line (fixes/last_pass_fixes; the
+    // CI arm greps RXWARM_DIAGNOSTIC).
+    piped.diag_summary("span");
 
     cs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     scs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
