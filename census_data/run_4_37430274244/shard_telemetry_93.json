@@ -1,0 +1,40 @@
+{
+  "shard": 93,
+  "timestamp": "2026-10-06T07:32:59Z",
+  "cpu": {
+    "model_name": "AMD EPYC 9V45 96-Core Processor",
+    "vendor_id": "AuthenticAMD",
+    "family": 26,
+    "model": 2,
+    "stepping": 1,
+    "mhz": 4541.468,
+    "vcpus": 4,
+    "numa_nodes": 1
+  },
+  "dmi": {
+    "sys_vendor": "Microsoft Corporation",
+    "product_name": "Virtual Machine"
+  },
+  "cache": {
+    "l1d": "96 KiB (2 instances)",
+    "l1i": "64 KiB (2 instances)",
+    "l2": "2 MiB (2 instances)",
+    "l3": "32 MiB (1 instance)"
+  },
+  "isa": {
+    "avx2": true,
+    "avx512f": true,
+    "avx512bw": true,
+    "avx512dq": true,
+    "vpclmulqdq": true,
+    "vaes": true,
+    "gfni": true,
+    "amx_tile": false,
+    "amx_int8": false,
+    "constant_tsc": true,
+    "nonstop_tsc": true
+  },
+  "memory_benchmark": {
+    "bandwidth_1t_gb_s": 977.67
+  }
+}
