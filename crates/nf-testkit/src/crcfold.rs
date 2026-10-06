@@ -267,6 +267,81 @@ pub const VTAIL_AT: [u32; 72] = [
     0xE1FCF649, 0x39283A86, 0xA46EF4AA, 0xC90DF36A, 0x0AEDB6A9, 0xDAF383DC,
 ];
 
+// ── R23: the affine span-subtraction power tables ──────────────────────────
+//
+// Derived, verified and emitted by `scripts/r23_affine_crc_derive.py`
+// (branch feat/r23-affine-vector-frontier). THE LAW (all products are
+// carry-less, LSB-first — PCLMULQDQ operand semantics):
+//
+//   raw(A ∥ B) = ( raw(A) ⊗ G[L_B] mod VM ) ⊕ raw(B)
+//   ⟹ raw(B)   = raw(A ∥ B) ⊕ ( raw(A) ⊗ G[L_B] mod VM )
+//
+// with G[L] = y^(-8L) mod VM (the R15 zeros-advance constant; the V1
+// operator law Z_r(c) = c ⊗ G[r]). `raw` is the reflected CRC32C register
+// (init 0, no final xor) — the register semantics of every
+// `span_crc32c_8lane` lane. In the normal (MSB-first) representation the
+// same law reads CRC(B) = CRC(A∥B) ⊕ (CRC(A) ⊗ x^(8·L_B) mod P(x)) with
+// P(x) = 0x11EDC6F41 — the mirror duality (the reflected hardware domain
+// tabulates the inverse powers). The law ALSO holds verbatim on FINALIZED
+// CRC32C values (init 0xFFFFFFFF, final xor 0xFFFFFFFF) because the init
+// and final inversions cancel (I = F):
+//
+//   full(B) = full(A ∥ B) ⊕ ( full(A) ⊗ G[L_B] mod VM )
+//
+// O(1) span verification recipe (Engineer 2's kernel): the ingest core
+// snapshots the cumulative register at span boundaries (prefix hash
+// `raw(A)`, cumulative hash `raw(A∥B)`); the worker composes the length
+// constant C(L) = rmul(T128[k-1], TBYTE[r]) for L = 16k + r (ONE clmul +
+// reduction), then projects the span with ONE VPCLMULQDQ (u32 register ⊗
+// u32 constant, product ≤ 63 bits — inside a 64-bit lane), ONE 33-bit
+// reduction mod VM, ONE XOR. Zero payload re-reading. For 64-byte-aligned
+// spans the same law applies per lane to the cumulative 8-lane state and
+// reconstructs the exact `span_crc32c_8lane` value (lane advance constant
+// G[L/8]) — verified by the derivation script's P3b bridge battery.
+//
+// Width law (degree never overflows the register halves): every constant
+// is ≤ 32 bits, so register(≤32b) ⊗ constant ≤ 63 bits < 64-bit lane, and
+// fold-state lanes (≤64b) ⊗ constant ≤ 95 bits < 128-bit product.
+
+/// Galois field power lookup table: T[k] = x^(128 * k) mod P(x) in reflected
+/// domain — the 16-byte-block advance power. `AFFINE_POW_128B_TABLE[k-1] =
+/// y^(-128·k) mod VM = G[16k]` (k ∈ 1..=128, covering 16..=2048 bytes; the
+/// k = 0 factor is the ring identity 1, implicit). Anchors: T[1] = VR0,
+/// T[2] = DFOLD_K2_LO, T[3..7] = OFOLD_MG{3..7}_LO, T[8] = OFOLD_K8_LO —
+/// the table is the K-power ladder of the R13 fold ring.
+pub const AFFINE_POW_128B_TABLE: [u64; 128] = [
+    0xF20C0DFE, 0x3DA6D0CB, 0x1C291D04, 0x740EEF02, 0x083A6EEC, 0xC49F4F67,
+    0x2AD91C30, 0x6992CEA2, 0x7E908048, 0x1B3D8F29, 0xF1D0F55E, 0xA87AB8A8,
+    0x8462D800, 0x71D111A8, 0xFFD852C6, 0xDCB17AA4, 0xF37C5AEE, 0x6051D5A2,
+    0x18B0D4FF, 0x21F3D99C, 0x8F158014, 0xA00457F7, 0x8D6D2C43, 0x00AC29CF,
+    0xE9ADF796, 0x96638B34, 0xE0E9F351, 0x9AF01F2D, 0x2CFF42CF, 0x88F25A3A,
+    0x4E36F0B0, 0xBD6F81F8, 0x91C9BD4B, 0x885F087B, 0x4C144932, 0x52148F02,
+    0xA3C6F37A, 0xD7C0557F, 0x63DED06A, 0x4D56973C, 0x9669C9DF, 0xE417F38A,
+    0x4B9E0F71, 0xD104B8FC, 0x5B397730, 0xE78EB416, 0x61FF0E01, 0x8D96551C,
+    0x0BF80DD2, 0x8821ABED, 0x6A45D2B2, 0xD8D26619, 0xDE87806C, 0x14338754,
+    0x5BD2011F, 0xDD07448E, 0xDDE8F5B9, 0xA3E3E02C, 0xD73C7BEA, 0x80FF0093,
+    0x8FE4C34D, 0xDF99FC11, 0x6C23E841, 0xFE314258, 0x0D8373A0, 0x19E3635E,
+    0x29F268B4, 0x1DC0632A, 0x1614F396, 0x9E2993D3, 0x6BEBD73C, 0x63AE91E6,
+    0xF8C9DA7A, 0x945A19C1, 0xEE8213B7, 0x93781DC7, 0xCCC4A1B9, 0xA2C2D971,
+    0x1CAD4452, 0x74922601, 0xC55F7EAB, 0xA1962329, 0x2D370749, 0x397D84A1,
+    0x79113270, 0xBC817803, 0x88EB3C07, 0x6E4CB630, 0x71971D5C, 0xF33B8BC6,
+    0x9FB3BBC0, 0x6EF22B23, 0xCE2DF768, 0xE53A4FC7, 0xBE60A91A, 0x1DFA0A15,
+    0x8EC52396, 0x0E766B11, 0x475846A4, 0xB2A3DFA6, 0xDC1A160C, 0x79AFDF1C,
+    0x07AC6E46, 0x15F85253, 0x1BEC24DD, 0x4C36CD5B, 0xE0A22E29, 0x7C2B6ED9,
+    0x06FF88FD, 0xF7317CF0, 0x61B6E40B, 0xDE8A97F8, 0x88F61445, 0xD4520E9E,
+    0x0C592BD5, 0x38EDFAF3, 0x72CBFCDB, 0x348331A5, 0xC3977C19, 0xDAFAEA7C,
+    0x73DB4C04, 0x72675CE8, 0x3EC2FF83, 0xE8C7A017, 0xCF4BFAEF, 0x6BDE1AC7,
+    0xAE1175C2, 0xF7506984,
+];
+/// Galois field power lookup table: T[r] = x^(8 * r) mod P(x) in reflected
+/// domain — the byte-level residual advance power. `AFFINE_POW_BYTE_TABLE[r]
+/// = y^(-8r) mod VM = G[r]` (r ∈ 0..=15; identity at r = 0; G[8] = VH64).
+pub const AFFINE_POW_BYTE_TABLE: [u64; 16] = [
+    0x00000001, 0xF26B8303, 0x13A29877, 0xA541927E, 0xDD45AAB8, 0x38116FAC,
+    0xEF306B19, 0x68032CC8, 0x493C7D27, 0xF43ED648, 0xCB567BA5, 0x9771F7C1,
+    0x3171D430, 0x30D23865, 0x54075546, 0x678EFD01,
+];
+
 /// R15: the vectorized-tail master switch. `HFT_CRC_VTAIL=1|0` overrides;
 /// otherwise the default follows the vend class gate (the vtail replaces
 /// the vend path's scalar lane-0 continuation + the lanes-1..7 odd-word
@@ -3420,5 +3495,334 @@ mod tests {
         assert_eq!(VTAIL_AT[8] as u128, y64, "AT[8] == y^64 anchor");
         assert_eq!(VTAIL_G[8] as u128, VH64 as u128, "G[8] == VH64 anchor");
         assert_eq!(VTAIL_G[16] as u128, VR0 as u128, "G[16] == VR0 anchor");
+    }
+
+    /// R23: the affine span-subtraction derivation oracle
+    /// (`scripts/r23_affine_crc_derive.py`). Pins the whole algebra:
+    ///   * **table re-derivation**: the reflected-CRC32C zeros-advance of
+    ///     the 1-seed extended to `G[0..=2048]` (the same recurrence the
+    ///     ofold test uses), with the shipped `AFFINE_POW_*` tables pinned
+    ///     entry-for-entry against it and against `VTAIL_G` — a
+    ///     transcription typo cannot survive;
+    ///   * **algebraic identities**: the inverse-power law `G[r] ⊗ y^(8r)
+    ///     == 1`, the composition law `C(16k + r) == T128[k-1] ⊗ TBYTE[r]`
+    ///     for EVERY L ∈ 0..=2048, the shipped-constant anchors (T128[1]
+    ///     == VR0, T128[2] == DFOLD_K2_LO, T128[8] == OFOLD_K8_LO,
+    ///     TBYTE[8] == VH64), and the width audit (every constant ≤ 32
+    ///     bits — products never overflow the 64/128-bit register halves);
+    ///   * **THE LAW, differentially**: 4,096 randomized synthetic spans
+    ///     (deterministic PRNG, stack buffers, L_B ∈ [16, 2048], L_A ∈
+    ///     [0, 512], boundary-aligned edges, 5 byte patterns) — Method A
+    ///     (the reference hardware-reflected CRC32C scan of the raw span
+    ///     bytes) vs Method B (the ingest snapshots `raw(A)`,
+    ///     `raw(A∥B)` + the O(1) affine projection), for BOTH the raw
+    ///     registers and the full CRC32C values (the I=F cancellation);
+    ///   * **the 8-lane bridge**: 256 64-byte-aligned spans reconstruct
+    ///     the exact `span_crc32c_8lane` lane values (and the FNV-1a
+    ///     combine) as per-lane O(1) projections of the cumulative 8-lane
+    ///     snapshots — cross-checked against the production kernel on
+    ///     x86_64;
+    ///   * **hardware anchors**: CRC32C("123456789") == 0xE3069283 and
+    ///     the software scan == the `_mm_crc32_*` instruction chain.
+    #[test]
+    fn t_affine_span_derivation_oracle() {
+        // ── the ring helpers (GF(2)[y]/VM) ──
+        fn clmul(a: u64, b: u64) -> u128 {
+            let mut r = 0u128;
+            let mut a = a as u128;
+            let mut b = b;
+            while b != 0 {
+                if b & 1 != 0 {
+                    r ^= a;
+                }
+                b >>= 1;
+                a <<= 1;
+            }
+            r
+        }
+        fn clmod(mut v: u128) -> u128 {
+            while v >= (1u128 << 32) {
+                let sh = (128 - v.leading_zeros()) - 33;
+                v ^= (VM as u128) << sh;
+            }
+            v
+        }
+        fn rmul(a: u64, b: u64) -> u64 {
+            clmod(clmul(a, b)) as u64
+        }
+        fn ypow(mut e: u32) -> u64 {
+            let mut r = 1u64;
+            let mut base = 2u64;
+            while e != 0 {
+                if e & 1 != 0 {
+                    r = rmul(r, base);
+                }
+                base = rmul(base, base);
+                e >>= 1;
+            }
+            r
+        }
+        // C(L) = y^(-8L) mod VM composed from the shipped tables.
+        fn c_of(l: usize) -> u64 {
+            let (k, r) = (l / 16, l % 16);
+            if k == 0 {
+                AFFINE_POW_BYTE_TABLE[r]
+            } else {
+                rmul(AFFINE_POW_128B_TABLE[k - 1], AFFINE_POW_BYTE_TABLE[r])
+            }
+        }
+
+        // ── the reflected-CRC32C byte table + the seeded raw scan ──
+        fn table() -> [u32; 256] {
+            let mut t = [0u32; 256];
+            for (i, e) in t.iter_mut().enumerate() {
+                let mut c = i as u32;
+                for _ in 0..8 {
+                    c = if c & 1 != 0 {
+                        (c >> 1) ^ 0x82F6_3B78
+                    } else {
+                        c >> 1
+                    };
+                }
+                *e = c;
+            }
+            t
+        }
+        let t = table();
+        fn crc_scan(mut c: u32, t: &[u32; 256], buf: &[u8]) -> u32 {
+            for &b in buf {
+                c = (c >> 8) ^ t[((c ^ b as u32) & 0xFF) as usize];
+            }
+            c
+        }
+
+        // ── 1. G[0..=2048] re-derivation + shipped-table pinning ──
+        let mut g = [0u64; 2049];
+        g[0] = 1;
+        {
+            let mut c = 1u32;
+            for r in 1..=2048usize {
+                c = (c >> 8) ^ t[(c & 0xFF) as usize];
+                g[r] = c as u64;
+            }
+        }
+        for k in 1..=128usize {
+            assert_eq!(
+                AFFINE_POW_128B_TABLE[k - 1],
+                g[16 * k],
+                "AFFINE_POW_128B_TABLE[{k}] != G[{}]",
+                16 * k
+            );
+        }
+        for r in 0..16usize {
+            assert_eq!(AFFINE_POW_BYTE_TABLE[r], g[r], "AFFINE_POW_BYTE_TABLE[{r}] != G[{r}]");
+        }
+        for r in 0..72usize {
+            assert_eq!(VTAIL_G[r] as u64, g[r], "G[{r}] drift vs shipped VTAIL_G");
+        }
+        // the shipped-constant anchors: the table IS the K-power ladder
+        assert_eq!(AFFINE_POW_128B_TABLE[0], VR0, "T128[1] == VR0 (G[16])");
+        assert_eq!(AFFINE_POW_128B_TABLE[1], DFOLD_K2_LO, "T128[2] == DFOLD_K2_LO (G[32])");
+        assert_eq!(AFFINE_POW_128B_TABLE[7], OFOLD_K8_LO, "T128[8] == OFOLD_K8_LO (G[128])");
+        assert_eq!(AFFINE_POW_BYTE_TABLE[8], VH64, "TBYTE[8] == VH64 (G[8])");
+        // the inverse-power law at probes
+        for r in [1usize, 8, 16, 128, 1000, 2048] {
+            assert_eq!(rmul(g[r], ypow(8 * r as u32)), 1, "G[{r}] == y^(-8r)");
+        }
+        // the composition law for EVERY length in 0..=2048
+        for l in 0..=2048usize {
+            assert_eq!(c_of(l), g[l], "composition C({l}) != G[{l}]");
+        }
+        // the width audit: degree never overflows the register halves
+        for v in AFFINE_POW_128B_TABLE.iter().chain(AFFINE_POW_BYTE_TABLE.iter()) {
+            assert!(*v < (1u64 << 32), "constant {v:#x} exceeds 32 bits");
+        }
+
+        // ── 2. THE LAW, differentially: 4,096 randomized synthetic spans ──
+        struct Sm(u64);
+        impl Sm {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^ (z >> 31)
+            }
+        }
+        fn fill(buf: &mut [u8], sm: &mut Sm, pat: u32) {
+            match pat % 5 {
+                0 => buf.fill(0x00),
+                1 => buf.fill(0xFF),
+                2 => {
+                    for (i, b) in buf.iter_mut().enumerate() {
+                        *b = ((i * 131 + 17) & 0xFF) as u8;
+                    }
+                }
+                3 => {
+                    for b in buf.iter_mut() {
+                        *b = sm.next() as u8;
+                    }
+                }
+                _ => {
+                    let mut i = 0usize;
+                    while i < buf.len() {
+                        let run = (buf.len() - i).min(1 + (sm.next() as usize & 0x3F));
+                        let v = sm.next() as u8;
+                        buf[i..i + run].fill(v);
+                        i += run;
+                    }
+                }
+            }
+        }
+        const EDGE_LB: [usize; 27] = [
+            16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 191, 192, 255, 256, 257, 511, 512,
+            1023, 1024, 1025, 1343, 1344, 1345, 1536, 2047, 2048,
+        ];
+        const EDGE_LA: [usize; 17] = [0, 1, 7, 8, 15, 16, 17, 63, 64, 65, 127, 128, 129, 255, 256, 511, 512];
+        let mut sm = Sm(0x9E37_79B9_7F4A_7C15 ^ 0x523A_F11E);
+        let mut a_buf = [0u8; 512];
+        let mut b_buf = [0u8; 2048];
+        let mut errs = 0usize;
+        let mut full_errs = 0usize;
+        for i in 0..4096usize {
+            let lb = if i < 2 * EDGE_LB.len() {
+                EDGE_LB[i % EDGE_LB.len()]
+            } else if i % 7 == 0 {
+                EDGE_LB[(sm.next() % EDGE_LB.len() as u64) as usize]
+            } else {
+                16 + (sm.next() % 2033) as usize
+            };
+            let la = if i < 2 * EDGE_LA.len() {
+                EDGE_LA[i % EDGE_LA.len()]
+            } else {
+                (sm.next() % 513) as usize
+            };
+            let pat = (i % 5) as u32;
+            fill(&mut a_buf[..la], &mut sm, pat);
+            fill(&mut b_buf[..lb], &mut sm, pat);
+            // Method A — the reference hardware-reflected CRC32C scan of
+            // the raw span bytes (ground truth; ref_crc32c cross-check below)
+            let want = crc_scan(0, &t, &b_buf[..lb]);
+            let full_want = crc_scan(0xFFFF_FFFF, &t, &b_buf[..lb]) ^ 0xFFFF_FFFF;
+            // Method B — the ingest snapshots + the O(1) affine projection
+            let raw_a = crc_scan(0, &t, &a_buf[..la]);
+            let raw_ab = crc_scan(raw_a, &t, &b_buf[..lb]);
+            let c_lb = c_of(lb);
+            let got = (raw_ab as u64 ^ rmul(raw_a as u64, c_lb)) as u32;
+            // the full-CRC32C variant (init 0xFFFFFFFF / final xor)
+            let state_a = crc_scan(0xFFFF_FFFF, &t, &a_buf[..la]);
+            let state_ab = crc_scan(state_a, &t, &b_buf[..lb]);
+            let full_a = state_a ^ 0xFFFF_FFFF;
+            let full_ab = state_ab ^ 0xFFFF_FFFF;
+            let full_got = (full_ab as u64 ^ rmul(full_a as u64, c_lb)) as u32;
+            if got != want {
+                errs += 1;
+            }
+            if full_got != full_want {
+                full_errs += 1;
+            }
+        }
+        assert_eq!(errs, 0, "raw affine span subtraction: {errs}/4096 differential errors");
+        assert_eq!(
+            full_errs, 0,
+            "full-CRC32C affine span subtraction: {full_errs}/4096 differential errors"
+        );
+        // the shared reference-kernel cross-check + the raw golden vector
+        assert_eq!(crc_scan(0, &t, b"123456789"), ref_crc32c(b"123456789"));
+        assert_eq!(crc_scan(0, &t, b"123456789"), 0x58E3_FA20);
+
+        // ── 3. the 8-lane bridge: span_crc32c_8lane in O(1) for aligned spans ──
+        fn fnv_lanes(lanes: &[u32; 8], ln: usize) -> u64 {
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+            for &c in lanes {
+                h ^= c as u64;
+                h = h.wrapping_mul(0x0100_0000_01B3);
+            }
+            h ^= (ln as u32) as u64;
+            h.wrapping_mul(0x0100_0000_01B3)
+        }
+        let mut pkt = [0u8; 64 * 40];
+        for i in 0..256usize {
+            let lb = 64 * (1 + (sm.next() % 32) as usize);
+            let la = 64 * ((sm.next() % 9) as usize);
+            fill(&mut pkt[..la + lb], &mut sm, (i % 5) as u32);
+            let mut cl_start = [0u32; 8];
+            let mut cl_end = [0u32; 8];
+            let na = la / 64;
+            let nab = (la + lb) / 64;
+            for j in 0..nab {
+                let base = 64 * j;
+                for k in 0..8usize {
+                    let w = &pkt[base + 8 * k..base + 8 * k + 8];
+                    cl_end[k] = crc_scan(cl_end[k], &t, w);
+                    if j < na {
+                        cl_start[k] = crc_scan(cl_start[k], &t, w);
+                    }
+                }
+            }
+            // the lane's B-run is L_B/64 words = L_B/8 bytes of lane stream
+            let adv = g[lb / 8];
+            let mut pred = [0u32; 8];
+            for k in 0..8usize {
+                pred[k] = (cl_end[k] as u64 ^ rmul(cl_start[k] as u64, adv)) as u32;
+            }
+            let bb = &pkt[la..la + lb];
+            let mut direct = [0u32; 8];
+            for j in 0..(lb / 64) {
+                let base = 64 * j;
+                for k in 0..8usize {
+                    direct[k] = crc_scan(direct[k], &t, &bb[base + 8 * k..base + 8 * k + 8]);
+                }
+            }
+            assert_eq!(pred, direct, "bridge per-lane projection i={i}");
+            let v = fnv_lanes(&pred, lb);
+            // the software 8-lane model == the production kernel on x86_64
+            #[cfg(target_arch = "x86_64")]
+            assert_eq!(
+                v,
+                crate::sink::span_crc32c_8lane(bb),
+                "bridge span_crc32c_8lane value i={i}"
+            );
+        }
+
+        // ── 4. hardware anchors (x86_64: the instruction chain is truth) ──
+        #[cfg(target_arch = "x86_64")]
+        {
+            use std::arch::x86_64::*;
+            let mut c: u32 = 0xFFFF_FFFF;
+            c = unsafe { _mm_crc32_u64(c as u64, u64::from_le_bytes(*b"12345678")) } as u32;
+            c = unsafe { _mm_crc32_u8(c, b'9') };
+            assert_eq!(c ^ 0xFFFF_FFFF, 0xE306_9283, "hw anchor CRC32C(\"123456789\")");
+            // the instruction chain == the software table scan (raw semantics)
+            let mut buf = [0u8; 300];
+            for _ in 0..40 {
+                for b in buf.iter_mut() {
+                    *b = sm.next() as u8;
+                }
+                let n = (sm.next() as usize) % 301;
+                let data = &buf[..n];
+                let mut hwc: u32 = 0;
+                let mut i = 0usize;
+                while i + 8 <= n {
+                    let w: [u8; 8] = data[i..i + 8].try_into().unwrap();
+                    hwc = unsafe { _mm_crc32_u64(hwc as u64, u64::from_le_bytes(w)) } as u32;
+                    i += 8;
+                }
+                if i + 4 <= n {
+                    let w: [u8; 4] = data[i..i + 4].try_into().unwrap();
+                    hwc = unsafe { _mm_crc32_u32(hwc, u32::from_le_bytes(w)) };
+                    i += 4;
+                }
+                if i + 2 <= n {
+                    let w: [u8; 2] = data[i..i + 2].try_into().unwrap();
+                    hwc = unsafe { _mm_crc32_u16(hwc, u16::from_le_bytes(w)) };
+                    i += 2;
+                }
+                if i < n {
+                    hwc = unsafe { _mm_crc32_u8(hwc, data[i]) };
+                }
+                assert_eq!(hwc, crc_scan(0, &t, data), "hw chain != software raw scan");
+            }
+        }
     }
 }
