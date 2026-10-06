@@ -94,6 +94,7 @@ fn main() {
         bench_1t("fold512_rv", c0, mode_fold512_rv);
         bench_1t("fold512_rc", c0, mode_fold512_rc);
         bench_1t("fold512_rd", c0, mode_fold512_rd);
+        bench_1t("fold512_ro", c0, mode_fold512_ro);
         bench_1t("fold512_r_pair", c0, mode_fold512_r_pair);
         bench_1t("fold512_eval2", c0, mode_fold512_eval2);
         bench_1t("fold512_pair", c0, mode_fold512_pair);
@@ -119,6 +120,7 @@ fn main() {
             bench_2t("fold512_rv", "2cpu_distinct", a, b, mode_fold512_rv);
             bench_2t("fold512_rc", "2cpu_distinct", a, b, mode_fold512_rc);
             bench_2t("fold512_rd", "2cpu_distinct", a, b, mode_fold512_rd);
+            bench_2t("fold512_ro", "2cpu_distinct", a, b, mode_fold512_ro);
             bench_2t("fold512_tri", "2cpu_distinct", a, b, mode_fold512_tri);
         }
     }
@@ -130,6 +132,7 @@ fn main() {
             bench_2t("fold512_rv", "2cpu_smt", a, b, mode_fold512_rv);
             bench_2t("fold512_rc", "2cpu_smt", a, b, mode_fold512_rc);
             bench_2t("fold512_rd", "2cpu_smt", a, b, mode_fold512_rd);
+            bench_2t("fold512_ro", "2cpu_smt", a, b, mode_fold512_ro);
             bench_2t("fold512_tri", "2cpu_smt", a, b, mode_fold512_tri);
         }
     }
@@ -369,6 +372,28 @@ fn mode_fold512_rd(buf: &[u8], sink: &mut u64) -> usize {
     while off + SPAN <= buf.len() {
         // SAFETY: main() only dispatches here when fold512_available().
         acc ^= unsafe { kernel.eval_rpath4(&buf[off..off + SPAN], true, true, true) };
+        off += SPAN;
+    }
+    *sink = acc;
+    off
+}
+
+/// R21: the reflect kernel with the OCTO-STREAM FOLD (ofold) forced ON —
+/// the T=8 block-parity shape (forced vend + vtail-all-r, the class
+/// endings; scripts/r21_ofold_derive.py). fold512_ro vs fold512_rv on the
+/// same draw IS the chain-depth effect at T=8 (16 independent clmul
+/// chains vs 2; the directive Task 1's 8-accumulator shape): if the
+/// kernel is latency-bound on wide OoO silicon the row jumps toward the
+/// p5 floor; the seed+merge overhead (14 extra clmuls per span) prices
+/// against it at small wp — the fleet decides per draw (the fold512_rd
+/// precedent).
+fn mode_fold512_ro(buf: &[u8], sink: &mut u64) -> usize {
+    let kernel = CrcKernel::Reflect;
+    let mut off = 0usize;
+    let mut acc = 0u64;
+    while off + SPAN <= buf.len() {
+        // SAFETY: main() only dispatches here when fold512_available().
+        acc ^= unsafe { kernel.eval_rpath5(&buf[off..off + SPAN], true, true, false, true) };
         off += SPAN;
     }
     *sink = acc;

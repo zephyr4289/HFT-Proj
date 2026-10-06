@@ -93,6 +93,72 @@ pub const RKLO: u64 = 0x0EC10_68C5_0;
 pub const DFOLD_K2_LO: u64 = 0x3DA6_D0CB;
 pub const DFOLD_K2_HI: u64 = 0xBA4F_C28E;
 
+// ── R21: the octo-stream (T=8) fold constant table ────────────────────────
+//
+// Derived, verified and emitted by `scripts/r21_ofold_derive.py` (P0/P1/P2:
+// the 2178-body differential against the scalar kernel, mirroring the R16
+// dfold program). The class law P1' (R16) generalizes: ONE reduced-pair
+// 2-clmul step advances a state by k fold units, the pair being
+// (K^k (x) y^64, K^k) with K = RKLO mod VM = VR0 — the ending ring's
+// inverse powers of y. In the G-table law (R15): K^k = y^(-128k) = G[16k]
+// and K^k (x) y^64 = y^(-128k+64) = G[16k-8]. The octo fold needs k = 1..8;
+// the shipped tables stop at G[71], so the script extends them to G[128]
+// (`OFOLD_G_EXT`, re-derived at test time by `t_ofold_constants_derivation`).
+// Every constant is <= 32 bits — the R16 width law (state hi <= 33 bits,
+// every composed ending field <= 96 bits, the vend exactness range).
+//
+// The step pair (k = 8): eight block-pair units per stream step.
+pub const OFOLD_K8_HI: u64 = 0x0D3B_6092;
+pub const OFOLD_K8_LO: u64 = 0x6992_CEA2;
+/// The offset-1 merge pair: K^1 (x) y^64 = G[8] (= RKHI), K^1 = G[16]
+/// (= VR0) — the dfold merge pair re-emerging as offset 1.
+pub const OFOLD_MG1_HI: u64 = 0x493C_7D27;
+pub const OFOLD_MG1_LO: u64 = 0xF20C_0DFE;
+/// The offset-2 merge pair: K^2 (x) y^64 = G[24], K^2 = G[32] — the
+/// DFOLD_K2 step pair re-emerging as offset 2 (the same ring elements).
+pub const OFOLD_MG2_HI: u64 = 0xBA4F_C28E;
+pub const OFOLD_MG2_LO: u64 = 0x3DA6_D0CB;
+/// The offset-3 merge pair: K^3 (x) y^64 = G[40], K^3 = G[48].
+pub const OFOLD_MG3_HI: u64 = 0xDDC0_152B;
+pub const OFOLD_MG3_LO: u64 = 0x1C29_1D04;
+/// The offset-4 merge pair: K^4 (x) y^64 = G[56], K^4 = G[64].
+pub const OFOLD_MG4_HI: u64 = 0x9E4A_DDF8;
+pub const OFOLD_MG4_LO: u64 = 0x740E_EF02;
+/// The offset-5 merge pair: K^5 (x) y^64 = G[72], K^5 = G[80].
+pub const OFOLD_MG5_HI: u64 = 0x39D3_B296;
+pub const OFOLD_MG5_LO: u64 = 0x083A_6EEC;
+/// The offset-6 merge pair: K^6 (x) y^64 = G[88], K^6 = G[96].
+pub const OFOLD_MG6_HI: u64 = 0x0715_CE53;
+pub const OFOLD_MG6_LO: u64 = 0xC49F_4F67;
+/// The offset-7 merge pair: K^7 (x) y^64 = G[104], K^7 = G[112].
+pub const OFOLD_MG7_HI: u64 = 0x47DB_8317;
+pub const OFOLD_MG7_LO: u64 = 0x2AD9_1C30;
+/// The G-table extension G[72..=128] (57 entries, `y^(-8r) mod VM`) — the
+/// r15 table's continuation, re-derived and pinned at test time.
+pub const OFOLD_G_EXT: [u32; 57] = [
+    0x39D3B296, 0xB430C84D, 0xFEE761A7, 0x767F362C, 0x6D883E38, 0xBA579940,
+    0x41C14A25, 0x150D5B88, 0x083A6EEC, 0xAE7B5DA4, 0x657F59E4, 0x24CF405C,
+    0x1C42DA43, 0x5237AC92, 0x73C1BB4C, 0x0C4B13D7, 0x0715CE53, 0x42723CE9,
+    0x9BC001EA, 0x88494023, 0x3365346A, 0x0A17DE6E, 0xCDB43B9B, 0x0BECE317,
+    0xC49F4F67, 0xB5C868C6, 0xE5990944, 0x860413AA, 0xC92F998D, 0x3D175832,
+    0xD1E52E1E, 0xBCF79D66, 0x47DB8317, 0xC4D37807, 0xD40EB793, 0x812C0154,
+    0x963E61CD, 0x7C335476, 0x574580B1, 0x4029B44A, 0x2AD91C30, 0x30C990AD,
+    0x1D5330E5, 0xD6DCEF36, 0x169472B6, 0x94A20153, 0x42E18B26, 0x065E88BD,
+    0x0D3B6092, 0x739EB780, 0x8285A5CF, 0x9D1C9F45, 0x7417153F, 0x6E846280,
+    0x8298BF1A, 0x7B3E77E8, 0x6992CEA2,
+];
+/// The offset-indexed merge-pair lookup (index c = the offset in fold
+/// units, c = 0 unused — the base stream merges by identity).
+pub const OFOLD_MG_HI: [u64; 8] = [
+    0, OFOLD_MG1_HI, OFOLD_MG2_HI, OFOLD_MG3_HI, OFOLD_MG4_HI, OFOLD_MG5_HI,
+    OFOLD_MG6_HI, OFOLD_MG7_HI,
+];
+/// The offset-indexed merge-pair lookup (low qwords; index 0 unused).
+pub const OFOLD_MG_LO: [u64; 8] = [
+    0, OFOLD_MG1_LO, OFOLD_MG2_LO, OFOLD_MG3_LO, OFOLD_MG4_LO, OFOLD_MG5_LO,
+    OFOLD_MG6_LO, OFOLD_MG7_LO,
+];
+
 /// R14: the vector ending's seed constant — the value of the 16-byte
 /// monomial family at degree 0 (empirically pinned: `crc32_u64(crc32_u64(
 /// 0, 1), 0)`), and the multiplier that turns the reflect state into the
@@ -219,6 +285,25 @@ pub fn vtail_enabled() -> bool {
 pub fn dfold_enabled() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *V.get_or_init(|| match std::env::var("HFT_CRC_DFOLD").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => false,
+    })
+}
+
+/// R21: the octo-stream fold's master switch. `HFT_CRC_OFOLD=1|0`;
+/// default OFF on every class until >= 3 healthy-draw verdicts certify
+/// it (the house law — the dfold precedent). ofold is CLASS-exact —
+/// the merged states are ring-congruent, not value-identical, to the
+/// sequential kernel's states — so it requires the class endings:
+/// dispatch forces vend + the vtail composed-field lane-0 path for ALL
+/// r, and resolves to OFF when vend is off (dfold precedence: when both
+/// axes arm, ofold wins — it is the deeper split and subsumes dfold's
+/// chain-depth effect). `HFT_CRC_OFOLD=0` is the documented rollback
+/// (the default IS the rollback until a class certifies).
+pub fn ofold_enabled() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| match std::env::var("HFT_CRC_OFOLD").as_deref() {
         Ok("1") => true,
         Ok("0") => false,
         _ => false,
@@ -504,6 +589,30 @@ impl CrcKernel {
         }
     }
 
+    /// R21: the FULL forced path + the octo-stream fold axis (the kbench
+    /// attribution row: `fold512_ro` = ofold — forced vend+vtail-all-r,
+    /// the T=8 block-parity shape). `ofold && !vend` resolves as ofold
+    /// OFF; ofold preempts dfold when both arm (the deeper split).
+    /// Values identical on every input.
+    ///
+    /// # Safety
+    /// Same feature contract as [`Self::eval`].
+    #[inline(always)]
+    pub unsafe fn eval_rpath5(
+        &self,
+        body: &[u8],
+        vend: bool,
+        vtail: bool,
+        dfold: bool,
+        ofold: bool,
+    ) -> u64 {
+        match self {
+            Self::Scalar => span_crc32c_8lane(body),
+            Self::Fold512 => imp::span_fold_eval(body),
+            Self::Reflect => imp::span_fold_eval_r_forced_o(body, vend, vtail, dfold, ofold),
+        }
+    }
+
     /// R17/T-1: the TRANSPOSED-arena twin of [`Self::eval_rpath3`] (Route
     /// T, ROADMAP2 §5.2 — the `fold512_t` kbench kill-test row). `arena`
     /// must point at the body's transposed slot: `128*wp` bytes
@@ -562,8 +671,8 @@ impl CrcKernel {
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod imp {
     use super::{
-        DFOLD_K2_HI, DFOLD_K2_LO, KP128, KP192, FOLD_MIN_LEN, KP256, KP320, KP384, KP448, RKHI,
-        RKLO, VH64, VM, VMU, VR0,
+        DFOLD_K2_HI, DFOLD_K2_LO, KP128, KP192, FOLD_MIN_LEN, KP256, KP320, KP384, KP448,
+        OFOLD_K8_HI, OFOLD_K8_LO, OFOLD_MG_HI, OFOLD_MG_LO, RKHI, RKLO, VH64, VM, VMU, VR0,
     };
     use crate::sink::span_crc32c_8lane;
     use std::arch::x86_64::*;
@@ -898,6 +1007,123 @@ pub(crate) mod imp {
             odd,
             units: st[0].units + st[1].units + st[2].units,
         }
+    }
+
+    /// R21: the OCTO-STREAM (T=8) natural-domain block-pair loop. One
+    /// span's word-pair units split mod-8 across EIGHT independent
+    /// (even, odd) state pairs — sixteen independent clmul chains over
+    /// ONE sequential load stream, the dfold/tri-stream latency lever
+    /// taken to the directive's 8-accumulator shape (Task 1: break the
+    /// 3-4 cycle serial clmul latency floor; 512 bytes per accumulator
+    /// generation, 1024 bytes per full 8-stream cycle).
+    ///
+    /// # The math
+    ///
+    /// Stream m folds block-pairs {m, m+8, m+16, ...}; between its
+    /// consecutive units sit SEVEN units of the other streams, so its
+    /// fold step multiplies the state by K^8 in the ending ring
+    /// (K = RKLO mod VM = VR0) — ONE 2-clmul step with the reduced pair
+    /// (OFOLD_K8_HI, OFOLD_K8_LO) = (K^8 (x) y^64, K^8) = (G[120],
+    /// G[128], scripts/r21_ofold_derive.py P0/P1). After T_m units the
+    /// stream state is `V_m = sum_t U_{m+8t} (x) K^(8(T_m-1-t))`; the
+    /// full single-stream state is `V = sum_m V_m (x) K^(C_m)` with the
+    /// offset `C_m = (wp-1-m) mod 8` (the same derivation as the
+    /// tri-stream table, mod 8; units after stream m's last unit). Each
+    /// merge is ONE 2-clmul step with the reduced pair (OFOLD_MG{c}_HI,
+    /// OFOLD_MG{c}_LO) = (K^c (x) y^64, K^c); the base stream (the one
+    /// owning the body's LAST unit) merges by identity, and empty
+    /// streams merge to zero. The merged states are CLASS-exact (ring
+    /// congruent to the sequential kernel's states — the P1' law), so
+    /// the vend/vtail composed-field ending stack runs unchanged, with
+    /// the dfold dispatch law: vend + vtail-all-r forced for ALL r.
+    ///
+    /// SAFETY: `p` must hold >= 128*wp bytes; requires the AVX-512 +
+    /// VPCLMULQDQ feature contract (callers gate it). `wp >= 1` by the
+    /// FOLD_MIN_LEN dispatcher gate.
+    #[inline(always)]
+    unsafe fn fold_word_octets_r(p: *const u8, wp: usize) -> FoldStates {
+        let khi8 = _mm512_set1_epi64(OFOLD_K8_HI as i64);
+        let klo8 = _mm512_set1_epi64(OFOLD_K8_LO as i64);
+        debug_assert!(wp >= 1);
+        // Seed stream m with pair m (streams beyond wp stay zero).
+        let mut st: [FoldStates; 8] = [
+            FoldStates { even: _mm512_setzero_si512(), odd: _mm512_setzero_si512(), units: 0 },
+            FoldStates { even: _mm512_setzero_si512(), odd: _mm512_setzero_si512(), units: 0 },
+            FoldStates { even: _mm512_setzero_si512(), odd: _mm512_setzero_si512(), units: 0 },
+            FoldStates { even: _mm512_setzero_si512(), odd: _mm512_setzero_si512(), units: 0 },
+            FoldStates { even: _mm512_setzero_si512(), odd: _mm512_setzero_si512(), units: 0 },
+            FoldStates { even: _mm512_setzero_si512(), odd: _mm512_setzero_si512(), units: 0 },
+            FoldStates { even: _mm512_setzero_si512(), odd: _mm512_setzero_si512(), units: 0 },
+            FoldStates { even: _mm512_setzero_si512(), odd: _mm512_setzero_si512(), units: 0 },
+        ];
+        for m in 0..8usize {
+            if m >= wp {
+                break;
+            }
+            // SAFETY: 128*(m+1) <= 128*wp bytes are in bounds.
+            let n0 = _mm512_loadu_si512(p.add(128 * m) as *const _);
+            let n1 = _mm512_loadu_si512(p.add(128 * m + 64) as *const _);
+            st[m] = FoldStates {
+                even: _mm512_unpacklo_epi64(n0, n1),
+                odd: _mm512_unpackhi_epi64(n0, n1),
+                units: 1,
+            };
+        }
+        // Steps: pair q = 8, 9, ... feeds stream (q-8) % 8 — an unrolled
+        // 8-iteration block keeps the mapping division-free; sixteen
+        // independent clmul chains run over ONE sequential load stream.
+        let mut q = 8usize;
+        while q + 7 < wp {
+            for m in 0..8usize {
+                // SAFETY: 128*(q+m+1) <= 128*wp bytes are in bounds.
+                let n0 = _mm512_loadu_si512(p.add(128 * (q + m)) as *const _);
+                let n1 = _mm512_loadu_si512(p.add(128 * (q + m) + 64) as *const _);
+                fold_step_r(
+                    &mut st[m],
+                    _mm512_unpacklo_epi64(n0, n1),
+                    _mm512_unpackhi_epi64(n0, n1),
+                    khi8,
+                    klo8,
+                );
+            }
+            q += 8;
+        }
+        // Tail pairs (0..=6 of them): stream m takes pair q iff q < wp.
+        while q < wp {
+            let m = q % 8;
+            // SAFETY: 128*(q+1) <= 128*wp bytes are in bounds.
+            let n0 = _mm512_loadu_si512(p.add(128 * q) as *const _);
+            let n1 = _mm512_loadu_si512(p.add(128 * q + 64) as *const _);
+            fold_step_r(
+                &mut st[m],
+                _mm512_unpacklo_epi64(n0, n1),
+                _mm512_unpackhi_epi64(n0, n1),
+                khi8,
+                klo8,
+            );
+            q += 1;
+        }
+        // Merge (once per span): base = the stream owning the LAST unit;
+        // every other live stream folds in with its offset pair. The
+        // merges are mutually independent (each multiplies only the
+        // INCOMING stream's state) — 14 independent clmuls + a 3-deep
+        // XOR tree, off the hot loop. The offset table is the
+        // OFOLD_MG_HI/LO lookup (index c = (wp-1-m) mod 8).
+        let base = (wp - 1) % 8;
+        let mut acc = st[base];
+        for m in 0..8usize {
+            if m == base || m >= wp {
+                continue;
+            }
+            let c = (wp - 1 - m) % 8;
+            debug_assert!(c >= 1 && c <= 7);
+            let khi = _mm512_set1_epi64(OFOLD_MG_HI[c] as i64);
+            let klo = _mm512_set1_epi64(OFOLD_MG_LO[c] as i64);
+            acc.even = merge_stream(acc.even, st[m].even, khi, klo);
+            acc.odd = merge_stream(acc.odd, st[m].odd, khi, klo);
+        }
+        acc.units = wp;
+        acc
     }
 
     /// Chain the byte range `[from, to)` of `body` into `c` (whole region
@@ -1878,16 +2104,19 @@ pub(crate) mod imp {
 
     /// R13: the natural-domain fold kernel (single span). Bit-exact with
     /// `span_crc32c_8lane` (D11 differential + the exhaustive unit sweep).
+    /// R21: the ofold axis rides the env gate (HFT_CRC_OFOLD; the dfold
+    /// precedence law — ofold wins when both arm).
     ///
     /// # Safety
     /// Requires AVX-512F/BW, VPCLMULQDQ, GFNI, SSE4.2.
     #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
     pub unsafe fn span_fold_eval_r(body: &[u8]) -> u64 {
-        span_fold_eval_r_forced_d(
+        span_fold_eval_r_forced_o(
             body,
             super::vend_enabled(),
             super::vtail_enabled(),
             super::dfold_enabled(),
+            super::ofold_enabled(),
         )
     }
 
@@ -1922,18 +2151,44 @@ pub(crate) mod imp {
         vtail: bool,
         dfold: bool,
     ) -> u64 {
+        span_fold_eval_r_forced_o(body, vend, vtail, dfold, false)
+    }
+
+    /// R21: the FULL forced path — vend, vtail, dfold AND the octo-stream
+    /// fold axis explicit (the kbench attribution row `fold512_ro` = ofold —
+    /// forced vend+vtail, all r; the T=8 block-parity shape). `ofold &&
+    /// !vend` resolves as ofold OFF (the class-ending requirement); ofold
+    /// PREEMPTS dfold when both arm (the deeper split — 16 chains vs 4 —
+    /// subsumes dfold's chain-depth effect). Values identical on every
+    /// input (the R21 P2 differential, 2178 bodies + the Rust sweeps).
+    ///
+    /// # Safety
+    /// Same feature contract as [`span_fold_eval_r`].
+    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
+    pub unsafe fn span_fold_eval_r_forced_o(
+        body: &[u8],
+        vend: bool,
+        vtail: bool,
+        dfold: bool,
+        ofold: bool,
+    ) -> u64 {
         if body.len() < FOLD_MIN_LEN {
             return span_crc32c_8lane(body);
         }
         let wp = body.len() / 64 / 2;
-        let dfold = dfold && vend;
+        let ofold = ofold && vend;
+        let dfold = dfold && vend && !ofold;
         // SAFETY: 128*wp <= len (feature contract + caller bounds).
-        let st = if dfold {
+        let st = if ofold {
+            fold_word_octets_r(body.as_ptr(), wp)
+        } else if dfold {
             fold_word_pairs_r2(body.as_ptr(), wp)
         } else {
             fold_word_pairs_r(body.as_ptr(), wp)
         };
-        finish_span_r_inner3(body, st, vend, vtail || dfold, dfold)
+        // The ofold states are CLASS-exact only — the same dispatch law as
+        // dfold: the composed-field lane-0 ending for ALL r.
+        finish_span_r_inner3(body, st, vend, vtail || dfold || ofold, dfold || ofold)
     }
 
     /// R17/T-1: the TRANSPOSED-arena eval (the `fold512_t` kbench row —
@@ -2007,24 +2262,30 @@ pub(crate) mod imp {
         }
         // R16: the dfold axis rides the env gates exactly like the
         // single-span path (both spans take the same shape — the parity
-        // bookkeeping is per-span and independent).
+        // bookkeeping is per-span and independent). R21: the ofold axis
+        // rides too, preempting dfold when both arm (the dispatch law).
         let vend = super::vend_enabled();
-        let dfold = super::dfold_enabled() && vend;
-        let vtail = super::vtail_enabled() || dfold;
+        let ofold = super::ofold_enabled() && vend;
+        let dfold = super::dfold_enabled() && vend && !ofold;
+        let vtail = super::vtail_enabled() || dfold || ofold;
         // SAFETY: 128*(wpa) <= a.len() (FOLD_MIN_LEN gate).
-        let sta = if dfold {
+        let sta = if ofold {
+            fold_word_octets_r(a.as_ptr(), a.len() / 64 / 2)
+        } else if dfold {
             fold_word_pairs_r2(a.as_ptr(), a.len() / 64 / 2)
         } else {
             fold_word_pairs_r(a.as_ptr(), a.len() / 64 / 2)
         };
         // SAFETY: 128*(wpb) <= b.len().
-        let stb = if dfold {
+        let stb = if ofold {
+            fold_word_octets_r(b.as_ptr(), b.len() / 64 / 2)
+        } else if dfold {
             fold_word_pairs_r2(b.as_ptr(), b.len() / 64 / 2)
         } else {
             fold_word_pairs_r(b.as_ptr(), b.len() / 64 / 2)
         };
-        let va = finish_span_r_inner3(a, sta, vend, vtail, dfold);
-        let vb = finish_span_r_inner3(b, stb, vend, vtail, dfold);
+        let va = finish_span_r_inner3(a, sta, vend, vtail, dfold || ofold);
+        let vb = finish_span_r_inner3(b, stb, vend, vtail, dfold || ofold);
         (va, vb)
     }
 }
@@ -2054,6 +2315,17 @@ pub(crate) mod imp {
         _vend: bool,
         _vtail: bool,
         _dfold: bool,
+    ) -> u64 {
+        span_crc32c_8lane(body)
+    }
+
+    #[inline(always)]
+    pub unsafe fn span_fold_eval_r_forced_o(
+        body: &[u8],
+        _vend: bool,
+        _vtail: bool,
+        _dfold: bool,
+        _ofold: bool,
     ) -> u64 {
         span_crc32c_8lane(body)
     }
@@ -2295,6 +2567,15 @@ mod tests {
             // default. Same value on every body (the P2 differential).
             let gd = unsafe { imp::span_fold_eval_r_forced_d(body, true, true, true) };
             assert_eq!(want, gd, "reflect dfold diverged at len={}", body.len());
+            // R21: the octo-stream fold (ofold) — forced vend + vtail-all-r
+            // (the class-ending shape), independent of the HFT_CRC_OFOLD
+            // default. Same value on every body (the P2 differential).
+            let go = unsafe { imp::span_fold_eval_r_forced_o(body, true, true, false, true) };
+            assert_eq!(want, go, "reflect ofold diverged at len={}", body.len());
+            // R21: ofold PREEMPTS dfold when both arm (the dispatch law) —
+            // still the same value.
+            let god = unsafe { imp::span_fold_eval_r_forced_o(body, true, true, true, true) };
+            assert_eq!(want, god, "reflect ofold+dfold diverged at len={}", body.len());
             // R17/T-1: the transposed-arena twin (Route T, ROADMAP2 §5.2) —
             // identical value on every body and both ending shapes, by
             // construction (pure storage permutation; the ending reads the
@@ -2490,6 +2771,128 @@ mod tests {
                 clmod(m),
                 clmod(clmul(clmod(v) as u64, k)),
                 "P1' class law broken at state bit {bit}"
+            );
+        }
+    }
+
+    /// R21: re-derive the octo-stream fold constants at test time (the
+    /// ending ring GF(2)[y]/VM — scripts/r21_ofold_derive.py's P0/P1, the
+    /// 2178-body differential). Pins the whole ofold algebra:
+    ///   * the G-table extension: G[r] = Z_r(1) (the r-byte zeros-update
+    ///     of the reflected CRC32C LFSR) reproduced for r = 0..=128, with
+    ///     the shipped VTAIL_G[0..72] and OFOLD_G_EXT[72..=128] pinned
+    ///     against the recurrence;
+    ///   * the merge/step pairs: OFOLD_MG{c}_LO == K^c == G[16c],
+    ///     OFOLD_MG{c}_HI == K^c (x) y^64 == G[16c-8] for c = 1..7, and
+    ///     the T=8 step pair (OFOLD_K8_HI, OFOLD_K8_LO) == (G[120],
+    ///     G[128]);
+    ///   * the P1' class law at the octo power on one-hot states: ONE
+    ///     K^8-pair application == EIGHT stepwise R13 advances.
+    /// A transcription typo in any constant cannot survive.
+    #[test]
+    fn t_ofold_constants_derivation() {
+        // The reflected-CRC32C byte table (same construction as ref_crc32c).
+        fn table() -> [u32; 256] {
+            let mut t = [0u32; 256];
+            for (i, e) in t.iter_mut().enumerate() {
+                let mut c = i as u32;
+                for _ in 0..8 {
+                    c = if c & 1 != 0 {
+                        (c >> 1) ^ 0x82F6_3B78
+                    } else {
+                        c >> 1
+                    };
+                }
+                *e = c;
+            }
+            t
+        }
+        let t = table();
+        // G[r] = the seed-1 state advanced by r zero bytes.
+        let mut g = [0u64; 129];
+        g[0] = 1;
+        for r in 1..=128 {
+            let prev = g[r - 1] as u32;
+            g[r] = ((prev >> 8) ^ t[(prev & 0xFF) as usize]) as u64;
+        }
+        // The shipped tables pin the recurrence.
+        for r in 0..72 {
+            assert_eq!(g[r], VTAIL_G[r] as u64, "G[{r}] != VTAIL_G[{r}]");
+        }
+        for i in 0..57 {
+            assert_eq!(g[72 + i], OFOLD_G_EXT[i] as u64, "G[{}] != OFOLD_G_EXT", 72 + i);
+        }
+        // The ring helpers (GF(2)[y]/VM).
+        fn clmul(a: u64, b: u64) -> u128 {
+            let mut r = 0u128;
+            let mut a = a as u128;
+            let mut b = b;
+            while b != 0 {
+                if b & 1 != 0 {
+                    r ^= a;
+                }
+                b >>= 1;
+                a <<= 1;
+            }
+            r
+        }
+        fn clmod(mut v: u128) -> u128 {
+            while v >= (1 << 32) {
+                let sh = (128 - v.leading_zeros() as i32 - 33) as u32;
+                v ^= (VM as u128) << sh;
+            }
+            v
+        }
+        fn rmul(a: u64, b: u64) -> u64 {
+            clmod(clmul(a, b)) as u64
+        }
+        fn ypow(mut e: u32) -> u64 {
+            let mut r = 1u64;
+            let mut base = 2u64;
+            while e != 0 {
+                if e & 1 != 0 {
+                    r = rmul(r, base);
+                }
+                base = rmul(base, base);
+                e >>= 1;
+            }
+            r
+        }
+        let y64 = ypow(64);
+        let k = clmod(RKLO as u128) as u64;
+        assert_eq!(k, VR0, "K = RKLO mod VM must equal VR0");
+        // Every merge pair IS (K^c (x) y^64, K^c) AND the G-table powers.
+        let mut kk = 1u64;
+        for c in 1..=7usize {
+            kk = rmul(kk, k);
+            assert_eq!(OFOLD_MG_LO[c], kk, "OFOLD_MG{c}_LO != K^{c}");
+            assert_eq!(OFOLD_MG_LO[c], g[16 * c], "OFOLD_MG{c}_LO != G[{}]", 16 * c);
+            assert_eq!(
+                OFOLD_MG_HI[c],
+                rmul(kk, y64),
+                "OFOLD_MG{c}_HI != K^{c} (x) y^64"
+            );
+            assert_eq!(OFOLD_MG_HI[c], g[16 * c - 8], "OFOLD_MG{c}_HI != G[{}]", 16 * c - 8);
+        }
+        // The T=8 step pair: K^8 = G[128], K^8 (x) y^64 = G[120].
+        kk = rmul(kk, k);
+        assert_eq!(OFOLD_K8_LO, kk, "OFOLD_K8_LO != K^8");
+        assert_eq!(OFOLD_K8_LO, g[128], "OFOLD_K8_LO != G[128]");
+        assert_eq!(OFOLD_K8_HI, g[120], "OFOLD_K8_HI != G[120]");
+        assert_eq!(OFOLD_K8_HI, rmul(kk, y64), "OFOLD_K8_HI != K^8 (x) y^64");
+        // P1' at the octo power, one-hot states: ONE reduced K^8-pair
+        // application == EIGHT stepwise R13 advances, in class terms.
+        for bit in [0u32, 1, 31, 32, 63, 64, 95, 96, 127] {
+            let v = 1u128 << bit;
+            let got = clmod(clmul((v >> 64) as u64, OFOLD_K8_HI) ^ clmul(v as u64, OFOLD_K8_LO));
+            let mut cls = clmod(v) as u64;
+            for _ in 0..8 {
+                cls = rmul(cls, k);
+            }
+            assert_eq!(
+                got,
+                cls as u128,
+                "P1' octo class law broken at state bit {bit}"
             );
         }
     }
