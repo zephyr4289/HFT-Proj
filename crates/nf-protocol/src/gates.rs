@@ -69,6 +69,20 @@ pub const PR1_R16_FULL_VERIFY_MIN_MSG_PER_SEC: u64 = 2_000_000_000;
 // median healthy draw crosses it (the R12 protocol).
 pub const PR1_R16_PURE_INGEST_MIN_MSG_PER_SEC: u64 = 5_000_000_000;
 
+// R18: PR-1 pure-ingest target — >= 6,000,000,000 msg/s pure ingest
+// (<= 0.383 cycles/message @ 2.30 GHz / <= 0.466 @ 2.80 GHz), the
+// vector-ingest program milestone (docs/30-r18-vector-ingest.md).
+// Standing baselines at gate-landing: 5,455,603,369 (0.51 cyc/msg @
+// 2.79 GHz, Shard 24, draw #37348948183) / 5,286,441,351 (0.44 cyc/msg
+// @ 2.30 GHz, Shard 15, draw #37338823281) — the record-class band, with
+// the median healthy draw below. Same shape as the R16 5B gate: REPORTED
+// per draw, non-asserting until the median healthy draw crosses it (the
+// R12 protocol — an assert lands only at submission-time elevation).
+// The gate exists now so every draw log carries the 6B verdict line the
+// claim protocol requires (gates-as-code: the threshold lives here once,
+// consumed by the bench verdict line and CI alike).
+pub const PR1_R18_PURE_INGEST_MIN_MSG_PER_SEC: u64 = 6_000_000_000;
+
 // Strict Tier 3 Bare-Metal / Reference Target (doc 00)
 pub const PR2_TARGET_P50_CYCLES: u64 = 60;
 pub const PR2_TARGET_P99_CYCLES: u64 = 150;
@@ -178,6 +192,18 @@ pub fn evaluate_pr1_r16_full_verify(sustained_rate_msg_per_sec: u64) -> GateVerd
 #[inline]
 pub fn evaluate_pr1_r16_pure_ingest(span_rate_msg_per_sec: u64) -> GateVerdict {
     if span_rate_msg_per_sec >= PR1_R16_PURE_INGEST_MIN_MSG_PER_SEC {
+        GateVerdict::Pass
+    } else {
+        GateVerdict::Fail
+    }
+}
+
+/// R18: PR-1 pure-ingest verdict — the 6B msg/s vector-ingest milestone
+/// (see PR1_R18_PURE_INGEST_MIN_MSG_PER_SEC). Reported per draw;
+/// non-asserting until the median healthy draw crosses it.
+#[inline]
+pub fn evaluate_pr1_r18_pure_ingest(span_rate_msg_per_sec: u64) -> GateVerdict {
+    if span_rate_msg_per_sec >= PR1_R18_PURE_INGEST_MIN_MSG_PER_SEC {
         GateVerdict::Pass
     } else {
         GateVerdict::Fail
@@ -295,5 +321,15 @@ mod tests {
         assert_eq!(evaluate_pr1_r16_pure_ingest(4_999_999_999), GateVerdict::Fail);
         assert_eq!(evaluate_pr1_r16_pure_ingest(5_000_000_000), GateVerdict::Pass);
         assert_eq!(evaluate_pr1_r16_pure_ingest(6_000_000_000), GateVerdict::Pass);
+
+        // R18 tripwires: 6B pure-ingest (the vector-ingest milestone) —
+        // FAIL below and at zero, PASS exactly at the threshold and above.
+        // The standing record (5,455,603,369) must read FAIL: the gate
+        // separates the record band from the claim band.
+        assert_eq!(evaluate_pr1_r18_pure_ingest(0), GateVerdict::Fail);
+        assert_eq!(evaluate_pr1_r18_pure_ingest(5_455_603_369), GateVerdict::Fail);
+        assert_eq!(evaluate_pr1_r18_pure_ingest(5_999_999_999), GateVerdict::Fail);
+        assert_eq!(evaluate_pr1_r18_pure_ingest(6_000_000_000), GateVerdict::Pass);
+        assert_eq!(evaluate_pr1_r18_pure_ingest(6_500_000_000), GateVerdict::Pass);
     }
 }
