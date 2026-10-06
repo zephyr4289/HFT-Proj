@@ -1,0 +1,40 @@
+{
+  "shard": 48,
+  "timestamp": "2026-10-06T07:49:37Z",
+  "cpu": {
+    "model_name": "INTEL(R) XEON(R) PLATINUM 8573C",
+    "vendor_id": "GenuineIntel",
+    "family": 6,
+    "model": 207,
+    "stepping": 2,
+    "mhz": 3199.440,
+    "vcpus": 4,
+    "numa_nodes": 1
+  },
+  "dmi": {
+    "sys_vendor": "Microsoft Corporation",
+    "product_name": "Virtual Machine"
+  },
+  "cache": {
+    "l1d": "96 KiB (2 instances)",
+    "l1i": "64 KiB (2 instances)",
+    "l2": "4 MiB (2 instances)",
+    "l3": "260 MiB (1 instance)"
+  },
+  "isa": {
+    "avx2": true,
+    "avx512f": true,
+    "avx512bw": true,
+    "avx512dq": true,
+    "vpclmulqdq": true,
+    "vaes": true,
+    "gfni": true,
+    "amx_tile": true,
+    "amx_int8": true,
+    "constant_tsc": true,
+    "nonstop_tsc": true
+  },
+  "memory_benchmark": {
+    "bandwidth_1t_gb_s": 274.27
+  }
+}

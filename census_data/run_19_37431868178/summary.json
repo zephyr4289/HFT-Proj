@@ -1,0 +1,4007 @@
+{
+  "run_number": 19,
+  "run_id": 37431868178,
+  "total_shards_probed": 100,
+  "records": [
+    {
+      "shard": 1,
+      "timestamp": "2026-10-06T07:48:27Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3244.313,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 450.46
+      }
+    },
+    {
+      "shard": 10,
+      "timestamp": "2026-10-06T07:48:27Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3240.818,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 463.22
+      }
+    },
+    {
+      "shard": 100,
+      "timestamp": "2026-10-06T07:52:15Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3245.968,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 449.25
+      }
+    },
+    {
+      "shard": 11,
+      "timestamp": "2026-10-06T07:48:33Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V45 96-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 26,
+        "model": 2,
+        "stepping": 1,
+        "mhz": 4446.15,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 959.26
+      }
+    },
+    {
+      "shard": 12,
+      "timestamp": "2026-10-06T07:48:20Z",
+      "cpu": {
+        "model_name": "INTEL(R) XEON(R) PLATINUM 8573C",
+        "vendor_id": "GenuineIntel",
+        "family": 6,
+        "model": 207,
+        "stepping": 2,
+        "mhz": 2999.289,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "4 MiB (2 instances)",
+        "l3": "260 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": true,
+        "amx_int8": true,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 274.91
+      }
+    },
+    {
+      "shard": 13,
+      "timestamp": "2026-10-06T07:48:27Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3245.389,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 467.08
+      }
+    },
+    {
+      "shard": 14,
+      "timestamp": "2026-10-06T07:48:21Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V45 96-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 26,
+        "model": 2,
+        "stepping": 1,
+        "mhz": 4166.782,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 937.49
+      }
+    },
+    {
+      "shard": 15,
+      "timestamp": "2026-10-06T07:48:26Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V45 96-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 26,
+        "model": 2,
+        "stepping": 1,
+        "mhz": 4247.726,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 968.04
+      }
+    },
+    {
+      "shard": 16,
+      "timestamp": "2026-10-06T07:48:25Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3245.245,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 442.29
+      }
+    },
+    {
+      "shard": 17,
+      "timestamp": "2026-10-06T07:48:32Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3239.301,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 461.61
+      }
+    },
+    {
+      "shard": 18,
+      "timestamp": "2026-10-06T07:48:20Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V74 80-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 17,
+        "stepping": 1,
+        "mhz": 3692.056,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 803.77
+      }
+    },
+    {
+      "shard": 19,
+      "timestamp": "2026-10-06T07:48:25Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3237.358,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 456.48
+      }
+    },
+    {
+      "shard": 2,
+      "timestamp": "2026-10-06T07:48:23Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3242.363,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 425.48
+      }
+    },
+    {
+      "shard": 20,
+      "timestamp": "2026-10-06T07:48:20Z",
+      "cpu": {
+        "model_name": "Intel(R) Xeon(R) 6973P-C",
+        "vendor_id": "GenuineIntel",
+        "family": 6,
+        "model": 173,
+        "stepping": 1,
+        "mhz": 4153.881,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "128 KiB (2 instances)",
+        "l2": "4 MiB (2 instances)",
+        "l3": "480 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": true,
+        "amx_int8": true,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 274.27
+      }
+    },
+    {
+      "shard": 21,
+      "timestamp": "2026-10-06T07:49:27Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3243.112,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 451.43
+      }
+    },
+    {
+      "shard": 22,
+      "timestamp": "2026-10-06T07:49:27Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V74 80-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 17,
+        "stepping": 1,
+        "mhz": 3694.801,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 928.06
+      }
+    },
+    {
+      "shard": 23,
+      "timestamp": "2026-10-06T07:49:28Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V74 80-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 17,
+        "stepping": 1,
+        "mhz": 3691.42,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 881.13
+      }
+    },
+    {
+      "shard": 24,
+      "timestamp": "2026-10-06T07:49:28Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V45 96-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 26,
+        "model": 2,
+        "stepping": 1,
+        "mhz": 4321.316,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 957.94
+      }
+    },
+    {
+      "shard": 25,
+      "timestamp": "2026-10-06T07:49:28Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3244.116,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 454.68
+      }
+    },
+    {
+      "shard": 26,
+      "timestamp": "2026-10-06T07:49:28Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3243.347,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 471.76
+      }
+    },
+    {
+      "shard": 27,
+      "timestamp": "2026-10-06T07:49:29Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V45 96-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 26,
+        "model": 2,
+        "stepping": 1,
+        "mhz": 4544.968,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 959.96
+      }
+    },
+    {
+      "shard": 28,
+      "timestamp": "2026-10-06T07:49:29Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V45 96-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 26,
+        "model": 2,
+        "stepping": 1,
+        "mhz": 4554.799,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 983.62
+      }
+    },
+    {
+      "shard": 29,
+      "timestamp": "2026-10-06T07:49:30Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V45 96-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 26,
+        "model": 2,
+        "stepping": 1,
+        "mhz": 4275.033,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 956.27
+      }
+    },
+    {
+      "shard": 3,
+      "timestamp": "2026-10-06T07:48:29Z",
+      "cpu": {
+        "model_name": "Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz",
+        "vendor_id": "GenuineIntel",
+        "family": 6,
+        "model": 106,
+        "stepping": 6,
+        "mhz": 3493.618,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2.5 MiB (2 instances)",
+        "l3": "48 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 354.03
+      }
+    },
+    {
+      "shard": 30,
+      "timestamp": "2026-10-06T07:49:30Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3244.22,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 372.1
+      }
+    },
+    {
+      "shard": 31,
+      "timestamp": "2026-10-06T07:49:30Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V74 80-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 17,
+        "stepping": 1,
+        "mhz": 3690.242,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 828.68
+      }
+    },
+    {
+      "shard": 32,
+      "timestamp": "2026-10-06T07:49:33Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V74 80-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 17,
+        "stepping": 1,
+        "mhz": 3694.375,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 910.0
+      }
+    },
+    {
+      "shard": 33,
+      "timestamp": "2026-10-06T07:50:06Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3243.193,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 454.86
+      }
+    },
+    {
+      "shard": 34,
+      "timestamp": "2026-10-06T07:49:30Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V45 96-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 26,
+        "model": 2,
+        "stepping": 1,
+        "mhz": 4294.904,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 977.82
+      }
+    },
+    {
+      "shard": 35,
+      "timestamp": "2026-10-06T07:49:31Z",
+      "cpu": {
+        "model_name": "Intel(R) Xeon(R) 6973P-C",
+        "vendor_id": "GenuineIntel",
+        "family": 6,
+        "model": 173,
+        "stepping": 1,
+        "mhz": 3568.14,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "128 KiB (2 instances)",
+        "l2": "4 MiB (2 instances)",
+        "l3": "480 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": true,
+        "amx_int8": true,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 312.29
+      }
+    },
+    {
+      "shard": 36,
+      "timestamp": "2026-10-06T07:49:32Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3240.011,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 465.72
+      }
+    },
+    {
+      "shard": 37,
+      "timestamp": "2026-10-06T07:49:32Z",
+      "cpu": {
+        "model_name": "INTEL(R) XEON(R) PLATINUM 8573C",
+        "vendor_id": "GenuineIntel",
+        "family": 6,
+        "model": 207,
+        "stepping": 2,
+        "mhz": 3099.589,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "4 MiB (2 instances)",
+        "l3": "260 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 309.4
+      }
+    },
+    {
+      "shard": 38,
+      "timestamp": "2026-10-06T07:49:34Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V45 96-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 26,
+        "model": 2,
+        "stepping": 1,
+        "mhz": 4209.006,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 939.39
+      }
+    },
+    {
+      "shard": 39,
+      "timestamp": "2026-10-06T07:49:35Z",
+      "cpu": {
+        "model_name": "INTEL(R) XEON(R) PLATINUM 8573C",
+        "vendor_id": "GenuineIntel",
+        "family": 6,
+        "model": 207,
+        "stepping": 2,
+        "mhz": 3099.627,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "4 MiB (2 instances)",
+        "l3": "260 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": true,
+        "amx_int8": true,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 289.8
+      }
+    },
+    {
+      "shard": 4,
+      "timestamp": "2026-10-06T07:48:27Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3242.798,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 364.41
+      }
+    },
+    {
+      "shard": 40,
+      "timestamp": "2026-10-06T07:49:37Z",
+      "cpu": {
+        "model_name": "Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz",
+        "vendor_id": "GenuineIntel",
+        "family": 6,
+        "model": 106,
+        "stepping": 6,
+        "mhz": 3491.742,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2.5 MiB (2 instances)",
+        "l3": "48 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 315.4
+      }
+    },
+    {
+      "shard": 41,
+      "timestamp": "2026-10-06T07:50:29Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3239.434,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 367.11
+      }
+    },
+    {
+      "shard": 42,
+      "timestamp": "2026-10-06T07:50:32Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V45 96-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 26,
+        "model": 2,
+        "stepping": 1,
+        "mhz": 4521.285,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 945.06
+      }
+    },
+    {
+      "shard": 43,
+      "timestamp": "2026-10-06T07:49:55Z",
+      "cpu": {
+        "model_name": "INTEL(R) XEON(R) PLATINUM 8573C",
+        "vendor_id": "GenuineIntel",
+        "family": 6,
+        "model": 207,
+        "stepping": 2,
+        "mhz": 3061.512,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "4 MiB (2 instances)",
+        "l3": "260 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": true,
+        "amx_int8": true,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 298.21
+      }
+    },
+    {
+      "shard": 44,
+      "timestamp": "2026-10-06T07:50:31Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V45 96-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 26,
+        "model": 2,
+        "stepping": 1,
+        "mhz": 4236.298,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 957.56
+      }
+    },
+    {
+      "shard": 45,
+      "timestamp": "2026-10-06T07:50:30Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V45 96-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 26,
+        "model": 2,
+        "stepping": 1,
+        "mhz": 4314.578,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 937.8
+      }
+    },
+    {
+      "shard": 46,
+      "timestamp": "2026-10-06T07:50:32Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3243.13,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 469.44
+      }
+    },
+    {
+      "shard": 47,
+      "timestamp": "2026-10-06T07:50:34Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3240.706,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 460.78
+      }
+    },
+    {
+      "shard": 48,
+      "timestamp": "2026-10-06T07:50:34Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3242.973,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 371.19
+      }
+    },
+    {
+      "shard": 49,
+      "timestamp": "2026-10-06T07:50:35Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V45 96-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 26,
+        "model": 2,
+        "stepping": 1,
+        "mhz": 4376.771,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 931.47
+      }
+    },
+    {
+      "shard": 5,
+      "timestamp": "2026-10-06T07:48:30Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3243.254,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 450.3
+      }
+    },
+    {
+      "shard": 50,
+      "timestamp": "2026-10-06T07:50:37Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3243.305,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 459.2
+      }
+    },
+    {
+      "shard": 51,
+      "timestamp": "2026-10-06T07:50:36Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3239.535,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 444.79
+      }
+    },
+    {
+      "shard": 52,
+      "timestamp": "2026-10-06T07:50:36Z",
+      "cpu": {
+        "model_name": "INTEL(R) XEON(R) PLATINUM 8573C",
+        "vendor_id": "GenuineIntel",
+        "family": 6,
+        "model": 207,
+        "stepping": 2,
+        "mhz": 3599.53,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "4 MiB (2 instances)",
+        "l3": "260 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": true,
+        "amx_int8": true,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 317.23
+      }
+    },
+    {
+      "shard": 53,
+      "timestamp": "2026-10-06T07:50:41Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3241.812,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 432.19
+      }
+    },
+    {
+      "shard": 54,
+      "timestamp": "2026-10-06T07:50:37Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3236.947,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 463.36
+      }
+    },
+    {
+      "shard": 55,
+      "timestamp": "2026-10-06T07:50:37Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3243.619,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 467.82
+      }
+    },
+    {
+      "shard": 56,
+      "timestamp": "2026-10-06T07:50:39Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V45 96-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 26,
+        "model": 2,
+        "stepping": 1,
+        "mhz": 4519.516,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 515.25
+      }
+    },
+    {
+      "shard": 57,
+      "timestamp": "2026-10-06T07:50:39Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3243.042,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 460.27
+      }
+    },
+    {
+      "shard": 58,
+      "timestamp": "2026-10-06T07:50:38Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3240.212,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 461.46
+      }
+    },
+    {
+      "shard": 59,
+      "timestamp": "2026-10-06T07:50:45Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3245.037,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 458.01
+      }
+    },
+    {
+      "shard": 6,
+      "timestamp": "2026-10-06T07:48:28Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V74 80-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 17,
+        "stepping": 1,
+        "mhz": 3693.052,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 916.34
+      }
+    },
+    {
+      "shard": 60,
+      "timestamp": "2026-10-06T07:51:06Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3243.495,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 457.32
+      }
+    },
+    {
+      "shard": 61,
+      "timestamp": "2026-10-06T07:51:05Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3243.287,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 455.02
+      }
+    },
+    {
+      "shard": 62,
+      "timestamp": "2026-10-06T07:51:22Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V74 80-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 17,
+        "stepping": 1,
+        "mhz": 3694.66,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 769.65
+      }
+    },
+    {
+      "shard": 63,
+      "timestamp": "2026-10-06T07:51:21Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V45 96-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 26,
+        "model": 2,
+        "stepping": 1,
+        "mhz": 4187.201,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 946.37
+      }
+    },
+    {
+      "shard": 64,
+      "timestamp": "2026-10-06T07:51:22Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3243.64,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 455.78
+      }
+    },
+    {
+      "shard": 65,
+      "timestamp": "2026-10-06T07:51:25Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3242.26,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 409.74
+      }
+    },
+    {
+      "shard": 66,
+      "timestamp": "2026-10-06T07:51:25Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V74 80-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 17,
+        "stepping": 1,
+        "mhz": 3694.598,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 921.7
+      }
+    },
+    {
+      "shard": 67,
+      "timestamp": "2026-10-06T07:51:29Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3244.963,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 447.64
+      }
+    },
+    {
+      "shard": 68,
+      "timestamp": "2026-10-06T07:51:26Z",
+      "cpu": {
+        "model_name": "INTEL(R) XEON(R) PLATINUM 8573C",
+        "vendor_id": "GenuineIntel",
+        "family": 6,
+        "model": 207,
+        "stepping": 2,
+        "mhz": 3099.709,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "4 MiB (2 instances)",
+        "l3": "260 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 301.34
+      }
+    },
+    {
+      "shard": 69,
+      "timestamp": "2026-10-06T07:51:25Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3243.266,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 463.68
+      }
+    },
+    {
+      "shard": 7,
+      "timestamp": "2026-10-06T07:48:25Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3243.549,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 460.63
+      }
+    },
+    {
+      "shard": 70,
+      "timestamp": "2026-10-06T07:51:27Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3240.458,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 460.29
+      }
+    },
+    {
+      "shard": 71,
+      "timestamp": "2026-10-06T07:51:29Z",
+      "cpu": {
+        "model_name": "INTEL(R) XEON(R) PLATINUM 8573C",
+        "vendor_id": "GenuineIntel",
+        "family": 6,
+        "model": 207,
+        "stepping": 2,
+        "mhz": 3099.245,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "4 MiB (2 instances)",
+        "l3": "260 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 293.58
+      }
+    },
+    {
+      "shard": 72,
+      "timestamp": "2026-10-06T07:51:32Z",
+      "cpu": {
+        "model_name": "INTEL(R) XEON(R) PLATINUM 8573C",
+        "vendor_id": "GenuineIntel",
+        "family": 6,
+        "model": 207,
+        "stepping": 2,
+        "mhz": 3099.23,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "4 MiB (2 instances)",
+        "l3": "260 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": true,
+        "amx_int8": true,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 279.39
+      }
+    },
+    {
+      "shard": 73,
+      "timestamp": "2026-10-06T07:51:29Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3240.443,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 439.53
+      }
+    },
+    {
+      "shard": 74,
+      "timestamp": "2026-10-06T07:51:31Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3240.124,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 455.95
+      }
+    },
+    {
+      "shard": 75,
+      "timestamp": "2026-10-06T07:51:33Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V74 80-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 17,
+        "stepping": 1,
+        "mhz": 3694.472,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 917.25
+      }
+    },
+    {
+      "shard": 76,
+      "timestamp": "2026-10-06T07:51:29Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V45 96-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 26,
+        "model": 2,
+        "stepping": 1,
+        "mhz": 4374.984,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 963.71
+      }
+    },
+    {
+      "shard": 77,
+      "timestamp": "2026-10-06T07:51:30Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3245.315,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 455.15
+      }
+    },
+    {
+      "shard": 78,
+      "timestamp": "2026-10-06T07:51:32Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3240.554,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 440.82
+      }
+    },
+    {
+      "shard": 79,
+      "timestamp": "2026-10-06T07:51:35Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V74 80-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 17,
+        "stepping": 1,
+        "mhz": 3694.317,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 918.85
+      }
+    },
+    {
+      "shard": 8,
+      "timestamp": "2026-10-06T07:48:22Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3238.708,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 459.2
+      }
+    },
+    {
+      "shard": 80,
+      "timestamp": "2026-10-06T07:51:50Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3243.233,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 473.22
+      }
+    },
+    {
+      "shard": 81,
+      "timestamp": "2026-10-06T07:51:50Z",
+      "cpu": {
+        "model_name": "INTEL(R) XEON(R) PLATINUM 8573C",
+        "vendor_id": "GenuineIntel",
+        "family": 6,
+        "model": 207,
+        "stepping": 2,
+        "mhz": 3498.868,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "4 MiB (2 instances)",
+        "l3": "260 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": true,
+        "amx_int8": true,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 286.31
+      }
+    },
+    {
+      "shard": 82,
+      "timestamp": "2026-10-06T07:51:57Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3239.62,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 415.28
+      }
+    },
+    {
+      "shard": 83,
+      "timestamp": "2026-10-06T07:51:57Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V74 80-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 17,
+        "stepping": 1,
+        "mhz": 3694.408,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 907.27
+      }
+    },
+    {
+      "shard": 84,
+      "timestamp": "2026-10-06T07:51:58Z",
+      "cpu": {
+        "model_name": "INTEL(R) XEON(R) PLATINUM 8573C",
+        "vendor_id": "GenuineIntel",
+        "family": 6,
+        "model": 207,
+        "stepping": 2,
+        "mhz": 2999.326,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "4 MiB (2 instances)",
+        "l3": "260 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 301.96
+      }
+    },
+    {
+      "shard": 85,
+      "timestamp": "2026-10-06T07:51:57Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3236.607,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 436.8
+      }
+    },
+    {
+      "shard": 86,
+      "timestamp": "2026-10-06T07:51:59Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3239.09,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 369.42
+      }
+    },
+    {
+      "shard": 87,
+      "timestamp": "2026-10-06T07:51:59Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3242.01,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 460.36
+      }
+    },
+    {
+      "shard": 88,
+      "timestamp": "2026-10-06T07:51:59Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V74 80-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 17,
+        "stepping": 1,
+        "mhz": 3694.537,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 615.25
+      }
+    },
+    {
+      "shard": 89,
+      "timestamp": "2026-10-06T07:52:00Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3242.989,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 459.11
+      }
+    },
+    {
+      "shard": 9,
+      "timestamp": "2026-10-06T07:48:26Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3243.26,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 466.1
+      }
+    },
+    {
+      "shard": 90,
+      "timestamp": "2026-10-06T07:52:01Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V45 96-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 26,
+        "model": 2,
+        "stepping": 1,
+        "mhz": 4537.503,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 996.64
+      }
+    },
+    {
+      "shard": 91,
+      "timestamp": "2026-10-06T07:52:00Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3239.574,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 464.82
+      }
+    },
+    {
+      "shard": 92,
+      "timestamp": "2026-10-06T07:52:01Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V74 80-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 17,
+        "stepping": 1,
+        "mhz": 3694.552,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 874.43
+      }
+    },
+    {
+      "shard": 93,
+      "timestamp": "2026-10-06T07:52:02Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3243.893,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 454.85
+      }
+    },
+    {
+      "shard": 94,
+      "timestamp": "2026-10-06T07:52:06Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3242.559,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 408.03
+      }
+    },
+    {
+      "shard": 95,
+      "timestamp": "2026-10-06T07:52:04Z",
+      "cpu": {
+        "model_name": "Intel(R) Xeon(R) 6973P-C",
+        "vendor_id": "GenuineIntel",
+        "family": 6,
+        "model": 173,
+        "stepping": 1,
+        "mhz": 3998.958,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "96 KiB (2 instances)",
+        "l1i": "128 KiB (2 instances)",
+        "l2": "4 MiB (2 instances)",
+        "l3": "480 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": true,
+        "amx_int8": true,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 275.94
+      }
+    },
+    {
+      "shard": 96,
+      "timestamp": "2026-10-06T07:52:05Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3245.038,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 448.02
+      }
+    },
+    {
+      "shard": 97,
+      "timestamp": "2026-10-06T07:52:04Z",
+      "cpu": {
+        "model_name": "AMD EPYC 9V74 80-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 17,
+        "stepping": 1,
+        "mhz": 3396.325,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "2 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": true,
+        "avx512bw": true,
+        "avx512dq": true,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": true,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 850.93
+      }
+    },
+    {
+      "shard": 98,
+      "timestamp": "2026-10-06T07:52:16Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3241.403,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 444.51
+      }
+    },
+    {
+      "shard": 99,
+      "timestamp": "2026-10-06T07:52:07Z",
+      "cpu": {
+        "model_name": "AMD EPYC 7763 64-Core Processor",
+        "vendor_id": "AuthenticAMD",
+        "family": 25,
+        "model": 1,
+        "stepping": 1,
+        "mhz": 3242.238,
+        "vcpus": 4,
+        "numa_nodes": 1
+      },
+      "dmi": {
+        "sys_vendor": "Microsoft Corporation",
+        "product_name": "Virtual Machine"
+      },
+      "cache": {
+        "l1d": "64 KiB (2 instances)",
+        "l1i": "64 KiB (2 instances)",
+        "l2": "1 MiB (2 instances)",
+        "l3": "32 MiB (1 instance)"
+      },
+      "isa": {
+        "avx2": true,
+        "avx512f": false,
+        "avx512bw": false,
+        "avx512dq": false,
+        "vpclmulqdq": true,
+        "vaes": true,
+        "gfni": false,
+        "amx_tile": false,
+        "amx_int8": false,
+        "constant_tsc": true,
+        "nonstop_tsc": true
+      },
+      "memory_benchmark": {
+        "bandwidth_1t_gb_s": 462.19
+      }
+    }
+  ]
+}
