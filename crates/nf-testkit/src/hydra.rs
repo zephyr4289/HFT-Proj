@@ -95,6 +95,7 @@ use crate::crcfold::CrcKernel;
 use crate::sink::span_crc32c_8lane;
 use nf_arbitrator::types::{Event, LiveFeedProof, Sink, SpanRec};
 use nf_transport::rxdesc::{rxdesc_unpack_span, RxdescState, RX_NARR};
+use nf_transport::wide::{CommitKind, WIDE_SPANS};
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -113,6 +114,15 @@ const RES_CAP: usize = 4096;
 const DESC_CAP: u64 = 2048;
 const RES_MASK: u64 = (RES_CAP as u64) - 1;
 const DESC_MASK: u64 = DESC_CAP - 1;
+
+// R20 (HFT_DESC_WIDE): the L1-residency LAW, compile-time — the Desc8
+// ring's touched footprint is DESC_CAP words × 8 B = exactly 16 KB/lane
+// (nf_transport::wide::DESC_RING_L1_BUDGET_BYTES). Multi-megabyte
+// descriptor structures are structurally rejected on this path (the
+// rxdesc refutation, draws 10–15 — ROADMAP3 §6-6/12: every loss since
+// the record traces to bytes cycling in L2/L3 where the winning path
+// had L1-resident state).
+const _: () = nf_transport::wide::assert_desc_ring_footprint(DESC_CAP as usize);
 
 /// Main → worker work item: the span body to verify.
 ///
@@ -1829,6 +1839,14 @@ pub struct HydraFabric {
     /// sustained default is the RING + distinct placement; rxdesc stays
     /// merged as the armed attribution arm. Per-run constant, like `desc8`.
     pub rxdesc: Option<Arc<RxdescState>>,
+    /// R20 (HFT_DESC_WIDE): the staged 512-bit wide-commit submission
+    /// (nf_transport::wide) — `HFT_DESC_WIDE=1` ARMS it (requires desc8
+    /// + the RING path + AVX512F; the env is read once here, outside
+    /// every window). The staged word stream is bit-identical to the
+    /// scalar path's — the workers read the same lines they read today;
+    /// only the store WIDTH changes (16 scalar 8-B stores per window →
+    /// two `vmovdqu64`). Per-run constant, like `desc8`.
+    pub desc_wide: bool,
 }
 
 impl HydraFabric {
@@ -1863,7 +1881,10 @@ impl HydraFabric {
         // pre-diet rxdesc worker verbatim). Read once here, outside every
         // window (law #9: env parsing is allocation).
         let diet = std::env::var("HFT_RXDIET").as_deref() != Ok("0");
-        Self::spawn_pinned_full(workers, worker_cpus, desc8, rxdesc, diet)
+        // R20: the wide-commit arm (directive §4 Priority 1 — read once
+        // here; requires the Desc8 RING path and AVX512F silicon).
+        let wide = nf_transport::wide::desc_wide_arm(desc8, rxdesc);
+        Self::spawn_pinned_full(workers, worker_cpus, desc8, rxdesc, diet, wide)
     }
 
     /// R12: `spawn_pinned` with an explicit descriptor format (the
@@ -1871,12 +1892,24 @@ impl HydraFabric {
     /// serves CI sweeps). The R16b rxdesc path stays OFF in this form —
     /// the legacy ring path is what the existing parity suite pins.
     pub fn spawn_pinned_desc8(workers: usize, worker_cpus: &[usize], desc8: bool) -> Box<Self> {
-        Self::spawn_pinned_full(workers, worker_cpus, desc8, false, true)
+        Self::spawn_pinned_full(workers, worker_cpus, desc8, false, true, false)
+    }
+
+    /// R20: `spawn_pinned_desc8` with the staged wide-commit arm FORCED
+    /// (the in-process parity form — the env form is the CI arm). The
+    /// per-commit dispatch still honors `wide_store_available()`, so
+    /// non-AVX512 hosts exercise the staging protocol through the scalar
+    /// fallback and AVX512 hosts (the CI Xeons) run the two `vmovdqu64`
+    /// stores.
+    pub fn spawn_pinned_desc8_wide(workers: usize, worker_cpus: &[usize]) -> Box<Self> {
+        Self::spawn_pinned_full(workers, worker_cpus, true, false, true, true)
     }
 
     /// R16b: the full-control spawn (descriptor format + submission path).
     /// R16e: + the diet flag (the rxdesc worker-eval shape; `false` = the
     /// pre-diet worker verbatim — the parity suite pins both shapes).
+    /// R20: + the wide-commit arm (the in-process `HFT_DESC_WIDE` form —
+    /// `true` stages 16-desc windows through `nf_transport::wide`).
     /// All allocation (rings, arrays, threads) happens here — outside
     /// every measurement window.
     pub fn spawn_pinned_full(
@@ -1885,7 +1918,14 @@ impl HydraFabric {
         desc8: bool,
         rxdesc: bool,
         diet: bool,
+        wide: bool,
     ) -> Box<Self> {
+        // R20 defensive guard: the staging path speaks the Desc8 word
+        // format on the RING — never the legacy 16-B descs, never the
+        // rxdesc arrays (the env gate desc_wide_arm already enforces
+        // this; the explicit form gets the same sanitize so a future
+        // misuse cannot corrupt the legacy protocol).
+        let wide = wide && desc8 && !rxdesc;
         let kernel = CrcKernel::detect();
         let shutdown = Arc::new(AtomicBool::new(false));
         let mut handles = Vec::with_capacity(workers);
@@ -1948,6 +1988,7 @@ impl HydraFabric {
             kernel,
             desc8,
             rxdesc: rxdesc_state,
+            desc_wide: wide,
         })
     }
 
@@ -2203,6 +2244,27 @@ pub struct HydraSpanSink<'a> {
     /// The assist watermark: chunks go inline when pending spans exceed
     /// this (HFT_ASSIST_WATERMARK; 0 = never; force_inline overrides).
     rx_assist_wm: u64,
+    // ── R20: HFT_DESC_WIDE staged submission state ──
+    /// The wide-commit arm (per-run constant from the fabric; `false` =
+    /// the scalar in-place path verbatim — the rollback is
+    /// `HFT_DESC_WIDE` unset).
+    wide: bool,
+    /// The 128-B staging window (16 Desc8 words — Chunk16): one
+    /// 64-B-aligned line pair on the submitting core's stack top,
+    /// produced per span, committed once per window.
+    stage: nf_transport::wide::DescStage16,
+    /// Words currently staged (0..=15; a run tail drains in
+    /// `flush_pending` before the publish).
+    stage_len: u32,
+    /// ABSOLUTE ring word position of `stage.words[0]` (the pending
+    /// run's first word — the anchor's position).
+    stage_pos: u64,
+    /// Wide windows committed (telemetry — windows, not chunks).
+    wide_commits: u64,
+    /// Wrap-fallback windows (telemetry; ≈ wide_commits/128 expected
+    /// at the 2048-word ring — a higher rate is a position-accounting
+    /// regression signal).
+    wide_wraps: u64,
 }
 
 impl<'a> HydraSpanSink<'a> {
@@ -2297,6 +2359,12 @@ impl<'a> HydraSpanSink<'a> {
             rx_marks_cleared: false,
             rx_fixes: 0,
             rx_assist_wm: Self::assist_watermark(),
+            wide: fabric.map(|f| f.desc_wide).unwrap_or(false),
+            stage: nf_transport::wide::DescStage16::zeroed(),
+            stage_len: 0,
+            stage_pos: 0,
+            wide_commits: 0,
+            wide_wraps: 0,
         }
     }
 
@@ -2355,6 +2423,12 @@ impl<'a> HydraSpanSink<'a> {
         self.next_span = 0;
         self.fold_pos = 0;
         self.pending_len = 0;
+        // R20: a drained run has an empty staging window (the
+        // pending_len == 0 assert above proves every run flushed, and
+        // every flush drains the window). Reset defensively anyway.
+        debug_assert_eq!(self.stage_len, 0, "hydra reset with staged window");
+        self.stage_len = 0;
+        self.stage_pos = 0;
         // R16b: reset = a fresh generation (spans restart at 0; the
         // workers re-anchor). The old generation drained (asserted above),
         // so every array slot is free for the new one.
@@ -2594,6 +2668,12 @@ impl<'a> HydraSpanSink<'a> {
     /// keep the cursors chunk-aligned; the pass tail publishes a partial
     /// run — all slot indexing is ring-masked, so unaligned publishes are
     /// safe. The space check happened at chunk start (see `submit_span`).
+    ///
+    /// R20: the single flush FUNNEL — every publish site (chunk completion,
+    /// end_pass, finish) drains the partial staging window HERE, before
+    /// the Release, so the staged tail becomes worker-visible exactly
+    /// like the in-place words (inline runs never stage — `stage_len` is
+    /// 0 there by construction).
     #[inline]
     fn flush_pending(&mut self) {
         let n = self.pending_len;
@@ -2614,6 +2694,27 @@ impl<'a> HydraSpanSink<'a> {
             None => unreachable!("flush_pending in inline mode"),
         };
         let lane = &fabric.lanes[self.pending_lane];
+        // R20: drain the partial staging window (n % 16 tail words) with
+        // the masked scalar loop BEFORE the Release publish below.
+        // SAFETY: the tail's slots [stage_pos, +stage_len) lie inside the
+        // run's chunk-open reservation ([pending_head, pending_head + n))
+        // and are producer-owned; the publish Store(Release) follows.
+        if self.stage_len > 0 {
+            debug_assert!(
+                self.wide,
+                "staged words without the wide arm (protocol regression)"
+            );
+            unsafe {
+                nf_transport::wide::commit_partial_scalar(
+                    lane.desc_words().as_mut_ptr(),
+                    DESC_CAP as usize,
+                    self.stage_pos,
+                    &self.stage.words,
+                    self.stage_len as usize,
+                );
+            }
+            self.stage_len = 0;
+        }
         // SAFETY: slots [h0 & MASK, +n) were producer-owned (space checked
         // at chunk start) and fully written before this Release store.
         let h0 = self.pending_head;
@@ -2666,6 +2767,13 @@ impl<'a> HydraSpanSink<'a> {
         }
         if let Some(slot) = self.cur_inline {
             self.submit_inline_span(slot, body);
+        } else if self.wide {
+            // R20 (HFT_DESC_WIDE): the staged wide-commit path — the
+            // staged word STREAM is bit-identical to the scalar path
+            // below (anchor first, spans in order); only the store
+            // WIDTH changes (16 scalar 8-B stores per window → two
+            // `vmovdqu64` — see submit_span_wide).
+            self.submit_span_wide(fabric, body);
         } else {
             debug_assert_eq!(
                 ((self.next_span / CHUNK) % self.n_lanes as u64) as usize,
@@ -2848,6 +2956,85 @@ impl<'a> HydraSpanSink<'a> {
                 self.flush_pending();
             }
             self.rx_publish_ready();
+        }
+    }
+
+    /// R20 (HFT_DESC_WIDE): the staged wide-commit submission — the
+    /// 512-bit lever on the main-side per-span tax (directive §4
+    /// Priority 1 / ROADMAP3 §4.2: "the rxdesc win without the rxdesc
+    /// cost").
+    ///
+    /// Per span: ONE pack + ONE 8-B store into the 128-B staging block
+    /// (the stack-top line pair — L1-resident on this core). Per 16
+    /// staged words: ONE contiguity compare + two `vmovdqu64`
+    /// (`nf_transport::wide::commit_chunk16`), taking the per-span
+    /// store-port µops from 16 to ~0.2 amortized — the ≤ 0.18 cyc/msg
+    /// submission target. Ring-space boundary checks stay per-chunk:
+    /// `open_chunk` reserved `CHUNK + 1` slots for the whole run up
+    /// front (ROADMAP3 §4.2: "the ring's chunk cadence already
+    /// supports" the per-window check), so a window commit needs no
+    /// space check of its own.
+    ///
+    /// The anchor protocol is the scalar path's, staged not stored:
+    /// the run's first word (written at `pending_len == 0`) is the
+    /// ANCHOR desc carrying the run's absolute first span id; the
+    /// worker re-anchors its span-id derivation on it exactly as
+    /// today (the derivation is robust to ANY run shape because it
+    /// never extrapolates across an anchor — assist diversions and
+    /// pass-boundary splits included).
+    ///
+    /// Ring wraps (a window straddling the ring end — 1 in 128 at the
+    /// 2048-word ring) fall back to the masked scalar loop inside
+    /// `commit_chunk16`; chunk/pass-boundary tails (< 16 staged words)
+    /// drain in `flush_pending` before its Release publish.
+    #[inline]
+    fn submit_span_wide(&mut self, fabric: &HydraFabric, body: &[u8]) {
+        // Run open (open_chunk already ran in submit_span's preamble):
+        // the anchor stages as the window's word 0.
+        if self.pending_len == 0 {
+            debug_assert_eq!(
+                ((self.next_span / CHUNK) % self.n_lanes as u64) as usize,
+                self.pending_lane,
+                "hydra wide pending window crossed a lane boundary"
+            );
+            self.stage_pos = self.pending_head;
+            self.stage_len = 0;
+            self.stage.words[0] = desc8_pack_anchor(self.next_span as u32);
+            self.stage_len = 1;
+            self.pending_len = 1;
+        }
+        // Per span: one pack + one 8-B store into the staging block.
+        // (The blob base was captured by submit_span's preamble — the
+        // single write-once point.)
+        let off = (body.as_ptr() as usize).wrapping_sub(self.blob_base);
+        debug_assert!(off <= u32::MAX as usize, "Desc8 offset overflows u32");
+        debug_assert!(body.len() <= u16::MAX as usize, "Desc8 len overflows u16");
+        self.stage.words[self.stage_len as usize] =
+            desc8_pack_span(off as u32, body.len() as u16);
+        self.pending_len += 1;
+        self.stage_len += 1;
+        // Per 16 staged words: one contiguity check + two vmovdqu64.
+        if self.stage_len == WIDE_SPANS as u32 {
+            let lane = &fabric.lanes[self.pending_lane];
+            // SAFETY: the window's slots [stage_pos, +16) lie inside the
+            // current run's chunk-open reservation ([pending_head,
+            // pending_head + pending_len ⊆ +CHUNK+1)) — producer-owned,
+            // unread by the worker until the flush publish — and the 16
+            // words are staged in the block.
+            let kind = unsafe {
+                nf_transport::wide::commit_chunk16(
+                    lane.desc_words().as_mut_ptr(),
+                    DESC_CAP as usize,
+                    self.stage_pos,
+                    &self.stage.words,
+                )
+            };
+            self.wide_commits += 1;
+            if kind == CommitKind::Scalar {
+                self.wide_wraps += 1;
+            }
+            self.stage_pos += WIDE_SPANS as u64;
+            self.stage_len = 0;
         }
     }
 
@@ -3166,6 +3353,19 @@ impl<'a> HydraSpanSink<'a> {
     pub fn rx_fixes(&self) -> u64 {
         self.rx_fixes
     }
+
+    /// R20 telemetry: the staged wide-commit submission's health —
+    /// (armed, wide windows committed, wrap-fallback windows). On a
+    /// healthy arm: `wraps ≈ commits/128` (the ring-end straddle rate
+    /// at the 2048-word ring); a materially higher wrap rate is a
+    /// position-accounting regression signal, and `commits == 0` with
+    /// `armed == true` means no submission ran through the staging
+    /// path (the run never armed — check `HFT_DESC_WIDE` reached the
+    /// fabric spawn).
+    #[inline]
+    pub fn wide_telemetry(&self) -> (bool, u64, u64) {
+        (self.wide, self.wide_commits, self.wide_wraps)
+    }
 }
 
 impl<'a> Sink for HydraSpanSink<'a> {
@@ -3475,6 +3675,55 @@ mod tests {
             let got_fabric3 = hydra_pass(&mut t2, sess, &fabric);
             assert_eq!(got_fabric3, want, "fabric-after-assist diverged");
         } // R12 both formats
+    }
+
+    /// R20 (HFT_DESC_WIDE): the staged wide-commit submission must be
+    /// BIT-EXACT against the sequential reference across every mode —
+    /// fabric, determinism (a second pass over the same fabric),
+    /// FORCED work-assist (every chunk through the inline ring — the
+    /// scheduling-diversion case the anchor protocol exists for), and
+    /// mixed mode after a forced run — exactly as
+    /// `t_hydra_bitparity_default_schedule` pins the scalar and legacy
+    /// formats. AVX-512 hosts (the CI Xeons) run the two `vmovdqu64`
+    /// wide stores; hosts without AVX-512F exercise the staging
+    /// protocol through the per-commit scalar fallback (the same
+    /// ownership and stream invariants).
+    #[test]
+    fn t_hydra_bitparity_wide_desc() {
+        let gt = load_mini();
+        let cfg = ReplayConfig {
+            msgs_per_packet: Packetize::MtuBound(1400),
+            guarantee_coverage: true,
+            ..Default::default()
+        };
+        let sched = build_schedule(&gt, &cfg);
+        let sess = *b"HYDRATEST1";
+        let fabric = HydraFabric::spawn_pinned_desc8_wide(2, &[]);
+        let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
+        let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
+
+        let want = seq_pass(&mut t1, sess);
+        assert_eq!(want.0, 505_849);
+        let got_fabric = hydra_pass(&mut t2, sess, &fabric);
+        assert_eq!(got_fabric, want, "wide fabric mode diverged");
+        // Determinism across passes (different worker interleavings,
+        // fresh ring positions — the wrap windows land differently).
+        let got_fabric2 = hydra_pass(&mut t2, sess, &fabric);
+        assert_eq!(got_fabric2, want, "wide determinism diverged");
+        // FORCED work-assist — every chunk inline, folded in strict span
+        // order; the staging window must interleave with the inline ring
+        // without touching it.
+        let got_assist = assist_pass(&mut t2, sess, &fabric);
+        assert_eq!(got_assist, want, "wide forced work-assist diverged");
+        // Mixed mode after a forced run (the ring resets cleanly).
+        let got_fabric3 = hydra_pass(&mut t2, sess, &fabric);
+        assert_eq!(got_fabric3, want, "wide fabric-after-assist diverged");
+        // The scalar-format CONTROL over the same schedule (the staged
+        // word stream must equal the scalar path's — same schedule, same
+        // fold, only the store width differs).
+        let fabric_scalar = HydraFabric::spawn_pinned_desc8(2, &[], true);
+        let got_scalar = hydra_pass(&mut t2, sess, &fabric_scalar);
+        assert_eq!(got_scalar, want, "scalar-format control diverged");
     }
 
     /// R8 phase-5: a fabric pass with the work-assist FORCED on — every
@@ -3930,7 +4179,7 @@ mod tests {
                     if !diet && w != 2 {
                         continue; // the pre-diet pin covers the essential shape only
                     }
-                    let fabric = HydraFabric::spawn_pinned_full(w, &[], true, true, diet);
+                    let fabric = HydraFabric::spawn_pinned_full(w, &[], true, true, diet, false);
 
                     // (a) the check+fix path (single-threaded transport: no
                     // prefill — every array entry written by the sink itself).
@@ -4053,7 +4302,7 @@ mod tests {
         // mid-chunk crossings all under load).
         for diet in [true, false] {
             let label = if diet { "diet" } else { "pre-diet" };
-            let fabric = HydraFabric::spawn_pinned_full(1, &[], true, true, diet);
+            let fabric = HydraFabric::spawn_pinned_full(1, &[], true, true, diet, false);
             let mut t = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce_cpu_auto(
                 &gt,
                 sched.clone(),
