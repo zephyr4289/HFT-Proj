@@ -159,6 +159,16 @@ pub const OFOLD_MG_LO: [u64; 8] = [
     OFOLD_MG6_LO, OFOLD_MG7_LO,
 ];
 
+/// R22: the TRI-STREAM step pair for the natural-domain fold — the k=3
+/// entry of the G-table law (R21, scripts/r21_ofold_derive.py): ONE
+/// reduced-pair 2-clmul step advances a state by THREE fold units, the
+/// pair being (K^3 (x) y^64, K^3) = (G[40], G[48]) with K = RKLO mod VM
+/// = VR0. Both alias the octo-stream offset-3 merge pair — the same ring
+/// elements (the tables are ONE law); named separately so the tri
+/// kernel's derivation reads self-contained.
+pub const TRI_K3_HI: u64 = OFOLD_MG3_HI;
+pub const TRI_K3_LO: u64 = OFOLD_MG3_LO;
+
 /// R14: the vector ending's seed constant — the value of the 16-byte
 /// monomial family at degree 0 (empirically pinned: `crc32_u64(crc32_u64(
 /// 0, 1), 0)`), and the multiplier that turns the reflect state into the
@@ -514,16 +524,24 @@ impl CrcKernel {
     /// R11: evaluate one span through the TRI-STREAM fold — the body's
     /// block-pair units split mod-3 across three independent (even, odd)
     /// state pairs (six independent clmul chains over ONE sequential load
-    /// stream), then merged with the fixed power-of-y constants back into
-    /// the exact single-stream state before the endings. Same value as
-    /// [`Self::eval`] by construction (the fold congruence is linear; the
-    /// differential suite pins it). The point is latency: the two-stream
-    /// kernel's per-register chain is one `clmul -> xor -> clmul -> xor`
-    /// dependency per 128 body bytes, and measured fold512 rates sit at
-    /// ~9 cycles per step — right where that chain binds. Three chains
-    /// give the out-of-order engine 50% more slack per step at the same
-    /// issue cost per byte; whether the kernel is chain-bound or
-    /// port-bound is exactly what the kbench `fold512_tri` row decides.
+    /// stream), then merged back into the single-stream state class
+    /// before the endings. Same value as [`Self::eval`] on every input
+    /// (the differential suite pins it). The point is latency: the
+    /// two-stream kernel's per-register chain is one
+    /// `clmul -> xor -> clmul -> xor` dependency per 128 body bytes, and
+    /// measured fold512 rates sit at ~9 cycles per step — right where
+    /// that chain binds. Three chains give the out-of-order engine 50%
+    /// more slack per step at the same issue cost per byte; whether the
+    /// kernel is chain-bound or port-bound is exactly what the kbench
+    /// `fold512_tri` row decides.
+    ///
+    /// R22: the `Reflect` arm is now the NATURAL-DOMAIN tri-stream
+    /// ([`imp::span_fold_eval_tri_r`], the class-exact K^3 shape) — the
+    /// worker drain's default verification kernel (the directive's
+    /// fold512_tri wiring; the Zen 5 kbench row priced T=3 at 64.90 GB/s
+    /// vs 59.33 sequential, and the T=8 merge loses at the real ~wp 10.5
+    /// mix). `HFT_WORKER_TRI=0` rolls the worker drain back to the
+    /// sequential natural kernel.
     ///
     /// # Safety
     /// Same feature contract as [`Self::eval`].
@@ -532,7 +550,7 @@ impl CrcKernel {
         match self {
             Self::Scalar => span_crc32c_8lane(body),
             Self::Fold512 => imp::span_fold_eval_tri(body),
-            Self::Reflect => imp::span_fold_eval_r(body),
+            Self::Reflect => imp::span_fold_eval_tri_r(body),
         }
     }
 
@@ -672,7 +690,8 @@ impl CrcKernel {
 pub(crate) mod imp {
     use super::{
         DFOLD_K2_HI, DFOLD_K2_LO, KP128, KP192, FOLD_MIN_LEN, KP256, KP320, KP384, KP448,
-        OFOLD_K8_HI, OFOLD_K8_LO, OFOLD_MG_HI, OFOLD_MG_LO, RKHI, RKLO, VH64, VM, VMU, VR0,
+        OFOLD_K8_HI, OFOLD_K8_LO, OFOLD_MG_HI, OFOLD_MG_LO, RKHI, RKLO, TRI_K3_HI, TRI_K3_LO,
+        VH64, VM, VMU, VR0,
     };
     use crate::sink::span_crc32c_8lane;
     use std::arch::x86_64::*;
@@ -1117,6 +1136,120 @@ pub(crate) mod imp {
             }
             let c = (wp - 1 - m) % 8;
             debug_assert!(c >= 1 && c <= 7);
+            let khi = _mm512_set1_epi64(OFOLD_MG_HI[c] as i64);
+            let klo = _mm512_set1_epi64(OFOLD_MG_LO[c] as i64);
+            acc.even = merge_stream(acc.even, st[m].even, khi, klo);
+            acc.odd = merge_stream(acc.odd, st[m].odd, khi, klo);
+        }
+        acc.units = wp;
+        acc
+    }
+
+    /// R22: the TRI-STREAM (T=3) natural-domain block-pair loop — the
+    /// worker drain's default fold shape (the directive's fold512_tri
+    /// wiring; the Zen 5 kbench row priced T=3 at 64.90 GB/s vs 59.33
+    /// sequential — the sweet spot between chain latency and merge
+    /// overhead at the real ~1,344B span mix, where the T=8 merge's 14
+    /// extra clmuls LOSE). One span's word-pair units split mod-3 across
+    /// THREE independent (even, odd) state pairs — six independent clmul
+    /// chains over ONE sequential load stream.
+    ///
+    /// # The math (the octo kernel's P1' law at k=3)
+    ///
+    /// Stream m folds block-pairs {m, m+3, m+6, ...}; between its
+    /// consecutive units sit TWO units of the other streams, so its step
+    /// multiplies the state by K^3 in the ending ring (K = RKLO mod VM =
+    /// VR0) — ONE 2-clmul step with the reduced pair (TRI_K3_HI,
+    /// TRI_K3_LO) = (K^3 (x) y^64, K^3) = (G[40], G[48]). After T_m
+    /// units the stream state is `V_m = sum_t U_{m+3t} (x)
+    /// K^(3(T_m-1-t))`; the full single-stream state is `V = sum_m V_m
+    /// (x) K^(C_m)` with the offset `C_m = (wp-1-m) mod 3` (the octo
+    /// derivation mod 3; the mirror-domain tri's y^256/y^128/y^0 offset
+    /// table re-emerging as ring powers). Each merge is ONE 2-clmul step
+    /// with the reduced pair (OFOLD_MG{c}_HI, OFOLD_MG{c}_LO) = (K^c (x)
+    /// y^64, K^c), c in {1, 2}; the base stream (the one owning the
+    /// body's LAST unit) merges by identity, empty streams merge to
+    /// zero. The merged states are CLASS-exact (ring congruent to the
+    /// sequential kernel's states — the P1' law), so the vend/vtail
+    /// composed-field ending stack runs unchanged, with the dfold
+    /// dispatch law: vend + vtail-all-r forced for ALL r.
+    ///
+    /// SAFETY: `p` must hold >= 128*wp bytes; requires the AVX-512 +
+    /// VPCLMULQDQ feature contract (callers gate it). `wp >= 1` by the
+    /// FOLD_MIN_LEN dispatcher gate.
+    #[inline(always)]
+    unsafe fn fold_word_triples_r(p: *const u8, wp: usize) -> FoldStates {
+        let khi3 = _mm512_set1_epi64(TRI_K3_HI as i64);
+        let klo3 = _mm512_set1_epi64(TRI_K3_LO as i64);
+        debug_assert!(wp >= 1);
+        // Seed stream m with pair m (streams beyond wp stay zero).
+        let mut st: [FoldStates; 3] = [
+            FoldStates { even: _mm512_setzero_si512(), odd: _mm512_setzero_si512(), units: 0 },
+            FoldStates { even: _mm512_setzero_si512(), odd: _mm512_setzero_si512(), units: 0 },
+            FoldStates { even: _mm512_setzero_si512(), odd: _mm512_setzero_si512(), units: 0 },
+        ];
+        for m in 0..3usize {
+            if m >= wp {
+                break;
+            }
+            // SAFETY: 128*(m+1) <= 128*wp bytes are in bounds.
+            let n0 = _mm512_loadu_si512(p.add(128 * m) as *const _);
+            let n1 = _mm512_loadu_si512(p.add(128 * m + 64) as *const _);
+            st[m] = FoldStates {
+                even: _mm512_unpacklo_epi64(n0, n1),
+                odd: _mm512_unpackhi_epi64(n0, n1),
+                units: 1,
+            };
+        }
+        // Steps: pair q = 3, 4, 5, ... feeds stream (q-3) % 3 — an
+        // unrolled 3-iteration block keeps the mapping division-free;
+        // six independent clmul chains run over ONE sequential load
+        // stream.
+        let mut q = 3usize;
+        while q + 2 < wp {
+            for m in 0..3usize {
+                // SAFETY: 128*(q+m+1) <= 128*wp bytes are in bounds.
+                let n0 = _mm512_loadu_si512(p.add(128 * (q + m)) as *const _);
+                let n1 = _mm512_loadu_si512(p.add(128 * (q + m) + 64) as *const _);
+                fold_step_r(
+                    &mut st[m],
+                    _mm512_unpacklo_epi64(n0, n1),
+                    _mm512_unpackhi_epi64(n0, n1),
+                    khi3,
+                    klo3,
+                );
+            }
+            q += 3;
+        }
+        // Tail pairs (0..=1 of them): stream m takes pair q iff q < wp.
+        while q < wp {
+            let m = q % 3;
+            // SAFETY: 128*(q+1) <= 128*wp bytes are in bounds.
+            let n0 = _mm512_loadu_si512(p.add(128 * q) as *const _);
+            let n1 = _mm512_loadu_si512(p.add(128 * q + 64) as *const _);
+            fold_step_r(
+                &mut st[m],
+                _mm512_unpacklo_epi64(n0, n1),
+                _mm512_unpackhi_epi64(n0, n1),
+                khi3,
+                klo3,
+            );
+            q += 1;
+        }
+        // Merge (once per span): base = the stream owning the LAST unit;
+        // every other live stream folds in with its offset pair (the
+        // OFOLD_MG_HI/LO lookup at c = (wp-1-m) mod 3 in {1, 2}; the
+        // base merges by identity). The merges are mutually independent
+        // (each multiplies only the INCOMING stream's state) — 4
+        // independent clmuls + a 3-deep XOR tree, off the hot loop.
+        let base = (wp - 1) % 3;
+        let mut acc = st[base];
+        for m in 0..3usize {
+            if m == base || m >= wp {
+                continue;
+            }
+            let c = (wp - 1 - m) % 3;
+            debug_assert!(c >= 1 && c <= 2);
             let khi = _mm512_set1_epi64(OFOLD_MG_HI[c] as i64);
             let klo = _mm512_set1_epi64(OFOLD_MG_LO[c] as i64);
             acc.even = merge_stream(acc.even, st[m].even, khi, klo);
@@ -2191,6 +2324,39 @@ pub(crate) mod imp {
         finish_span_r_inner3(body, st, vend, vtail || dfold || ofold, dfold || ofold)
     }
 
+    /// R22: the natural-domain TRI-STREAM fold kernel (single span) — the
+    /// worker drain's default verification shape (the directive's
+    /// fold512_tri wiring). Bit-exact with `span_crc32c_8lane` (the P2
+    /// differential + the exhaustive sweeps); the tri states are
+    /// CLASS-exact, so the composed-field endings run for ALL r — the
+    /// dfold/ofold dispatch law. The ofold axis preempts when armed (the
+    /// deeper split — the precedence law); the class endings are FORCED
+    /// on every fold-class silicon (the R22 arming: the directive prices
+    /// the full T=3 shape per draw on the Zen 5 and Emerald fleets — the
+    /// R14 vend-loss ledger predates Zen 5's four VPCLMUL pipes;
+    /// `HFT_WORKER_TRI=0` rolls the worker drain back to the sequential
+    /// natural kernel, and the CRC-chain ending remains reachable via the
+    /// kbench `fold512_rc` attribution row).
+    ///
+    /// # Safety
+    /// Requires AVX-512F/BW, VPCLMULQDQ, GFNI, SSE4.2.
+    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
+    pub unsafe fn span_fold_eval_tri_r(body: &[u8]) -> u64 {
+        if body.len() < FOLD_MIN_LEN {
+            return span_crc32c_8lane(body);
+        }
+        let wp = body.len() / 64 / 2;
+        // SAFETY: 128*wp <= len (feature contract + caller bounds).
+        let st = if super::ofold_enabled() {
+            fold_word_octets_r(body.as_ptr(), wp)
+        } else {
+            fold_word_triples_r(body.as_ptr(), wp)
+        };
+        // The tri states are CLASS-exact only — the same dispatch law as
+        // dfold/ofold: the composed-field lane-0 ending for ALL r.
+        finish_span_r_inner3(body, st, true, true, true)
+    }
+
     /// R17/T-1: the TRANSPOSED-arena eval (the `fold512_t` kbench row —
     /// the Route T kill test, ROADMAP2 §5.2). Fold loop over the arena
     /// image of `body` (no unpck), ending stack over the ORIGINAL wire
@@ -2362,6 +2528,11 @@ pub(crate) mod imp {
 
     #[inline(always)]
     pub unsafe fn span_fold_eval_tri(body: &[u8]) -> u64 {
+        span_crc32c_8lane(body)
+    }
+
+    #[inline(always)]
+    pub unsafe fn span_fold_eval_tri_r(body: &[u8]) -> u64 {
         span_crc32c_8lane(body)
     }
 }
@@ -2576,6 +2747,11 @@ mod tests {
             // still the same value.
             let god = unsafe { imp::span_fold_eval_r_forced_o(body, true, true, true, true) };
             assert_eq!(want, god, "reflect ofold+dfold diverged at len={}", body.len());
+            // R22: the natural-domain TRI-STREAM fold (the worker drain's
+            // default shape) — forced vend + vtail-all-r (the class-ending
+            // shape). Same value on every body (the P2 differential).
+            let gt3 = unsafe { imp::span_fold_eval_tri_r(body) };
+            assert_eq!(want, gt3, "reflect tri_r diverged at len={}", body.len());
             // R17/T-1: the transposed-arena twin (Route T, ROADMAP2 §5.2) —
             // identical value on every body and both ending shapes, by
             // construction (pure storage permutation; the ending reads the
@@ -2893,6 +3069,28 @@ mod tests {
                 got,
                 cls as u128,
                 "P1' octo class law broken at state bit {bit}"
+            );
+        }
+        // R22: the T=3 tri-stream step pair re-emerges as the octo offset-3
+        // merge pair (the k=3 entry of the SAME law) — the natural-domain
+        // tri kernel's step constants, pinned here end to end.
+        assert_eq!(TRI_K3_HI, OFOLD_MG3_HI, "TRI_K3_HI != OFOLD_MG3_HI");
+        assert_eq!(TRI_K3_LO, OFOLD_MG3_LO, "TRI_K3_LO != OFOLD_MG3_LO");
+        assert_eq!(TRI_K3_LO, g[48], "TRI_K3_LO != G[48]");
+        assert_eq!(TRI_K3_HI, g[40], "TRI_K3_HI != G[40]");
+        // P1' at the tri power, one-hot states: ONE reduced K^3-pair
+        // application == THREE stepwise R13 advances, in class terms.
+        for bit in [0u32, 1, 31, 32, 63, 64, 95, 96, 127] {
+            let v = 1u128 << bit;
+            let got = clmod(clmul((v >> 64) as u64, TRI_K3_HI) ^ clmul(v as u64, TRI_K3_LO));
+            let mut cls = clmod(v) as u64;
+            for _ in 0..3 {
+                cls = rmul(cls, k);
+            }
+            assert_eq!(
+                got,
+                cls as u128,
+                "P1' tri class law broken at state bit {bit}"
             );
         }
     }

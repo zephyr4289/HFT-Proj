@@ -99,6 +99,7 @@ fn main() {
         bench_1t("fold512_eval2", c0, mode_fold512_eval2);
         bench_1t("fold512_pair", c0, mode_fold512_pair);
         bench_1t("fold512_tri", c0, mode_fold512_tri);
+        bench_1t("fold512_tri_r", c0, mode_fold512_tri_r);
         bench_1t("fold512_pclmul_mix", c0, mode_fold512_pclmul_mix);
         // R17 Phase I instruments (CHECKLIST I-1; ROADMAP2 §5.1b) + the
         // Route T kill test (CHECKLIST T-1; ROADMAP2 §5.2). All 1t rows on
@@ -122,6 +123,7 @@ fn main() {
             bench_2t("fold512_rd", "2cpu_distinct", a, b, mode_fold512_rd);
             bench_2t("fold512_ro", "2cpu_distinct", a, b, mode_fold512_ro);
             bench_2t("fold512_tri", "2cpu_distinct", a, b, mode_fold512_tri);
+            bench_2t("fold512_tri_r", "2cpu_distinct", a, b, mode_fold512_tri_r);
         }
     }
     if let Some((a, b)) = smt_pair {
@@ -134,6 +136,7 @@ fn main() {
             bench_2t("fold512_rd", "2cpu_smt", a, b, mode_fold512_rd);
             bench_2t("fold512_ro", "2cpu_smt", a, b, mode_fold512_ro);
             bench_2t("fold512_tri", "2cpu_smt", a, b, mode_fold512_tri);
+            bench_2t("fold512_tri_r", "2cpu_smt", a, b, mode_fold512_tri_r);
         }
     }
     println!("KBENCH done");
@@ -476,6 +479,26 @@ fn mode_fold512_pair(buf: &[u8], sink: &mut u64) -> usize {
 /// per span price it slightly below on short spans).
 fn mode_fold512_tri(buf: &[u8], sink: &mut u64) -> usize {
     let kernel = CrcKernel::Fold512;
+    let mut off = 0usize;
+    let mut acc = 0u64;
+    while off + SPAN <= buf.len() {
+        // SAFETY: main() only dispatches here when fold512_available().
+        acc ^= unsafe { kernel.eval_tri(&buf[off..off + SPAN]) };
+        off += SPAN;
+    }
+    *sink = acc;
+    off
+}
+
+/// R22: the natural-domain TRI-STREAM fold (the worker drain's DEFAULT
+/// verification shape — the directive's fold512_tri wiring). fold512_tri_r
+/// vs fold512_r on the SAME draw prices the full armed shape (the class-
+/// exact K^3 interleave + the forced vend+vtail-all-r endings) against the
+/// sequential natural kernel with its silicon-default endings — the exact
+/// delta the 11b sustained verdict converts. The mirror-domain tri row
+/// (`fold512_tri`) stays for the cross-domain attribution ledger.
+fn mode_fold512_tri_r(buf: &[u8], sink: &mut u64) -> usize {
+    let kernel = CrcKernel::Reflect;
     let mut off = 0usize;
     let mut acc = 0u64;
     while off + SPAN <= buf.len() {

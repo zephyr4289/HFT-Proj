@@ -682,9 +682,14 @@ fn lane_worker(
     // `kernel.eval_tri` (three interleaved state pairs over one load
     // stream; six independent clmul chains instead of two). The kbench
     // `fold512_tri` row prices the kernel-level effect; this sweep prices
-    // it on the real span mix through the full worker loop. Read once at
+    // it on the real span mix through the full worker loop.
+    // R22: the knob is DEFAULT ON — the directive's fold512_tri wiring
+    // (the Zen 5 kbench draw priced the kernel at 64.90 GB/s vs 59.33
+    // sequential, the sweet spot over the T=8 merge at the real ~wp 10.5
+    // mix). `HFT_WORKER_TRI=0` is the documented rollback (CI arm 11l
+    // keeps the un-armed side of the ledger on every push). Read once at
     // worker start, outside every window.
-    let tri = std::env::var("HFT_WORKER_TRI").as_deref() == Ok("1");
+    let tri = std::env::var("HFT_WORKER_TRI").as_deref() != Ok("0");
     let pf = PfCfg::detect(kernel);
     // R15: the drain granularity (HFT_WORKER_BATCH, the supply-side sweep —
     // read once at worker start, outside every window).
@@ -876,8 +881,11 @@ fn lane_worker(
                             // design — see null_mode doc).
                             (dlen as u64) | ((dsid as u64) << 32)
                         } else if tri {
-                            // R11: the tri-stream fold — same value as eval
-                            // (D11-pinned), different ILP structure.
+                            // R11/R22: the tri-stream fold — same value as
+                            // eval (D11 + the P2 differential), different
+                            // ILP structure. DEFAULT (the R22 arming); the
+                            // sequential natural kernel is the HFT_WORKER_TRI=0
+                            // rollback below.
                             let body = unsafe {
                                 std::slice::from_raw_parts(dptr as *const u8, dlen as usize)
                             };
@@ -959,6 +967,11 @@ fn lane_worker_rxdesc(
     // worker_batch() parses an env var, which ALLOCATES. The first 11u
     // shard caught the per-iteration call as an ALLOC_DELTA violation).
     let wbatch = worker_batch();
+    // R22: the tri-stream fold — DEFAULT ON in every worker shape (the
+    // directive's fold512_tri wiring; see lane_worker's R22 note).
+    // `HFT_WORKER_TRI=0` is the rollback. Read once here, outside every
+    // window (law #9: env parsing is allocation).
+    let tri = std::env::var("HFT_WORKER_TRI").as_deref() != Ok("0");
     // Result cursor — per-LANE lifetime, continuing across generations
     // (the fresh sink's fold starts from the lane's res_tail, exactly as
     // the ring protocol's continuation).
@@ -1179,7 +1192,13 @@ fn lane_worker_rxdesc(
                         )
                     };
                     // SAFETY: feature contract verified at spawn.
-                    unsafe { kernel.eval(body) }
+                    // R22: the tri-stream fold is the DEFAULT shape (the
+                    // class-exact K^3 interleave; same value as eval).
+                    if tri {
+                        unsafe { kernel.eval_tri(body) }
+                    } else {
+                        unsafe { kernel.eval(body) }
+                    }
                 };
                 debug_assert!(gid <= u32::MAX as u64, "span id exceeds u32");
                 res_slots[((rhead + nres) & RES_MASK) as usize] = Res {
@@ -1284,6 +1303,11 @@ fn lane_worker_rxdesc_diet(
     // The drain batch (read ONCE at worker start — outside every window;
     // worker_batch() parses an env var, which ALLOCATES).
     let wbatch = worker_batch();
+    // R22: the tri-stream fold — DEFAULT ON in every worker shape (the
+    // directive's fold512_tri wiring; see lane_worker's R22 note).
+    // `HFT_WORKER_TRI=0` is the rollback. Read once here, outside every
+    // window (law #9: env parsing is allocation).
+    let tri = std::env::var("HFT_WORKER_TRI").as_deref() != Ok("0");
     // R16e: the strand-A wait depth (HFT_FRONTIER_LAPS; 0 = strand A
     // off — the pre-diet wake cadence with B+C armed). Read once here,
     // outside every window (law #9).
@@ -1612,7 +1636,13 @@ fn lane_worker_rxdesc_diet(
                         )
                     };
                     // SAFETY: feature contract verified at spawn.
-                    unsafe { kernel.eval(body) }
+                    // R22: the tri-stream fold is the DEFAULT shape (the
+                    // class-exact K^3 interleave; same value as eval).
+                    if tri {
+                        unsafe { kernel.eval_tri(body) }
+                    } else {
+                        unsafe { kernel.eval(body) }
+                    }
                 };
                 debug_assert!(gid <= u32::MAX as u64, "span id exceeds u32");
                 res_slots[((rhead + nres) & RES_MASK) as usize] = Res {
