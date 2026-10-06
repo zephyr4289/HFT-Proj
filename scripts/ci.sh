@@ -342,7 +342,7 @@ echo "=== 11fb. R21: Fused In-Register Verification ARMED (the Task 2 shape) ===
 # run unchanged (the fused path IS the inline-assist machinery's
 # deterministic parity configuration). Sustained-vs-11b on the same draw
 # prices the fused fabric shape per class.
-HFT_INLINE_FORCE=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_fused.txt
+HFT_INLINE_FORCE=1 cargo run --release -p nf-engine --bin bench -- --hydra-only 2>&1 | tee /tmp/bench_fused.txt
 grep -q "HYDRA_FUSED_DIAGNOSTIC" /tmp/bench_fused.txt
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_fused.txt
 grep -q "allocs=0" /tmp/bench_fused.txt
