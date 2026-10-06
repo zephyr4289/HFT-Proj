@@ -5,49 +5,54 @@
 
 **`HFT-Proj`** is an ultra-low-latency, deterministic, zero-allocation **Nasdaq TotalView-ITCH 5.0 over MoldUDP64 feed arbitrator**, reorder engine, and gap-recovery sequencer implemented in modern Rust.
 
-Originally engineered for a **25M msg/s** target on standard cloud VMs, the project evolved through systematic architectural breakthroughs to reach **1.2348 Billion messages/second** sustained full verification and **3.625 Billion messages/second** pure RX ingest:
+Originally engineered for a **25M msg/s** target on standard cloud VMs, the project evolved through systematic architectural breakthroughs to reach **2.009 Billion messages/second** sustained full verification and **12.103 Billion messages/second** pure RX ingest:
 
 1. **[25M msg/s Baseline (The Hash Latency Trap)](docs/15-tail-study.md)**: Forensic stage-ectomy decomposed harness latency; discovered the FNV-1a serial dependency trap (107 cyc `imul` chain).
 2. **[250M+ msg/s Single-Core (TITAN Program)](docs/19-titan.md)**: Memory page warming, `FrameMemo` verdict precomputation (4.41 cyc/msg), closed-form $O(1)$ batch span dispatch, and 8-lane interleaved hardware CRC32C.
 3. **[600M+ msg/s Multi-Core Fabric (HYDRA Program)](docs/20-hydra.md)**: Pure vs. serial ordering split, chunked SPSC lock-free ring handoff (anti-ping-pong batching), and worker lookahead prefetching.
 4. **[1.1B+ msg/s Multi-Core Fabric (GIGAHFT Program)](docs/21-gigahft.md)**: VPCLMULQDQ mirror-domain carry-less CRC32C folding, zero-copy in-place 128-bit ring descriptor stores, and cross-pass double-buffered fabric overlapping.
-5. **[726M -> 1.109B msg/s Assist Equilibrium (R8 / R10 Programs)](docs/22-r8-teraphase.md)**: Dedicated RX-pipelined transport ([`docs/22-r8-teraphase.md`](docs/22-r8-teraphase.md)) and the 64-slot deep assist ring ([`docs/23-r10-assist.md`](docs/23-r10-assist.md)) recycling surplus submitting-core cycles into SIMD CRC.
-6. **[1.2348B msg/s Sustained & 3.625B Ingest (R11 / R12 Records)](docs/24-r11-phase4.md)**: Desc8 compact 8-byte descriptors ([`docs/25-r12-ladder.md`](docs/25-r12-ladder.md)), consumed-event prepatch engine, THP 2MB memory grant, and placement topology resolution.
+5. **[1.2348B msg/s Sustained & 3.625B Ingest (R11 / R12 Records)](docs/24-r11-phase4.md)**: Desc8 compact 8-byte descriptors ([`docs/25-r12-ladder.md`](docs/25-r12-ladder.md)), consumed-event prepatch engine, THP 2MB memory grant, and placement topology resolution.
+6. **[1.959B / 12.103B Frontier (Zen 5 & Xeon 6)](docs/33-r21-fused-verify.md)**: Discrete physical-core pinning in shared L3 domain ([`docs/SILICON_DATA.md`](docs/SILICON_DATA.md)), 512-bit vector framing, 0.2145 cyc/msg ingest ceiling.
+7. **[2.009B Sustained & 3.094B Fabric Ceiling (R21 / R22)](docs/35-breakthrough-milestones.md)**: Deterministic Sysfs Topology Verification, 64B NT streaming descriptors, 66.6 GB/s carryless folding, and verified 3.094B transport capacity.
 
 ---
 
 ## 1. Verified Benchmark Metrics
 
-Measured on GitHub Actions reference hardware (**Intel Xeon Platinum 8573C Sapphire Rapids / 8370C Ice Lake @ 2.30–2.60 GHz**):
-
 ### A. Pure Engine Ingest Mechanics (Harness Hash Excluded)
 *Isolates raw transport staging, MoldUDP64 framing, session arbitration, duplicate rejection, and watermark sequencing without downstream verification hash overhead.*
 
-| Ingest Mode | Measured Latency | p95 Latency | p99 Tail | StdDev (CV%) | Verified Throughput | Reference Document |
+| Ingest Mode | Measured Latency | p95 Latency | p99 Tail | StdDev (CV%) | Verified Throughput | Reference Hardware & Document |
 |---|---|---|---|---|---|---|
-| **Classic Ingest** (`CountSink`, per-msg callback) | **`7.51 cyc/msg`** (3.07 ns) | **`8.01 cyc`** | **`8.13 cyc`** | 0.39c (5.19%) | **`325.25M msg/s`** | [`docs/19-titan.md`](docs/19-titan.md) |
-| **Span Ingest** (`SpanCountSink`, $O(1)$ batch span) | **`2.09 cyc/msg`** (0.85 ns) | **`2.17 cyc`** | **`2.34 cyc`** | 0.06c (3.16%) | **`1.169 Billion msg/s`** | [`docs/21-gigahft.md`](docs/21-gigahft.md) |
-| **R8 RX-Pipelined Pure Ingest** (Front A) | **`0.63 cyc/msg`** (0.27 ns) | **`0.65 cyc`** | **`0.67 cyc`** | 0.01c (1.50%) | **`3.625 Billion msg/s`** 🚀 | [`docs/24-r11-phase4.md`](docs/24-r11-phase4.md) |
+| **Classic Ingest** (`CountSink`, per-msg callback) | **`7.51 cyc/msg`** (3.07 ns) | **`8.01 cyc`** | **`8.13 cyc`** | 0.39c (5.19%) | **`325.25M msg/s`** | Intel 8573C ([`docs/19-titan.md`](docs/19-titan.md)) |
+| **Span Ingest** (`SpanCountSink`, $O(1)$ batch span) | **`2.09 cyc/msg`** (0.85 ns) | **`2.17 cyc`** | **`2.34 cyc`** | 0.06c (3.16%) | **`1.169 Billion msg/s`** | Intel 8573C ([`docs/21-gigahft.md`](docs/21-gigahft.md)) |
+| **R8 RX-Pipelined Pure Ingest** (Front A) | **`0.63 cyc/msg`** (0.27 ns) | **`0.65 cyc`** | **`0.67 cyc`** | 0.01c (1.50%) | **`3.625 Billion msg/s`** | Intel 8573C ([`docs/24-r11-phase4.md`](docs/24-r11-phase4.md)) |
+| **R21/R22 SIMD Vector Ingest** (Topology Verified) | **`0.2145 cyc/msg`** (0.047 ns) | **`0.2255 cyc`** | **`0.2481 cyc`** | 0.01c (1.18%) | **`12.103 Billion msg/s`** 🚀 | AMD EPYC 9V45 Zen 5 ([`docs/35-breakthrough-milestones.md`](docs/35-breakthrough-milestones.md)) |
 
 ### B. Multi-Core Verification Fabric (Every Emitted Byte CRC32C-Verified In-Window)
 *Full production pipeline with strict in-window verification: Virtual clock pacing $\to$ Transport poll $\to$ MoldUDP64 framing $\to$ Session dispatch $\to$ Duplicate rejection $\to$ Watermark sequencing $\to$ [`HydraSpanSink`](crates/nf-testkit/src/hydra.rs) (parallel chunked AVX-512 / VPCLMULQDQ mirror-domain CRC32C fold, sequence continuity, and strict emission-order serial fold).*
 
-| Benchmark Arm | Verified Throughput | Messages in 5.0s Run | Delivered CRC Bandwidth | Allocations | Bit-Exact Integrity | Reference Document |
+| Benchmark Arm | Verified Throughput | Messages in 5.0s Run | Delivered CRC Bandwidth | Allocations | Bit-Exact Integrity | Reference Hardware & Document |
 |---|---|---|---|---|---|---|
-| **PR-1 R11/R12 Sustained Record** (Intel 8573C) | **`1,234,801,472 msg/s`** (1.235B/s) | **6.174 Billion msgs** | **`34.15 GB/s`** | `0 bytes` | **`PASS`** (`0x881639cead506f25`) | [`docs/24-r11-phase4.md`](docs/24-r11-phase4.md) & [`docs/25-r12-ladder.md`](docs/25-r12-ladder.md) |
-| **PR-1 R10 Gate-Break Sustained** (Intel 8573C) | **`1,109,130,234 msg/s`** (1.109B/s) | **5.545 Billion msgs** | **`30.67 GB/s`** | `0 bytes` | **`PASS`** (`0x881639cead506f25`) | [`docs/23-r10-assist.md`](docs/23-r10-assist.md) |
-| **PR-1 HYDRA Sustained** (Multi-core baseline) | **`603.31M msg/s`** | **3.016 Billion msgs** | **`16.68 GB/s`** | `0 bytes` | **`PASS`** (`0x881639cead506f25`) | [`docs/20-hydra.md`](docs/20-hydra.md) |
-| **PR-1 TITAN Single-Core** (1 Core Pinned) | **`259.49M msg/s`** | **1.297 Billion msgs** | **`7.18 GB/s`** | `0 bytes` | **`PASS`** (`0x881639cead506f25`) | [`docs/19-titan.md`](docs/19-titan.md) |
+| **R21/R22 Sustained Record** (Zen 5 Shard 40) | **`2,009,064,872 msg/s`** (2.009B/s) 🎯 | **10.045 Billion msgs** | **`66.60 GB/s`** | `0 bytes` | **`PASS`** (`0x881639cead506f25`) | AMD EPYC 9V45 ([`docs/34-r22-tri-drain.md`](docs/34-r22-tri-drain.md)) |
+| **PR-1 R21 Sustained Peak** (Zen 5 Shard 17) | **`1,959,208,315 msg/s`** (1.959B/s) | **9.796 Billion msgs** | **`62.43 GB/s`** | `0 bytes` | **`PASS`** (`0x881639cead506f25`) | AMD EPYC 9V45 ([`docs/33-r21-fused-verify.md`](docs/33-r21-fused-verify.md)) |
+| **PR-1 R11/R12 Sustained Record** (Intel 8573C) | **`1,234,801,472 msg/s`** (1.235B/s) | **6.174 Billion msgs** | **`34.15 GB/s`** | `0 bytes` | **`PASS`** (`0x881639cead506f25`) | Intel 8573C ([`docs/24-r11-phase4.md`](docs/24-r11-phase4.md)) |
+| **PR-1 R10 Gate-Break Sustained** (Intel 8573C) | **`1,109,130,234 msg/s`** (1.109B/s) | **5.545 Billion msgs** | **`30.67 GB/s`** | `0 bytes` | **`PASS`** (`0x881639cead506f25`) | Intel 8573C ([`docs/23-r10-assist.md`](docs/23-r10-assist.md)) |
+| **PR-1 HYDRA Sustained** (Multi-core baseline) | **`603.31M msg/s`** | **3.016 Billion msgs** | **`16.68 GB/s`** | `0 bytes` | **`PASS`** (`0x881639cead506f25`) | Intel 8573C ([`docs/20-hydra.md`](docs/20-hydra.md)) |
+| **PR-1 TITAN Single-Core** (1 Core Pinned) | **`259.49M msg/s`** | **1.297 Billion msgs** | **`7.18 GB/s`** | `0 bytes` | **`PASS`** (`0x881639cead506f25`) | Intel 8573C ([`docs/19-titan.md`](docs/19-titan.md)) |
+| **Transport Fabric Ceiling (`11z` Null)** | **`3,093,915,848 msg/s`** (3.094B/s) 🚀 | **15.469 Billion msgs** | **Non-CRC Limit** | `0 bytes` | **`PASS`** | AMD EPYC 9V45 ([`docs/35-breakthrough-milestones.md`](docs/35-breakthrough-milestones.md)) |
 
 ---
 
 ## 2. Technical Evolution & Architectural Journey
 
 ```
-[1. Baseline] ──► [2. TITAN] ──────► [3. HYDRA] ──────► [4. GIGAHFT] ────► [5. R8/R10 ASSIST] ──► [6. R11/R12 RECORD]
-   24.4M/s           259M/s             603M/s             1.109B/s               1.186B/s              1.235B/s Sustained
-(Hash Trap)    (Span Protocol+Memo) (Chunked Lock-Free) (VPCLMULQDQ Fold)   (64-Slot Assist Ring)  (3.625B Ingest / Desc8)
+[1. Baseline] ──► [2. TITAN] ──► [3. HYDRA] ──► [4. GIGAHFT] ──► [5. R11/R12] ──► [6. R21 ZEN 5] ──► [7. R22 BREAKTHROUGH]
+   24.4M/s          259M/s        603M/s         1.109B/s        1.235B/s          1.959B/s             2.009B Sustained
+ (Hash Trap)        (Memo)       (Chunked)      (VPCLMUL)         (Desc8)      (12.1B Ingest)         (3.09B Ceiling)
 ```
+
+> 📖 **Full Architectural Journey & Decision Log:** See [`docs/35-breakthrough-milestones.md`](docs/35-breakthrough-milestones.md) for the complete forensic record.
 
 ---
 
