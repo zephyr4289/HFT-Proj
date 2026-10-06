@@ -342,6 +342,442 @@ pub const AFFINE_POW_BYTE_TABLE: [u64; 16] = [
     0x3171D430, 0x30D23865, 0x54075546, 0x678EFD01,
 ];
 
+// ── R23b: the O(1) affine span kernels (Engineer 2) ─────────────────────────
+//
+// Derived, pinned and exhaustively verified by
+// `scripts/r23b_affine_kernel_derive.py` (the kernel-layer oracle on top of
+// Engineer 1's `r23_affine_crc_derive.py` law oracle). THE KEY STRUCTURAL
+// RESULT (part K0, basis-exhaustive — GF(2) linearity makes it a COMPLETE
+// proof): the R14 vend Barrett constant structure (VMU, VM, the 32/56/32
+// field-wide shifts, the two correction clmuls) reduces ANY field F < 2^95
+// to F mod VM with the VR0 ending-multiply REMOVED. Every R23 product —
+// u32 register ⊗ u32 constant, or u32 table ⊗ u32 table — is ≤ 62 bits,
+// deep inside that exactness range, so `clmul_reduce_mod_vm` needs ONE
+// product clmul + THREE reduction clmuls and NO new constants, no
+// VR0^-1 compensation, no length-dependent reduction ladder.
+//
+// Kernel inventory (all bit-exact against the reference CRC32C scan and
+// `span_crc32c_8lane` — the K1/K2 differentials, 0 errors):
+//
+//   * `affine_span_const(L)`          — C(L) = G[L] composed from the
+//     shipped tables in ONE clmul + reduction (the k = 0 factor is the
+//     ring identity 1 — table hit only).
+//   * `clmul_reduce_mod_vm(a, b)`     — the scalar 64-bit CLMUL ring
+//     product: PCLMULQDQ on x86_64, portable u128 shift-multiply
+//     elsewhere. Contract: both operands ≤ 32 bits (the width law).
+//   * `span_crc32c_affine_sub`        — THE O(1) single-register span
+//     projection: cum ⊕ (prefix ⊗ C(L) mod VM). Zero payload re-reading,
+//     two clmul chains, no allocation.
+//   * `span_crc32c_8lane_affine_sub`  — the 8-lane VPCLMULQDQ projection:
+//     ONE VPCLMULQDQ per zmm advances FOUR lanes (the 8 lanes ride two
+//     zmm fields), each followed by the plain-Barrett reduction and the
+//     inline FNV-1a-64 lane combine — the EXACT `span_crc32c_8lane` value
+//     for 64-byte-aligned spans, in O(1), without reading a single span
+//     byte. `HFT_CRC_AFFINE_VEC=0` is the rollback knob (the scalar
+//     per-lane path); the default follows the fold512 class gate.
+
+/// R23b: compose the span-length advance constant C(L) = G[L]
+/// = y^(-8L) mod VM for L = 16k + r, k ∈ 0..=128, r ∈ 0..=15 — ONE
+/// carry-less multiply + ONE reduction (k = 0 is the table-only path).
+/// Bounds: L ≤ 2048 (the shipped table horizon; the fabric's span bodies
+/// are 1344 B). Both factors are ≤ 32 bits — the width law holds.
+#[inline(always)]
+pub fn affine_span_const(span_len: usize) -> u64 {
+    let k = span_len / 16;
+    let r = span_len % 16;
+    debug_assert!(span_len <= 2048, "span_len {span_len} beyond the R23 table horizon");
+    if k == 0 {
+        // SAFETY: r ∈ 0..=16 by construction (the table bound).
+        unsafe { *AFFINE_POW_BYTE_TABLE.get_unchecked(r) }
+    } else {
+        // SAFETY: k-1 ∈ 0..=127 (the table bound, pinned above).
+        let t128 = unsafe { *AFFINE_POW_128B_TABLE.get_unchecked(k - 1) };
+        let tr = unsafe { *AFFINE_POW_BYTE_TABLE.get_unchecked(r) };
+        // SAFETY: both factors ≤ 32 bits — the width-law contract.
+        unsafe { clmul_reduce_mod_vm(t128, tr) }
+    }
+}
+
+/// R23b: the scalar 64-bit CLMUL ring product `a ⊗ b mod VM`.
+///
+/// Contract (the R16/R23 width law — enforced by debug_assert):
+/// `a` and `b` are ≤ 32-bit ring elements, so the product is ≤ 62 bits —
+/// inside the K0 plain-Barrett exactness range (< 2^95) with 33 bits of
+/// headroom. On x86_64 this is 1 PCLMULQDQ (the product) + 3 PCLMULQDQ
+/// (the plain Barrett: quotient estimate, first correction, final
+/// correction) + byte shifts — ~4-5 dependent clmuls, no memory, no
+/// allocation. PCLMULQDQ presence follows the crate's standing x86_64
+/// runner contract (Westmere 2010+; `kbench`'s probe aborts otherwise —
+/// same precedent as `fold_step_u128_r`). Non-x86_64 falls back to the
+/// portable u128 shift-multiply + the same reduction (tests pin both).
+///
+/// Returns the FULL reduced value in the low 32 bits; bits ≥ 32 are
+/// cleared (unlike the vend ending, there is no seed multiply here).
+#[inline(always)]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe fn clmul_reduce_mod_vm(a: u64, b: u64) -> u64 {
+    debug_assert!(a < (1 << 32) && b < (1 << 32), "width law: operands must be ≤ 32 bits");
+    #[cfg(target_arch = "x86_64")]
+    {
+        clmul_reduce_mod_vm_pcl(a, b)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        clmul_reduce_mod_vm_sw(a, b)
+    }
+}
+
+/// The K0 plain Barrett at exact xmm semantics (the vend core with the
+/// VR0 multiply removed). `prod` (< 2^63, hi qword zero) reduces to its
+/// residue mod VM in 3 clmuls + 2 byte shifts + 2 xors.
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+#[allow(clippy::missing_safety_doc)]
+pub(crate) unsafe fn clmul_reduce_mod_vm_pcl(a: u64, b: u64) -> u64 {
+    use std::arch::x86_64::*;
+    // SAFETY: PCLMULQDQ per the crate's runner contract (see the
+    // public doc above); all lane operands are in-range by the width
+    // law, so every product fits its 128-bit register. The caller
+    // (clmul_reduce_mod_vm) is compiled only on x86_64.
+    unsafe {
+        let va = _mm_set_epi64x(0, a as i64);
+        let vb = _mm_set_epi64x(0, b as i64);
+        let prod = _mm_clmulepi64_si128(va, vb, 0x00); // P = a ⊗ b (< 2^63)
+        let x = _mm_srli_si128(prod, 4); // low qword = P >> 32 (< 2^31)
+        let vmu = _mm_set_epi64x(0, VMU as i64);
+        let p = _mm_clmulepi64_si128(x, vmu, 0x00); // (P>>32) ⊗ VMU
+        let qh = _mm_srli_si128(p, 7); // low qword = p >> 56
+        let vm = _mm_set_epi64x(0, VM as i64);
+        let qvm = _mm_clmulepi64_si128(qh, vm, 0x00); // q̂ ⊗ VM
+        let r = _mm_xor_si128(prod, qvm);
+        let corr = _mm_srli_si128(r, 4); // low qword = r >> 32
+        let out = _mm_xor_si128(r, _mm_clmulepi64_si128(corr, vm, 0x00));
+        _mm_cvtsi128_si32(out) as u32 as u64 // low 32 = P mod VM
+    }
+}
+
+/// The portable u128 model of the same kernel (the non-x86_64 path AND
+/// the differential oracle's ground model in tests — pinned against the
+/// hardware path on x86_64 by `t_affine_kernel_models`).
+#[cfg(any(test, not(target_arch = "x86_64")))]
+#[inline(always)]
+pub(crate) fn clmul_reduce_mod_vm_sw(a: u64, b: u64) -> u64 {
+    // 64x64 -> 128 carry-less multiply, LSB-first (PCLMULQDQ semantics).
+    let mut prod = 0u128;
+    let mut aa = a as u128;
+    let mut bb = b;
+    while bb != 0 {
+        if bb & 1 != 0 {
+            prod ^= aa;
+        }
+        aa <<= 1;
+        bb >>= 1;
+    }
+    // The K0 plain Barrett (u128 semantics of the xmm sequence above).
+    let x = (prod >> 32) & 0xFFFF_FFFF_FFFF_FFFF;
+    let mut p = 0u128;
+    let mut xv = x;
+    let mut vmu = VMU as u128;
+    while vmu != 0 {
+        if vmu & 1 != 0 {
+            p ^= xv;
+        }
+        xv <<= 1;
+        vmu >>= 1;
+    }
+    let qh = (p >> 56) & 0xFFFF_FFFF_FFFF_FFFF;
+    let r = prod ^ clmul128(qh, VM as u128);
+    let corr = (r >> 32) & 0xFFFF_FFFF_FFFF_FFFF;
+    (r ^ clmul128(corr, VM as u128)) as u64 & 0xFFFF_FFFF
+}
+
+/// 128-bit software carry-less multiply (LSB-first).
+#[cfg(any(test, not(target_arch = "x86_64")))]
+#[inline(always)]
+fn clmul128(a: u128, b: u128) -> u128 {
+    let mut r = 0u128;
+    let mut aa = a;
+    let mut bb = b;
+    while bb != 0 {
+        if bb & 1 != 0 {
+            r ^= aa;
+        }
+        aa <<= 1;
+        bb >>= 1;
+    }
+    r
+}
+
+/// R23b Task 1 — THE O(1) affine span projection, scalar / 64-bit CLMUL
+/// path. THE LAW (Engineer 1's oracle, 10,000/10,000):
+///
+/// ```text
+/// raw(B) = raw(A ∥ B) ⊕ ( raw(A) ⊗ G[L_B] mod VM )
+/// ```
+///
+/// The ingest core snapshots the cumulative raw register at span
+/// boundaries (prefix hash `raw(A)`, cumulative hash `raw(A ∥ B)`); this
+/// kernel projects the span's own register in TWO clmul chains (C(L)
+/// composition + the projection multiply) + ONE XOR — zero payload
+/// re-reading, zero allocation, no table misses. The law holds verbatim
+/// on finalized CRC32C values too (the I = F cancellation), so callers
+/// may feed raw or full snapshots consistently.
+///
+/// Bounds: `span_len` ≤ 2048 (the shipped table horizon). Panics in
+/// debug builds beyond it (release: the projection is undefined — the
+/// fabric's span bodies are 1344 B).
+#[inline(always)]
+#[allow(clippy::missing_safety_doc)]
+pub unsafe fn span_crc32c_affine_sub(cum_crc: u32, prefix_crc: u32, span_len: usize) -> u32 {
+    // 1. Compose the length multiplier C(L) in 1 CLMUL (+1 for k > 0).
+    let c_l = affine_span_const(span_len);
+    // 2. Multiply the prefix register by C(L) and XOR with the cumulative
+    //    register (0 byte reads). SAFETY: width law — both ≤ 32 bits.
+    let shifted_prefix = clmul_reduce_mod_vm(prefix_crc as u64, c_l);
+    cum_crc ^ (shifted_prefix as u32)
+}
+
+/// R23b: the 8-lane vector gate. `HFT_CRC_AFFINE_VEC=1|0` overrides;
+/// otherwise the default follows the fold512 class gate (the kernel needs
+/// AVX-512F + BW + VPCLMULQDQ — the same class `fold512_available()`
+/// pins). Read once per span (OnceLock), never in a step loop.
+pub fn affine_vec_enabled() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| match std::env::var("HFT_CRC_AFFINE_VEC").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => fold512_available(),
+    })
+}
+
+/// R23b Task 1 — the 8-lane O(1) affine span projection: the EXACT
+/// `span_crc32c_8lane(B)` golden hash (8 raw lane registers + the
+/// FNV-1a-64 combine) for a 64-byte-aligned span, computed from the two
+/// 8-lane snapshots WITHOUT reading a single span byte.
+///
+/// THE 8-LANE BRIDGE (Engineer 1's P3b battery): every lane of
+/// `span_crc32c_8lane` is itself a raw register, so for L_B a multiple
+/// of 64 (each lane's B-run = L_B/8 bytes of lane stream):
+///
+/// ```text
+/// lane_k(B) = CL_k(end) ⊕ ( CL_k(start) ⊗ G[L_B / 8] mod VM )
+/// ```
+///
+/// Vector shape (AVX-512F/BW + VPCLMULQDQ): `cvtepu32_epi64` packs the
+/// prefix lanes, `maskz_permutexvar_epi64` lays them out 4-per-zmm in
+/// 128-bit field position (value in the LOW qword), ONE VPCLMULQDQ per
+/// zmm multiplies all 4 fields by the broadcast advance constant, the
+/// K0 plain-Barrett reduces all 4 products per zmm in parallel, and the
+/// unload XORs the cumulative lanes and runs the inline FNV-1a-64
+/// combine. Scalar fallback (no AVX-512): the same law per lane through
+/// `clmul_reduce_mod_vm` — bit-identical output (the K2 differential
+/// covers BOTH paths).
+///
+/// Bounds: `span_len` must be a multiple of 64 and ≤ 16384 (L/8 ≤ 2048,
+/// the table horizon). Panics in debug builds otherwise.
+#[inline]
+pub fn span_crc32c_8lane_affine_sub(
+    cum_lanes: &[u32; 8],
+    prefix_lanes: &[u32; 8],
+    span_len: usize,
+) -> u64 {
+    debug_assert!(
+        span_len % 64 == 0 && span_len / 8 <= 2048,
+        "8-lane bridge: span_len must be 64-byte aligned and ≤ 16384 (got {span_len})"
+    );
+    // The lane advance: G[L/8] composed from the shipped tables.
+    let l8 = span_len / 8;
+    let k = l8 / 16;
+    let r = l8 % 16;
+    let c_adv = if k == 0 {
+        // SAFETY: r < 16 by construction.
+        unsafe { *AFFINE_POW_BYTE_TABLE.get_unchecked(r) }
+    } else {
+        // SAFETY: k-1 ≤ 127 and r < 16 (the table bounds); the width law
+        // holds for both factors.
+        let t128 = unsafe { *AFFINE_POW_128B_TABLE.get_unchecked(k - 1) };
+        let tr = unsafe { *AFFINE_POW_BYTE_TABLE.get_unchecked(r) };
+        // SAFETY: width law.
+        unsafe { clmul_reduce_mod_vm(t128, tr) }
+    };
+    if affine_vec_enabled() {
+        #[cfg(target_arch = "x86_64")]
+        // SAFETY: affine_vec_enabled() gates the AVX-512F/BW + VPCLMULQDQ
+        // class; c_adv is a ≤ 32-bit ring element (the width law).
+        unsafe {
+            return span_crc32c_8lane_affine_sub_vec(cum_lanes, prefix_lanes, c_adv, span_len);
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            unreachable!("affine_vec_enabled() is false on non-x86_64")
+        }
+    }
+    // The scalar fallback: the same law, per lane.
+    let mut lanes = [0u32; 8];
+    for j in 0..8 {
+        // SAFETY: width law — prefix ≤ 32 bits, c_adv ≤ 32 bits.
+        let p = unsafe { clmul_reduce_mod_vm(prefix_lanes[j] as u64, c_adv) };
+        lanes[j] = cum_lanes[j] ^ (p as u32);
+    }
+    fnv_lanes_64(&lanes, span_len)
+}
+
+/// The `span_crc32c_8lane` lane combine: FNV-1a-64 over the 8 lane
+/// registers + the span length (bit-identical to sink.rs's tail).
+#[inline(always)]
+fn fnv_lanes_64(lanes: &[u32; 8], len: usize) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &c in lanes.iter() {
+        h ^= c as u64;
+        h = h.wrapping_mul(0x0100_0000_01B3);
+    }
+    h ^= (len as u32) as u64;
+    h.wrapping_mul(0x0100_0000_01B3)
+}
+
+/// The AVX-512 vector core of [`span_crc32c_8lane_affine_sub`] (the
+/// K2-verified op sequence; `c_adv` = G[L/8], precomposed by the caller).
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw,vpclmulqdq")]
+unsafe fn span_crc32c_8lane_affine_sub_vec(
+    cum_lanes: &[u32; 8],
+    prefix_lanes: &[u32; 8],
+    c_adv: u64,
+    span_len: usize,
+) -> u64 {
+    use std::arch::x86_64::*;
+    unsafe {
+        // Broadcast the advance constant; pack the prefix lanes 8-wide
+        // then interleave into field position (value in LOW qword of each
+        // 128-bit lane, high qword zero — the vend field contract).
+        let bc = _mm512_set1_epi64(c_adv as i64);
+        let pre = _mm256_loadu_si256(prefix_lanes.as_ptr() as *const __m256i);
+        let cvt = _mm512_cvtepu32_epi64(pre); // qword j = prefix lane j
+        let idxa = _mm512_set_epi64(0, 3, 0, 2, 0, 1, 0, 0); // qw [0,0,1,0,2,0,3,0]
+        let idxb = _mm512_set_epi64(0, 7, 0, 6, 0, 5, 0, 4); // qw [4,0,5,0,6,0,7,0]
+        let fa = _mm512_maskz_permutexvar_epi64(0x55, idxa, cvt);
+        let fb = _mm512_maskz_permutexvar_epi64(0x55, idxb, cvt);
+        // ONE VPCLMULQDQ per zmm: 4 fields × (prefix_j ⊗ C) (< 2^63,
+        // high qword of each field zero — the width law).
+        let pa = _mm512_clmulepi64_epi128(fa, bc, 0x00);
+        let pb = _mm512_clmulepi64_epi128(fb, bc, 0x00);
+        // The K0 plain Barrett (the vend-core structure, seed multiply
+        // removed), field-wide cross-qword shifts:
+        //   x = w >> 32; p = x ⊗ VMU; qh = p >> 56; r = w ⊕ qh⊗VM;
+        //   out = r ⊕ (r>>32)⊗VM  — low 32 bits of each field = the lane.
+        let bvmu = _mm512_set1_epi64(VMU as i64);
+        let bvm = _mm512_set1_epi64(VM as i64);
+        let xa = _mm512_alignr_epi8(pa, pa, 4);
+        let pqa = _mm512_clmulepi64_epi128(xa, bvmu, 0x00);
+        let qha = _mm512_alignr_epi8(pqa, pqa, 7);
+        let ra = _mm512_xor_si512(pa, _mm512_clmulepi64_epi128(qha, bvm, 0x00));
+        let oa = _mm512_xor_si512(ra, _mm512_clmulepi64_epi128(_mm512_alignr_epi8(ra, ra, 4), bvm, 0x00));
+        let xb = _mm512_alignr_epi8(pb, pb, 4);
+        let pqb = _mm512_clmulepi64_epi128(xb, bvmu, 0x00);
+        let qhb = _mm512_alignr_epi8(pqb, pqb, 7);
+        let rb = _mm512_xor_si512(pb, _mm512_clmulepi64_epi128(qhb, bvm, 0x00));
+        let ob = _mm512_xor_si512(rb, _mm512_clmulepi64_epi128(_mm512_alignr_epi8(rb, rb, 4), bvm, 0x00));
+        // Unload: field j's residue sits in the LOW 32 bits of qword 2j.
+        // Stack store + reload (zero allocation, store-forwarded).
+        let mut bufa = [0u64; 8];
+        let mut bufb = [0u64; 8];
+        _mm512_storeu_si512(bufa.as_mut_ptr() as *mut __m512i, oa);
+        _mm512_storeu_si512(bufb.as_mut_ptr() as *mut __m512i, ob);
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for k in 0..4 {
+            let v = (bufa[2 * k] as u32) ^ cum_lanes[k];
+            h ^= v as u64;
+            h = h.wrapping_mul(0x0100_0000_01B3);
+        }
+        for k in 0..4 {
+            let v = (bufb[2 * k] as u32) ^ cum_lanes[4 + k];
+            h ^= v as u64;
+            h = h.wrapping_mul(0x0100_0000_01B3);
+        }
+        h ^= (span_len as u32) as u64;
+        h.wrapping_mul(0x0100_0000_01B3)
+    }
+}
+
+// ── R23b Task 2: the speculative slicer's AVX-512 table builder ─────────────
+//
+// moldudp64::spec_slice_512 consumes the E/O BE-u16 lane tables; this
+// crate (the workspace's SIMD home) owns the raw-intrinsic builder and
+// injects it through moldudp64::install_spec_vec_tables — nf-protocol is
+// #![forbid(unsafe_code)] by law. The hook type is a plain safe fn; the
+// unsafe stays here. Table contract (the K3 oracle's exact model):
+//   e_tab[j] = the BE u16 at window bytes (2j, 2j+1)
+//   o_tab[j] = the BE u16 at window bytes (2j+1, 2j+2)
+// built from the ZERO-PADDED 66-byte stack window so the +1 load stays
+// in-bounds by construction (padding is never read as a length: the
+// walk only touches lanes whose both header bytes are real).
+
+/// The per-u16 byte-swap shuffle matrix (four identical 16-byte lanes:
+/// 1,0,3,2,5,4,7,6,9,8,11,10,13,12,15,14) — `vpshufb` with this turns
+/// every LE u16 lane into the BE u16 of the same byte pair.
+#[cfg(target_arch = "x86_64")]
+static SPEC_BSWAP16: [u8; 64] = [
+    1, 0, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14, //
+    1, 0, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14, //
+    1, 0, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14, //
+    1, 0, 3, 2, 5, 4, 7, 6, 9, 8, 11, 10, 13, 12, 15, 14,
+];
+
+/// Install the AVX-512 E/O table builder into the speculative slicer
+/// (R23b Task 2). Call once at startup — the fabric spawn / harness /
+/// kbench main — before the first window is sliced. Returns false (and
+/// installs nothing) when the silicon lacks the AVX-512F+BW class or a
+/// builder is already installed; the slicer then keeps its scalar path
+/// (bit-identical output, the K3/t12 differentials pin both).
+pub fn install_spec_slice_vec() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if !(std::arch::is_x86_feature_detected!("avx512f")
+            && std::arch::is_x86_feature_detected!("avx512bw"))
+        {
+            return false;
+        }
+        nf_protocol::moldudp64::install_spec_vec_tables(spec_slice_vec_entry)
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+/// The safe hook entry: the target_feature call is gated by the
+/// install-time feature detection above.
+#[cfg(target_arch = "x86_64")]
+fn spec_slice_vec_entry(chunk: &[u8], e_tab: &mut [u16; 32], o_tab: &mut [u16; 32]) {
+    // SAFETY: install_spec_slice_vec() verified avx512f+avx512bw before
+    // installing this entry; the builder is memory-safe by the table
+    // contract (the +1 load stays inside its zero-padded 66-byte window).
+    unsafe { spec_slice_vec_tables_avx512(chunk, e_tab, o_tab) }
+}
+
+/// The E/O BE-u16 lane-table builder: E = vpshufb(v, bswap16) over the
+/// window, O = the same over the +1-shifted window — 63 candidate
+/// message headers extracted in ~5 vector ops.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f,avx512bw")]
+unsafe fn spec_slice_vec_tables_avx512(chunk: &[u8], e_tab: &mut [u16; 32], o_tab: &mut [u16; 32]) {
+    use std::arch::x86_64::*;
+    unsafe {
+        // The zero-padded 66-byte stack window: the +1 load reads bytes
+        // 1..=64 — in-bounds by construction for any chunk ≤ 64 bytes.
+        let mut win = [0u8; 66];
+        win[..chunk.len()].copy_from_slice(chunk);
+        let bswap16 = _mm512_loadu_si512(SPEC_BSWAP16.as_ptr() as *const __m512i);
+        let v = _mm512_loadu_si512(win.as_ptr() as *const __m512i);
+        let v1 = _mm512_loadu_si512(win.as_ptr().add(1) as *const __m512i);
+        let e = _mm512_shuffle_epi8(v, bswap16);
+        let o = _mm512_shuffle_epi8(v1, bswap16);
+        _mm512_storeu_si512(e_tab.as_mut_ptr() as *mut __m512i, e);
+        _mm512_storeu_si512(o_tab.as_mut_ptr() as *mut __m512i, o);
+    }
+}
+
+
 /// R15: the vectorized-tail master switch. `HFT_CRC_VTAIL=1|0` overrides;
 /// otherwise the default follows the vend class gate (the vtail replaces
 /// the vend path's scalar lane-0 continuation + the lanes-1..7 odd-word
@@ -3823,6 +4259,417 @@ mod tests {
                 }
                 assert_eq!(hwc, crc_scan(0, &t, data), "hw chain != software raw scan");
             }
+        }
+    }
+
+    /// R23b: pin the SHIPPED hardware kernel against the portable u128
+    /// model — `clmul_reduce_mod_vm` (the PCLMULQDQ plain Barrett on
+    /// x86_64) vs `clmul_reduce_mod_vm_sw`, basis-exhaustive over the
+    /// one-hot operands (GF(2)-linear => complete) plus random pairs.
+    /// The K0 structure (scripts/r23b_affine_kernel_derive.py) pinned the
+    /// model itself against the shift-subtract ground truth.
+    #[test]
+    fn t_affine_kernel_models() {
+        let basis = [0u64, 1, 2, 4, 1 << 8, 1 << 15, 1 << 16, 1 << 24, 1 << 31];
+        let mut pairs: Vec<(u64, u64)> = Vec::new();
+        for &a in &basis {
+            for &b in &basis {
+                pairs.push((a, b));
+            }
+        }
+        let mut s = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = s;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        };
+        for _ in 0..4096 {
+            pairs.push((next() >> 32, next() >> 32)); // 32-bit operands
+        }
+        for (a, b) in pairs {
+            // SAFETY: width law — a, b < 2^32 by construction.
+            let hw = unsafe { clmul_reduce_mod_vm(a, b) };
+            let sw = clmul_reduce_mod_vm_sw(a, b);
+            assert_eq!(hw, sw, "kernel model drift at a={a:#x} b={b:#x}");
+        }
+    }
+
+    /// R23b: the K1 differential — the SHIPPED `span_crc32c_affine_sub`
+    /// (snapshots + the O(1) projection) vs the reference
+    /// hardware-reflected scan, raw AND full-CRC32C variants.
+    #[test]
+    fn t_affine_kernel_scalar_differential() {
+        fn table() -> [u32; 256] {
+            let mut t = [0u32; 256];
+            for (i, e) in t.iter_mut().enumerate() {
+                let mut c = i as u32;
+                for _ in 0..8 {
+                    c = if c & 1 != 0 {
+                        (c >> 1) ^ 0x82F6_3B78
+                    } else {
+                        c >> 1
+                    };
+                }
+                *e = c;
+            }
+            t
+        }
+        let t = table();
+        fn crc_scan(mut c: u32, t: &[u32; 256], buf: &[u8]) -> u32 {
+            for &b in buf {
+                c = (c >> 8) ^ t[((c ^ b as u32) & 0xFF) as usize];
+            }
+            c
+        }
+        struct Sm(u64);
+        impl Sm {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^ (z >> 31)
+            }
+        }
+        fn fill(buf: &mut [u8], sm: &mut Sm, pat: u32) {
+            match pat % 5 {
+                0 => buf.fill(0x00),
+                1 => buf.fill(0xFF),
+                2 => {
+                    for (i, b) in buf.iter_mut().enumerate() {
+                        *b = ((i * 131 + 17) & 0xFF) as u8;
+                    }
+                }
+                3 => {
+                    for b in buf.iter_mut() {
+                        *b = sm.next() as u8;
+                    }
+                }
+                _ => {
+                    let mut i = 0usize;
+                    while i < buf.len() {
+                        let run = (buf.len() - i).min(1 + (sm.next() as usize & 0x3F));
+                        let v = sm.next() as u8;
+                        buf[i..i + run].fill(v);
+                        i += run;
+                    }
+                }
+            }
+        }
+        const EDGE_LB: [usize; 27] = [
+            16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 191, 192, 255, 256, 257, 511, 512,
+            1023, 1024, 1025, 1343, 1344, 1345, 1536, 2047, 2048,
+        ];
+        const EDGE_LA: [usize; 17] = [0, 1, 7, 8, 15, 16, 17, 63, 64, 65, 127, 128, 129, 255, 256, 511, 512];
+        let mut sm = Sm(0x9E37_79B9_7F4A_7C15 ^ 0x523A_F11E ^ 0x7C2B_A9E4);
+        let mut a_buf = [0u8; 512];
+        let mut b_buf = [0u8; 2048];
+        let mut errs = 0usize;
+        let mut full_errs = 0usize;
+        for i in 0..4096usize {
+            let lb = if i < 2 * EDGE_LB.len() {
+                EDGE_LB[i % EDGE_LB.len()]
+            } else if i % 7 == 0 {
+                EDGE_LB[(sm.next() % EDGE_LB.len() as u64) as usize]
+            } else {
+                16 + (sm.next() % 2033) as usize
+            };
+            let la = if i < 2 * EDGE_LA.len() {
+                EDGE_LA[i % EDGE_LA.len()]
+            } else {
+                (sm.next() % 513) as usize
+            };
+            let pat = (i % 5) as u32;
+            fill(&mut a_buf[..la], &mut sm, pat);
+            fill(&mut b_buf[..lb], &mut sm, pat);
+            let want = crc_scan(0, &t, &b_buf[..lb]);
+            let full_want = crc_scan(0xFFFF_FFFF, &t, &b_buf[..lb]) ^ 0xFFFF_FFFF;
+            let raw_a = crc_scan(0, &t, &a_buf[..la]);
+            let raw_ab = crc_scan(raw_a, &t, &b_buf[..lb]);
+            // SAFETY: the width law holds (raw registers and C(L) ≤ 32 bits).
+            let got = unsafe { span_crc32c_affine_sub(raw_ab, raw_a, lb) };
+            let state_a = crc_scan(0xFFFF_FFFF, &t, &a_buf[..la]);
+            let state_ab = crc_scan(state_a, &t, &b_buf[..lb]);
+            // SAFETY: width law (the I = F cancellation carries it verbatim).
+            let full_got = unsafe {
+                span_crc32c_affine_sub(
+                    state_ab ^ 0xFFFF_FFFF,
+                    state_a ^ 0xFFFF_FFFF,
+                    lb,
+                )
+            };
+            if got != want {
+                errs += 1;
+            }
+            if full_got != full_want {
+                full_errs += 1;
+            }
+        }
+        assert_eq!(errs, 0, "K1 raw scalar kernel: {errs}/4096 errors");
+        assert_eq!(full_errs, 0, "K1 full-CRC scalar kernel: {full_errs}/4096 errors");
+        // the C(L) composition over the whole table horizon
+        let mut g = [0u64; 2049];
+        g[0] = 1;
+        {
+            let mut c = 1u32;
+            for r in 1..=2048usize {
+                c = (c >> 8) ^ t[(c & 0xFF) as usize];
+                g[r] = c as u64;
+            }
+        }
+        for l in 0..=2048usize {
+            assert_eq!(affine_span_const(l), g[l], "affine_span_const({l}) != G[{l}]");
+        }
+    }
+
+    /// R23b: the K2 differential — the SHIPPED
+    /// `span_crc32c_8lane_affine_sub` vs `crate::sink::span_crc32c_8lane`
+    /// (the golden 8-lane hash), on x86_64 BOTH the vector path (the
+    /// process default gate) and the scalar per-lane law.
+    #[test]
+    fn t_affine_kernel_8lane_differential() {
+        fn table() -> [u32; 256] {
+            let mut t = [0u32; 256];
+            for (i, e) in t.iter_mut().enumerate() {
+                let mut c = i as u32;
+                for _ in 0..8 {
+                    c = if c & 1 != 0 {
+                        (c >> 1) ^ 0x82F6_3B78
+                    } else {
+                        c >> 1
+                    };
+                }
+                *e = c;
+            }
+            t
+        }
+        let t = table();
+        fn crc_scan(mut c: u32, t: &[u32; 256], buf: &[u8]) -> u32 {
+            for &b in buf {
+                c = (c >> 8) ^ t[((c ^ b as u32) & 0xFF) as usize];
+            }
+            c
+        }
+        struct Sm(u64);
+        impl Sm {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^ (z >> 31)
+            }
+        }
+        fn fill(buf: &mut [u8], sm: &mut Sm, pat: u32) {
+            match pat % 5 {
+                0 => buf.fill(0x00),
+                1 => buf.fill(0xFF),
+                2 => {
+                    for (i, b) in buf.iter_mut().enumerate() {
+                        *b = ((i * 131 + 17) & 0xFF) as u8;
+                    }
+                }
+                3 => {
+                    for b in buf.iter_mut() {
+                        *b = sm.next() as u8;
+                    }
+                }
+                _ => {
+                    let mut i = 0usize;
+                    while i < buf.len() {
+                        let run = (buf.len() - i).min(1 + (sm.next() as usize & 0x3F));
+                        let v = sm.next() as u8;
+                        buf[i..i + run].fill(v);
+                        i += run;
+                    }
+                }
+            }
+        }
+        // the cumulative 8-lane state over the first nblocks 64B blocks
+        // (sink::span_crc32c_8lane's interleave: lane k owns bytes 8k+64j)
+        fn lanes_cum(buf: &[u8], nblocks: usize, t: &[u32; 256]) -> [u32; 8] {
+            let mut ls = [0u32; 8];
+            for j in 0..nblocks {
+                let base = 64 * j;
+                for k in 0..8usize {
+                    ls[k] = crc_scan(ls[k], t, &buf[base + 8 * k..base + 8 * k + 8]);
+                }
+            }
+            ls
+        }
+        let mut sm = Sm(0x9E37_79B9_7F4A_7C15 ^ 0x523B_0E57 ^ 0xB1AD_1E55);
+        let mut pkt = [0u8; 64 * 40];
+        let mut errs = 0usize;
+        let mut scalar_errs = 0usize;
+        const EDGE: [usize; 9] = [64, 128, 192, 256, 320, 512, 1024, 1344, 2048];
+        for i in 0..512usize {
+            let lb = if i < 2 * EDGE.len() {
+                EDGE[i % EDGE.len()]
+            } else {
+                64 * (1 + (sm.next() as usize % 32))
+            };
+            let la = 64 * (sm.next() as usize % 9);
+            fill(&mut pkt[..la + lb], &mut sm, (i % 5) as u32);
+            let cl_start = lanes_cum(&pkt[..la], la / 64, &t);
+            let cl_end = lanes_cum(&pkt[..la + lb], (la + lb) / 64, &t);
+            let want = crate::sink::span_crc32c_8lane(&pkt[la..la + lb]);
+            // the shipped kernel (vector path where the gate says so)
+            let got = span_crc32c_8lane_affine_sub(&cl_end, &cl_start, lb);
+            if got != want {
+                errs += 1;
+                if errs < 4 {
+                    panic!("K2 vector kernel i={i} L_A={la} L_B={lb} got={got:#x} want={want:#x}");
+                }
+            }
+            // the scalar per-lane law (the fallback path, pinned directly)
+            let l8 = lb / 8;
+            let (k, r) = (l8 / 16, l8 % 16);
+            let c_adv = if k == 0 {
+                AFFINE_POW_BYTE_TABLE[r]
+            } else {
+                // SAFETY: width law — both table factors ≤ 32 bits.
+                unsafe { clmul_reduce_mod_vm(AFFINE_POW_128B_TABLE[k - 1], AFFINE_POW_BYTE_TABLE[r]) }
+            };
+            let mut lanes = [0u32; 8];
+            for j in 0..8usize {
+                // SAFETY: width law.
+                let p = unsafe { clmul_reduce_mod_vm(cl_start[j] as u64, c_adv) };
+                lanes[j] = cl_end[j] ^ (p as u32);
+            }
+            let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+            for &c in lanes.iter() {
+                h ^= c as u64;
+                h = h.wrapping_mul(0x0100_0000_01B3);
+            }
+            h ^= (lb as u32) as u64;
+            h = h.wrapping_mul(0x0100_0000_01B3);
+            if h != want {
+                scalar_errs += 1;
+            }
+        }
+        assert_eq!(errs, 0, "K2 vector kernel: {errs}/512 errors");
+        assert_eq!(scalar_errs, 0, "K2 scalar per-lane law: {scalar_errs}/512 errors");
+    }
+
+    /// R23b Task 2: the AVX-512 E/O table builder + the FULL vector-path
+    /// slicer differential — install the builder (the hook into
+    /// nf-protocol's `spec_slice_512`), then pin the E/O tables against
+    /// the software model and the whole `SpecSliceIter` against the
+    /// reference `MessageBlocks` walk on random packets (mixed parities,
+    /// zero-length messages, window-straddling headers).
+    #[test]
+    fn t_spec_slice_vec_differential() {
+        // Install the vector builder (idempotent; may already be in).
+        let installed = install_spec_slice_vec();
+        #[cfg(target_arch = "x86_64")]
+        {
+            let hw_ok = std::arch::is_x86_feature_detected!("avx512f")
+                && std::arch::is_x86_feature_detected!("avx512bw");
+            assert_eq!(
+                installed, hw_ok,
+                "install_spec_slice_vec() must succeed exactly on AVX-512F/BW silicon"
+            );
+        }
+        if !nf_protocol::moldudp64::spec_vec_installed() {
+            // No vector path on this silicon — the scalar differential
+            // (moldudp64's t12) already covers the walk; nothing to pin.
+            return;
+        }
+        // 1. The E/O tables vs the software model (basis windows).
+        let mut e_tab = [0u16; 32];
+        let mut o_tab = [0u16; 32];
+        let mut rng = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        for wlen in [2usize, 3, 17, 33, 63, 64] {
+            let mut win = [0u8; 66];
+            for b in win.iter_mut().take(wlen) {
+                *b = next() as u8;
+            }
+            // SAFETY: gated by install-time feature detection.
+            unsafe { spec_slice_vec_tables_avx512(&win[..wlen], &mut e_tab, &mut o_tab) };
+            for j in 0..32usize {
+                // The tables come from the ZERO-PADDED window: a lane's
+                // value mixes a real byte with a zero pad byte when the
+                // pair straddles the real end — exactly what the builder
+                // computes (padding is never read as a length by the walk).
+                let want_e = ((win[2 * j] as u16) << 8) | win[2 * j + 1] as u16;
+                let want_o = ((win[2 * j + 1] as u16) << 8) | win[2 * j + 2] as u16;
+                assert_eq!(e_tab[j], want_e, "E[{j}] wlen={wlen}");
+                assert_eq!(o_tab[j], want_o, "O[{j}] wlen={wlen}");
+            }
+        }
+        // 2. The vector-path COMPOSITION (builder + register-table walk,
+        //    the exact spec_slice_512 vector branch) vs the reference walk.
+        use nf_protocol::moldudp64::{
+            parse, spec_slice_walk, spec_vec_builder, Parsed, SpecMsg, HEADER_LEN,
+        };
+        let build = spec_vec_builder().expect("the builder is installed");
+        let session = *b"NFTESTSESS";
+        for i in 0..2000u32 {
+            let count = 1 + (next() % 48) as u16;
+            let start_seq = next() % 1_000_000_000;
+            let mut raw: Vec<u8> = Vec::with_capacity(4096);
+            raw.extend_from_slice(&session);
+            raw.extend_from_slice(&start_seq.to_be_bytes());
+            raw.extend_from_slice(&count.to_be_bytes());
+            let mut offs_lens: Vec<(usize, u16)> = Vec::with_capacity(count as usize);
+            for _ in 0..count {
+                let l = match next() % 10 {
+                    0 => 0u16,
+                    1 => (next() % 64) as u16,
+                    2 => 1 + (next() % 63) as u16,
+                    3 => 64 + (next() % 192) as u16,
+                    _ => 8 + (next() % 56) as u16,
+                };
+                offs_lens.push((raw.len() + 2 - HEADER_LEN, l));
+                raw.extend_from_slice(&l.to_be_bytes());
+                for _ in 0..l {
+                    raw.push(next() as u8);
+                }
+            }
+            let blocks_region = &raw[HEADER_LEN..];
+            let parsed = parse(&raw).expect("valid random packet");
+            let reference: Vec<(usize, u16)> = match parsed {
+                Parsed::Data { blocks, .. } => blocks
+                    .map(|b| {
+                        (
+                            b.data.as_ptr() as usize - blocks_region.as_ptr() as usize,
+                            b.data.len() as u16,
+                        )
+                    })
+                    .collect(),
+                _ => panic!("expected Data"),
+            };
+            assert_eq!(reference, offs_lens, "reference walk drift i={i}");
+            // The SpecSliceIter window loop, driven through the EXPLICIT
+            // vector composition (window invariant + zero-progress rule).
+            let mut spec: Vec<(usize, u16)> = Vec::with_capacity(count as usize);
+            let mut pos = 0usize;
+            'outer: while pos < blocks_region.len() {
+                let rem = blocks_region.len() - pos;
+                let wlen = rem.min(64);
+                let chunk = &blocks_region[pos..pos + wlen];
+                let mut et = [0u16; 32];
+                let mut ot = [0u16; 32];
+                build(chunk, &mut et, &mut ot);
+                let mut batch = [SpecMsg { off: 0, len: 0 }; 16];
+                let (n, pf) = spec_slice_walk(&et, &ot, wlen, 0, rem, &mut batch);
+                for m in batch[..n].iter() {
+                    spec.push((pos + m.off as usize, m.len));
+                }
+                pos += pf;
+                if pf == 0 {
+                    break 'outer;
+                }
+            }
+            assert_eq!(spec, reference, "vector composition drift i={i}");
         }
     }
 }
