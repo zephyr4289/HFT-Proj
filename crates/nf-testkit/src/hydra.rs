@@ -93,8 +93,12 @@
 
 use crate::crcfold::CrcKernel;
 use crate::sink::span_crc32c_8lane;
+use crate::crcfold::{span_crc32c_8lane_from_tags, span_crc32c_affine_sub};
 use nf_arbitrator::types::{Event, LiveFeedProof, Sink, SpanRec};
-use nf_transport::rxdesc::{rxdesc_unpack_span, RxdescState, RX_NARR};
+use nf_transport::rxdesc::{
+    affine_frame_tag, affine_tag_pack, affine_tag_unpack, rxdesc_unpack_span, AffineTagCore,
+    RxdescState, RX_AFFINE_FLAG, RX_AFFINE_TAG_WORDS, RX_NARR,
+};
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -624,6 +628,14 @@ pub struct WorkerStats {
     /// R16e: total nanoseconds spent in those waits (the DIAG's fw_ms) —
     /// the strand-A wall cost, kept OUT of eval_ns (busy% stays honest).
     pub frontier_ns: AtomicU64,
+    /// R23c: spans evaluated from the affine TAG (zero payload reads —
+    /// the O(1) combine + the scalar affine integrity check). The
+    /// verdict line's primary counter.
+    pub affine_hits: AtomicU64,
+    /// R23c: spans evaluated through the PAYLOAD path while the affine
+    /// mode was armed (untagged descs or the diagnostic shapes) —
+    /// expected 0 on the steady armed path.
+    pub affine_fallbacks: AtomicU64,
     /// This worker's pinned cpu (usize::MAX when unpinned).
     pub cpu: AtomicU64,
 }
@@ -638,9 +650,53 @@ impl WorkerStats {
             res_waits: AtomicU64::new(0),
             frontier_waits: AtomicU64::new(0),
             frontier_ns: AtomicU64::new(0),
+            affine_hits: AtomicU64::new(0),
+            affine_fallbacks: AtomicU64::new(0),
             cpu: AtomicU64::new(u64::MAX),
         }
     }
+}
+
+/// R23c: the affine-tag fast path shared by both rxdesc workers — the
+/// O(1) golden-value evaluation from the sidecar tag (ZERO payload
+/// reads) plus Engineer 2's scalar affine law as the per-span integrity
+/// check. Call ONLY when the desc word's [`RX_AFFINE_FLAG`] bit is set
+/// (the tag sidecar entry is then ordered by the same ready
+/// Acquire that exposed the word).
+#[inline(always)]
+fn affine_tag_eval(
+    rx: &RxdescState,
+    w: u64,
+    slot: u8,
+    idx: usize,
+    gid: u64,
+    stats: &WorkerStats,
+) -> u64 {
+    let t: [u64; RX_AFFINE_TAG_WORDS] = rx.get_affine_tag(slot, idx);
+    let core: AffineTagCore = affine_tag_unpack(&t);
+    let len = ((w >> 32) & 0xFFFF) as usize;
+    // THE SCALAR AFFINE LAW (Engineer 2's kernel, ~1.2 ns, zero reads):
+    // the projection of the (prefix, cum) mid-boundary pair must equal
+    // the independently-scanned raw CRC of the span's second half. A
+    // corrupted sidecar fails STOP here — it can never fold a wrong
+    // value into the golden hash. (Beyond the shipped table horizon —
+    // len/2 > 2048, unreachable for the fabric's MTU-bounded bodies —
+    // the check is skipped; the lane combine below stays exact.)
+    let h = len / 2;
+    if len - h <= 2048 {
+        // SAFETY: width law — the tag's raw registers and C(len−h) ≤ 32
+        // bits (the K0 exactness range).
+        let proj = unsafe { span_crc32c_affine_sub(core.cum_crc, core.prefix_crc, len - h) };
+        assert_eq!(
+            proj, core.raw_crc,
+            "R23c affine tag integrity violation (span {gid}): the (prefix, cum) projection \
+             diverged from the stored raw CRC — sidecar corruption, fail-stop"
+        );
+    }
+    stats.affine_hits.fetch_add(1, Ordering::Relaxed);
+    // The EXACT golden value — the reference kernel's own lane registers
+    // + the FNV-1a-64 combine, zero body bytes touched.
+    span_crc32c_8lane_from_tags(&core.lanes, len)
 }
 
 /// Worker main loop: pure function evaluation + chunk-granular SPSC ring
@@ -975,6 +1031,9 @@ fn lane_worker_rxdesc(
     // arm 11l); eval_tri runs the value-exact mirror tri. Read once here,
     // outside every window (law #9: env parsing is allocation).
     let tri = std::env::var("HFT_WORKER_TRI").as_deref() == Ok("1");
+    // R23c: the affine-tag fast path — armed iff the state's sidecar is
+    // live (the construction gate; per-run constant, read once here).
+    let affine = rx.affine_armed();
     // Result cursor — per-LANE lifetime, continuing across generations
     // (the fresh sink's fold starts from the lane's res_tail, exactly as
     // the ring protocol's continuation).
@@ -1158,6 +1217,13 @@ fn lane_worker_rxdesc(
                         }
                         resolve_rec(&rx, gen, &mut pf_slot, &mut pf_base, pf_gid);
                         let w = rx.get_arr(pf_slot, (pf_gid - pf_base) as usize);
+                        if affine && w & RX_AFFINE_FLAG != 0 {
+                            // R23c: tagged span — ZERO body lines to
+                            // prefetch; advance past the span.
+                            pf_gid += 1;
+                            pf_line = 0;
+                            continue;
+                        }
                         let (off, dlen) = rxdesc_unpack_span(w);
                         let dptr = blob_base.wrapping_add(off as u64);
                         let span_lines = (((dlen as usize) + 63) >> 6).min(pf.lines);
@@ -1187,7 +1253,13 @@ fn lane_worker_rxdesc(
                 let value = if null {
                     // Diagnostic: constant work, wrong value by design.
                     (dlen as u64) | (gid << 32)
+                } else if affine && w & RX_AFFINE_FLAG != 0 {
+                    // R23c: THE O(1) TAG EVALUATION — zero payload reads.
+                    affine_tag_eval(&rx, w, rec_slot, (gid - rec_base) as usize, gid, &stats)
                 } else {
+                    if affine {
+                        stats.affine_fallbacks.fetch_add(1, Ordering::Relaxed);
+                    }
                     let body = unsafe {
                         std::slice::from_raw_parts(
                             blob_base.wrapping_add(off as u64) as *const u8,
@@ -1313,6 +1385,9 @@ fn lane_worker_rxdesc_diet(
     // arm 11l); eval_tri runs the value-exact mirror tri. Read once here,
     // outside every window (law #9: env parsing is allocation).
     let tri = std::env::var("HFT_WORKER_TRI").as_deref() == Ok("1");
+    // R23c: the affine-tag fast path — armed iff the state's sidecar is
+    // live (the construction gate; per-run constant, read once here).
+    let affine = rx.affine_armed();
     // R16e: the strand-A wait depth (HFT_FRONTIER_LAPS; 0 = strand A
     // off — the pre-diet wake cadence with B+C armed). Read once here,
     // outside every window (law #9).
@@ -1605,6 +1680,14 @@ fn lane_worker_rxdesc_diet(
                             pf_wb = probe_wb(&rx, gen, pf_slot, pf_base);
                         }
                         let w = rx.get_arr(pf_slot, (pf_gid - pf_base) as usize);
+                        if affine && w & RX_AFFINE_FLAG != 0 {
+                            // R23c: tagged span — ZERO body lines to
+                            // prefetch (the eval reads the tag, not the
+                            // payload); advance past the span.
+                            pf_gid += 1;
+                            pf_line = 0;
+                            continue;
+                        }
                         let (off, dlen) = rxdesc_unpack_span(w);
                         let dptr = blob_base.wrapping_add(off as u64);
                         let span_lines = (((dlen as usize) + 63) >> 6).min(pf.lines);
@@ -1633,7 +1716,16 @@ fn lane_worker_rxdesc_diet(
                 let value = if null {
                     // Diagnostic: constant work, wrong value by design.
                     (dlen as u64) | (gid << 32)
+                } else if affine && w & RX_AFFINE_FLAG != 0 {
+                    // R23c: THE O(1) TAG EVALUATION — zero payload reads
+                    // (the tag sidecar is ordered by the same ready
+                    // Acquire that exposed this word; the integrity check
+                    // and the golden combine run in registers).
+                    affine_tag_eval(&rx, w, rec_slot, idx, gid, &stats)
                 } else {
+                    if affine {
+                        stats.affine_fallbacks.fetch_add(1, Ordering::Relaxed);
+                    }
                     let body = unsafe {
                         std::slice::from_raw_parts(
                             blob_base.wrapping_add(off as u64) as *const u8,
@@ -1897,6 +1989,26 @@ impl HydraFabric {
         avail.saturating_sub(1)
     }
 
+    /// R23c: the affine-tag verdict line's facts — the armed state, the
+    /// per-worker tag hits vs payload fallbacks (the "zero payload
+    /// reads" claim's measured counter), and the ledger's row count.
+    /// Printed once per run (post-run, read-only — the LADDER_DIAGNOSTIC
+    /// law: never price an arm on faith).
+    pub fn affine_diag(&self) -> (bool, u64, u64, u64) {
+        let armed = self.rxdesc.as_ref().is_some_and(|st| st.affine_armed());
+        let mut hits = 0u64;
+        let mut fallbacks = 0u64;
+        for ws in &self.wstats {
+            hits += ws.affine_hits.load(Ordering::Relaxed);
+            fallbacks += ws.affine_fallbacks.load(Ordering::Relaxed);
+        }
+        let ledger = self
+            .rxdesc
+            .as_ref()
+            .map_or(0, |st| st.ledger_len.load(Ordering::Acquire));
+        (armed, hits, fallbacks, ledger)
+    }
+
     /// Lane owning the chunk that contains `span_id` (diagnostic path —
     /// the hot paths use the sink's incremental trackers).
     #[inline(always)]
@@ -2097,6 +2209,13 @@ pub struct HydraSpanSink<'a> {
     /// The assist watermark: chunks go inline when pending spans exceed
     /// this (HFT_ASSIST_WATERMARK; 0 = never; force_inline overrides).
     rx_assist_wm: u64,
+    /// R23c: the affine-tag protocol is armed for this fabric's rxdesc
+    /// state (per-run constant, read at sink construction).
+    rx_affine: bool,
+    /// R23c: the RX ledger's monotone lookup cursor (spans arrive in
+    /// frame order; the forward scan is O(1) amortized; reset at
+    /// generation changes).
+    rx_affine_cursor: usize,
 }
 
 impl<'a> HydraSpanSink<'a> {
@@ -2132,6 +2251,7 @@ impl<'a> HydraSpanSink<'a> {
         // re-anchors the workers' span grid to 0).
         let rx = fabric.and_then(|f| f.rxdesc.clone());
         let rx_gen = rx.as_ref().map_or(0, |st| st.next_gen());
+        let rx_affine = rx.as_ref().is_some_and(|st| st.affine_armed());
         let sink = Self {
             fabric,
             hash: Self::SPAN_SEED,
@@ -2191,6 +2311,8 @@ impl<'a> HydraSpanSink<'a> {
             rx_marks_cleared: false,
             rx_fixes: 0,
             rx_assist_wm: Self::assist_watermark(),
+            rx_affine,
+            rx_affine_cursor: 0,
         };
         // R21 (Task 2, the fused arm's flip-validation instrument): prove
         // the fused shape armed — printed ONCE per process at the first
@@ -2272,6 +2394,10 @@ impl<'a> HydraSpanSink<'a> {
         self.rx_win_open = false;
         self.rx_marks_cleared = false;
         self.rx_slot_end = [u64::MAX; RX_NARR];
+        // R23c: the ledger cursor restarts with the span sequence (the
+        // fresh generation's spans revisit the blob's frames from the
+        // first row).
+        self.rx_affine_cursor = 0;
         // Chunk 0 → lane 0; advance on chunk completion (after-use).
         self.submit_rem = CHUNK;
         self.fold_rem = CHUNK;
@@ -2471,6 +2597,11 @@ impl<'a> HydraSpanSink<'a> {
         // actual body; a wrong copy costs stores, never correctness.
         let prev_slot = (slot as usize + RX_NARR - 1) % RX_NARR;
         st.copy_arr(prev_slot as u8, slot, st.last_window_count());
+        // R23c: the tag sidecar rides the SAME warm start — the copied
+        // tags stay valid under the same determinism law (identical
+        // schedule + immutable blob bodies), so steady passes find the
+        // tag correct and the check stays the ONE word compare.
+        st.copy_tags(prev_slot as u8, slot, st.last_window_count());
         st.publish_record(slot, self.rx_gen, self.next_span);
         self.rx_win_slot = slot;
         self.rx_win_base = self.next_span;
@@ -2719,6 +2850,12 @@ impl<'a> HydraSpanSink<'a> {
             // Check-and-fix: prove the array entry equals the actual
             // span body's descriptor; fix on mismatch (divergent
             // schedules drift the frame index past the span index).
+            // R23c: the expected word carries the affine-tag flag when
+            // armed; a mismatch (the COLD path — the first fill or
+            // schedule divergence) computes the tag (the RX ledger first,
+            // the direct body scan as the fallback) and writes BOTH the
+            // word and the sidecar entry, ordered before the chunk's
+            // spans_ready publication.
             let idx = (self.next_span - self.rx_win_base) as usize;
             assert!(
                 idx < st.cap(),
@@ -2727,8 +2864,13 @@ impl<'a> HydraSpanSink<'a> {
             debug_assert!(body.len() <= u16::MAX as usize, "Desc8 len overflows u16");
             let off = (body.as_ptr() as usize).wrapping_sub(self.blob_base);
             debug_assert!(off <= u32::MAX as usize, "Desc8 offset overflows u32");
-            let w = desc8_pack_span(off as u32, body.len() as u16);
+            let w = desc8_pack_span(off as u32, body.len() as u16)
+                | if self.rx_affine { RX_AFFINE_FLAG } else { 0 };
             if st.get_arr(self.rx_win_slot, idx) != w {
+                if self.rx_affine {
+                    let tag = self.rx_affine_tag_for(body);
+                    st.set_affine_tag(self.rx_win_slot, idx, &tag);
+                }
                 st.set_arr(self.rx_win_slot, idx, w);
                 self.rx_fixes += 1;
             }
@@ -2757,6 +2899,35 @@ impl<'a> HydraSpanSink<'a> {
             }
             self.rx_publish_ready();
         }
+    }
+
+    /// R23c: resolve one span's affine tag — the RX producer's ledger
+    /// first (the monotone pointer cursor, O(1) amortized; the pointer +
+    /// length match proves the row is THIS body), the direct body scan as
+    /// the fallback (divergent schedules, ledger-less runs — the
+    /// first-fill shapes where no transport was attached). Both paths
+    /// are bit-identical (`affine_frame_tag`; the nf-testkit differential
+    /// pins the kernel against the reference). COLD PATH (the word
+    /// mismatch path) — `#[inline(never)]` keeps its body-scan branch
+    /// out of the steady loop's µop-cache window (the R9d discipline).
+    #[inline(never)]
+    fn rx_affine_tag_for(&mut self, body: &[u8]) -> [u64; RX_AFFINE_TAG_WORDS] {
+        if let Some(st) = &self.rx {
+            if let Some((e, cur)) = st.ledger_lookup(
+                self.rx_affine_cursor,
+                body.as_ptr() as usize,
+                body.len() as u32,
+            ) {
+                self.rx_affine_cursor = cur;
+                return affine_tag_pack(&AffineTagCore {
+                    prefix_crc: e.prefix_crc,
+                    cum_crc: e.cum_crc,
+                    raw_crc: e.raw_crc,
+                    lanes: e.lanes,
+                });
+            }
+        }
+        affine_tag_pack(&affine_frame_tag(body))
     }
 
     /// The chunk-open cold path (runs once per CHUNK spans): pick the lane,
@@ -3343,6 +3514,132 @@ mod tests {
         }
         sink.finish();
         (sink.count, sink.hash, sink.msg_hash)
+    }
+
+    /// R23c: the affine-tag protocol's end-to-end bit-parity — the rxdesc
+    /// array path with the tag sidecar armed, LEDGER-LESS (the sink's cold
+    /// fill scans the bodies — the fallback), two generations (the second
+    /// rides the warm-copied tags), all vs the sequential reference. The
+    /// workers evaluate every span from the sidecar; the tag integrity
+    /// check + the fold assert pin the values. On x86_64 the workers'
+    /// counters must show tag hits and ZERO payload fallbacks.
+    #[test]
+    fn t_r23c_affine_tag_parity() {
+        let gt = load_mini();
+        let cfg = ReplayConfig {
+            msgs_per_packet: Packetize::MtuBound(1400),
+            guarantee_coverage: true,
+            ..Default::default()
+        };
+        let sched = build_schedule(&gt, &cfg);
+        let sess = *b"AFFINEHYDR";
+        // The fabric with the array path + diet worker (the CI 11ab arm's
+        // shape). No transport attachment — the LEDGER-LESS fill.
+        let fabric = HydraFabric::spawn_pinned_full(2, &[], true, true, true);
+        let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
+        let mut t2 = ReplayTransport::new(&gt, sched.clone(), sess);
+
+        let want = seq_pass(&mut t1, sess);
+        assert_eq!(want.0, 505_849, "the full population must verify");
+        // Pass 1: the cold fill (every desc word mismatches the zeroed
+        // arrays — the sink scans each body once, untimed semantics).
+        let got1 = hydra_pass(&mut t2, sess, &fabric);
+        assert_eq!(got1, want, "affine (ledger-less) fabric pass 1 diverged");
+        // Pass 2: a FRESH sink = a fresh generation — the window warm
+        // start must carry word AND tag forward; the steady check finds
+        // them correct and the workers again evaluate from tags.
+        let got2 = hydra_pass(&mut t2, sess, &fabric);
+        assert_eq!(got2, want, "affine (warm-copied tags) fabric pass 2 diverged");
+
+        let (armed, hits, fallbacks, ledger) = fabric.affine_diag();
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert!(armed, "the affine sidecar must be armed on x86_64");
+            assert_eq!(ledger, 0, "ledger-less shape: no transport attached");
+            // The hit floor is machine-agnostic: the work-assist may take
+            // chunks inline on small hosts (their evals are main-side and
+            // uncounted); the LOAD-BEARING asserts are (a) tag evaluations
+            // happened and (b) ZERO worker payload fallbacks.
+            assert!(
+                hits > 0,
+                "workers must have evaluated spans from tags (got {hits})"
+            );
+            assert_eq!(
+                fallbacks, 0,
+                "zero payload fallbacks on the armed steady path (got {fallbacks})"
+            );
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            assert!(!armed);
+            let _ = (hits, fallbacks, ledger);
+        }
+    }
+
+    /// R23c: the FULL pipeline wiring's bit-parity — the RX-pipelined
+    /// transport with the fabric's rxdesc state attached via `set_rxdesc`
+    /// (the RX producer's ledger fill fires at the reset serve), the sink
+    /// resolving tags from the LEDGER, the workers evaluating O(1) with
+    /// zero payload reads. Parity vs the sequential reference + the
+    /// ledger/hit/fallback telemetry asserts.
+    #[test]
+    fn t_r23c_affine_ledger_pipeline_parity() {
+        let gt = load_mini();
+        let cfg = ReplayConfig {
+            msgs_per_packet: Packetize::MtuBound(1400),
+            guarantee_coverage: true,
+            ..Default::default()
+        };
+        let sched = build_schedule(&gt, &cfg);
+        let sess = *b"AFFPIPELIN";
+        let fabric = HydraFabric::spawn_pinned_full(2, &[], true, true, true);
+        let mut piped = nf_transport::pipeline::PipelinedReplayTransport::new(&gt, sched.clone(), sess);
+        // R23c: the attach BEFORE the first reset — arms the RX ledger.
+        if let Some(st) = fabric.rxdesc_state() {
+            assert!(piped.set_rxdesc(st), "set_rxdesc must attach once");
+        }
+        let mut t1 = ReplayTransport::new(&gt, sched.clone(), sess);
+        let want = seq_pass(&mut t1, sess);
+
+        // The untimed reference-shaped pass: reset (the ledger fill fires
+        // at the serve) → ingest → fold.
+        piped.reset(sess);
+        let mut seq = Sequencer::new();
+        let mut sink = HydraSpanSink::new(&fabric);
+        let ladder = crate::soa::ladder8_best();
+        while piped.next_batch() {
+            seq.ingest_entries_ladder(piped.entries(), piped.now_ns(), &mut sink, ladder);
+            sink.drain_ready();
+        }
+        sink.finish();
+        assert_eq!(
+            (sink.count, sink.hash, sink.msg_hash),
+            want,
+            "affine LEDGER pipeline pass diverged"
+        );
+
+        let (armed, hits, fallbacks, ledger) = fabric.affine_diag();
+        #[cfg(target_arch = "x86_64")]
+        {
+            assert!(armed, "the affine sidecar must be armed on x86_64");
+            assert!(
+                ledger >= 10_000,
+                "the RX producer's ledger must have filled (got {ledger} rows)"
+            );
+            // Machine-agnostic floor (the assist may take chunks inline
+            // on small hosts); the load-bearing asserts: the ledger
+            // filled and the workers NEVER fell back to payload reads.
+            assert!(hits > 0, "workers must have evaluated from tags");
+            assert_eq!(
+                fallbacks, 0,
+                "zero payload fallbacks on the ledger path (got {fallbacks})"
+            );
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            assert!(!armed);
+            let _ = (hits, fallbacks, ledger);
+        }
     }
 
     /// H3 bit-parity, default MtuBound dual-feed schedule, fabric with 2

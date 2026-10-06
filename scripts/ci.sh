@@ -367,9 +367,39 @@ echo "=== 11w. R16b/R17: Array-Driven Submission (rxdesc) ARMED (attribution) ==
 # attribution instrument + the R16B_RXDESC telemetry warm (the 11m
 # armed-soak precedent, inverted). The diet stack (HFT_RXDIET default on)
 # stays merged — its warm-start pattern is the Front A program's template.
-HFT_RXDESC=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_rxdesc_on.txt
+# R23c: HFT_AFFINE_TAGS=0 keeps THIS arm's meaning STABLE — the pre-R23
+# array soak (the payload-read workers) verbatim, so 11w's historical
+# fleet pricing stays comparable across the R23c merge. The affine SHIP
+# is priced by the 11ab arm below.
+HFT_RXDESC=1 HFT_AFFINE_TAGS=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_rxdesc_on.txt
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_rxdesc_on.txt
 grep -q "allocs=0" /tmp/bench_rxdesc_on.txt
+
+echo "=== 11ab. R23c: Affine-Tag Zero-Re-Read Verification ARMED (the affine ship) ==="
+# THE R23c SHIP (docs/36): the workers evaluate every span from REGISTER
+# TAGS — the (prefix, cum) raw-CRC32C triple (checked per-span by
+# Engineer 2's scalar affine law, ~1.2 ns, zero reads) + the 8 lane
+# registers (the EXACT golden span_crc32c_8lane value via the FNV
+# combine, arbitrary span lengths) — ZERO payload reads, the 66.6 GB/s
+# L3 wall collapsed. The 64B descriptor law holds (8B word + 48B tag
+# sidecar = 56B <= 64B). The RX producer's affine ledger (the single
+# untimed body pass) fills at the reset serve; the warm start carries
+# word AND tag across generations. THE VERDICT LINES ARE THE ARM'S
+# INSTRUMENTS (the flip-validation law — never price on faith):
+#   * R23B_AFFINE_VERDICT ... payload_fallbacks=0 — the zero-read claim;
+#   * PR1_R23_AFFINE_SUSTAINED_VERDICT — the 2.5B REPORTED milestone
+#     floor (non-asserting until the median healthy draw crosses it).
+# The bit-parity gate stays the HARD floor (HYDRA_BITPARITY + allocs=0,
+# the same invariants as every arm).
+HFT_RXDESC=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_affine.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_affine.txt
+grep -q "allocs=0" /tmp/bench_affine.txt
+grep -q "HYDRA_BITPARITY.*-> BIT-EXACT" /tmp/bench_affine.txt
+grep -q "R23B_AFFINE_VERDICT arm=sustained armed=true" /tmp/bench_affine.txt
+grep -q "R23B_AFFINE_VERDICT arm=sustained.*payload_fallbacks=0" /tmp/bench_affine.txt
+grep -q "PR1_R23_AFFINE_SUSTAINED_VERDICT rate=" /tmp/bench_affine.txt
+grep "R23B_AFFINE_VERDICT arm=sustained" /tmp/bench_affine.txt | head -1
+grep "PR1_R23_AFFINE_SUSTAINED_VERDICT" /tmp/bench_affine.txt | head -1
 
 # R17 ARM RETIREMENT (settled attribution — roadmaps' shard-economics
 # ruling): 11x (pre-diet rxdesc) and 11y (strand-A isolation) priced the
@@ -617,7 +647,8 @@ with open('/tmp/bench_results.json') as f:
     r = json.load(f)
 required = ['median_cycles', 'p95_cycles', 'p99_cycles', 'stddev', 'cv_percent',
             'span_median_cycles', 'span_rate_msg_per_sec',
-            'r16_pure_ingest_verdict']
+            'r16_pure_ingest_verdict',
+            'spec_rate_msg_per_sec', 'r23_pure_ingest_verdict']
 for k in required:
     if k not in r:
         print(f'MISSING METRIC: {k}')
@@ -643,6 +674,11 @@ for metric, rule in constraints.items():
     val = r[metric]
     if val > rule['max']:
         failed.append(f'{metric}: {val} > {rule["max"]} {rule["unit"]}')
+# R23c: the spec-slice ingest verdict is REPORTED (the 15–20B mode's
+# pricing row; non-asserting — the same elevation protocol as the R16 5B
+# verdict). Its PRESENCE is asserted above (the required list); its value
+# prints into the draw log for the aggregator.
+print(f"R23_SPEC_INGEST_ROW spec_rate={r['spec_rate_msg_per_sec']} verdict={r['r23_pure_ingest_verdict']} (REPORTED)")
 if failed:
     print('CONSTRAINT VIOLATIONS:')
     for f in failed:

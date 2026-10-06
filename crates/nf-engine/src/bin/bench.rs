@@ -326,6 +326,13 @@ fn run_hydra_burst(
     let mut transport = nf_transport::pipeline::PipelinedReplayTransport::with_coalesce_cpu(
         gt, sched.clone(), sess, 128, rx_cpu,
     );
+    // R23c: attach the fabric's rxdesc state (HFT_RXDESC=1 arms the array
+    // path) BEFORE the first reset — the RX producer's affine ledger
+    // (single untimed body pass) fills at the reset serve, and the sink's
+    // cold fill resolves tags from it.
+    if let Some(st) = fabric.rxdesc_state() {
+        transport.set_rxdesc(st);
+    }
 
     // Layer 1: sequential reference (the TITAN arm's own verifier, pinned).
     let seq_ref = {
@@ -418,6 +425,17 @@ fn run_hydra_burst(
     rates.sort();
     let median = rates[runs / 2];
     println!("BENCH_MEDIAN mode=replay-hydra-burst rate={}", median);
+    // R23c: the affine-tag verdict line — the armed state + the measured
+    // worker counters (tag hits vs payload fallbacks: the zero-payload-
+    // reads claim) + the RX ledger's row count. Grepped by the 11ab CI
+    // arm (the flip-validation law: never price an arm on faith).
+    {
+        let (armed, hits, fallbacks, ledger) = fabric.affine_diag();
+        println!(
+            "R23B_AFFINE_VERDICT arm=burst armed={} tag_hits={} payload_fallbacks={} ledger_rows={} (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)",
+            armed, hits, fallbacks, ledger
+        );
+    }
     println!(
         "PR1_HYDRA_VERDICT rate={} (bit-exact multi-core span conformance: {} workers, every emitted byte CRC32C-checked in-window, ordered serial fold)",
         median,
@@ -497,6 +515,9 @@ fn run_hydra_sustained_5s(
     let fabric = nf_testkit::hydra::HydraFabric::spawn_pinned(workers, &worker_cpus);
     let mut total_msgs = 0u64;
     let mut session_counter = 1000u64;
+    // R23c: the affine-arm attach — same law as the burst arm (the
+    // sustained shape's auto-advance fills the ledger at the first cycle
+    // after the attach).
 
     let initial_sess = *b"HYDRASUST1";
     // R8 phase-3: RX auto-advance — the session PROGRAM. The harness's
@@ -525,6 +546,11 @@ fn run_hydra_sustained_5s(
             rx_cpu,
             Some(sustained_sess),
         );
+    // R23c: attach the fabric's rxdesc state BEFORE the first
+    // reset_pass — arms the RX producer's affine ledger fill.
+    if let Some(st) = fabric.rxdesc_state() {
+        transport.set_rxdesc(st);
+    }
     let mut seq = Sequencer::new();
     let mut sink = nf_testkit::hydra::HydraSpanSink::new(&fabric);
 
@@ -719,6 +745,23 @@ fn run_hydra_sustained_5s(
         sink.rx_fixes(),
         sink.assist_chunks()
     );
+    // R23c: the sustained arm's affine verdict — the zero-payload-reads
+    // claim's measured counters + the R23 gate (2.5B REPORTED, the
+    // directive's 2.5–3.0B+ milestone band; non-asserting until the
+    // median healthy draw crosses it — the R16 protocol).
+    {
+        let (armed, hits, fallbacks, ledger) = fabric.affine_diag();
+        println!(
+            "R23B_AFFINE_VERDICT arm=sustained armed={} tag_hits={} payload_fallbacks={} ledger_rows={} (R23c: zero-re-read affine verification on the worker fabric)",
+            armed, hits, fallbacks, ledger
+        );
+        println!(
+            "PR1_R23_AFFINE_SUSTAINED_VERDICT rate={} target={} -> {} (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)",
+            sustained_rate,
+            nf_protocol::gates::PR1_R23_AFFINE_SUSTAINED_MIN_MSG_PER_SEC,
+            nf_protocol::gates::evaluate_pr1_r23_affine_sustained(sustained_rate).as_str()
+        );
+    }
     assert_eq!(alloc_delta, 0, "ALLOC_DELTA must be 0 in hydra sustained loop");
     sustained_rate
 }

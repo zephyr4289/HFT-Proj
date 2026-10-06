@@ -983,6 +983,30 @@ impl ReplayTransport {
         self.meta.iter().filter(|m| m.len != 0).count()
     }
 
+    /// R23c: the RX producer's affine-ledger fill surface — an
+    /// allocation-free walk over every RENDERED frame region of the blob
+    /// (event order = publication order; tombstones skipped), yielding
+    /// `(frame_blob_offset, frame_len)` pairs. The ledger fill
+    /// (pipeline.rs rx_thread) computes the per-frame span-body tag from
+    /// these regions ONCE, untimed, while the pages are staging-hot on the
+    /// RX core. Bodies (`frame[HEADER_LEN+2..len]` — the steady span-body
+    /// law, the tombstone rule) are blob-immutable across passes (session
+    /// baking touches only bytes [0..10]), so the ledger built here is
+    /// pass-invariant.
+    pub fn frame_regions(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.meta
+            .iter()
+            .filter(|m| m.len != 0)
+            .map(|m| (m.offset, m.len as u32))
+    }
+
+    /// R23c: the blob's base pointer (the frames buffer's slice base —
+    /// `frame_regions`' offsets are relative to it). The mapping is stable
+    /// for the transport's life (mmap/leak-owned, never moved).
+    pub fn frames_base(&self) -> *const u8 {
+        self.frames.as_ptr()
+    }
+
     /// F-2 (HFT_RXBUILD / CHECKLIST F-2 / ROADMAP1 §6-I1): the
     /// publish-by-reference MASTER — built ONCE at construction (outside
     /// every measured window), event-ordered over the pass's emitted

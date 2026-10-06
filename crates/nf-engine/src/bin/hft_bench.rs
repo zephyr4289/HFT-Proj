@@ -23,7 +23,6 @@ use nf_transport::replay::ReplayTransport;
 use nf_transport::{FrameBatch, Transport};
 use std::env;
 use std::fs;
-
 /// Engine-only counter sink: identical emit path + proof pass, zero hash math.
 /// Same shape as bench.rs FastCountSink — this IS the hot path under test.
 /// (classic per-message arm — constr1.1 JSON contract source.)
@@ -222,6 +221,53 @@ fn wall_pass_pipelined<S: Sink>(
     ((count as f64) / (dt as f64) * 1e9) as u64
 }
 
+/// R23c Task 1c: the SPECULATIVE-SLICE pure-ingest pass — the wire-speed
+/// message-population counter (the 15–20B msg/s mode's pricing row). The
+/// ingest loop walks the pipelined transport and counts EVERY message by
+/// driving Engineer 2's speculative 512-bit slicer over each frame's
+/// message-block stream (`spec_slice_ingest` — the E/O register-table
+/// walk; the `HFT_SPEC_SLICE_VEC=1` knob re-arms the vector table build),
+/// WITHOUT the sequencer's ordering/dedup ladder: the raw feed-handler
+/// ceiling. The golden population assert proves the slicer counts
+/// exactly the canonical corpus on every pass (the arm's own transport
+/// runs SINGLE-FEED so every message rides exactly one frame).
+fn wall_pass_spec(
+    transport: &mut nf_transport::pipeline::PipelinedReplayTransport,
+    sess: [u8; 10],
+    golden_count: Option<u64>,
+) -> u64 {
+    transport.reset(sess);
+    let mut total: u64 = 0;
+    let mut sink = 0u64;
+    let t0 = read_monotonic_raw_ns();
+    while transport.next_batch() {
+        for e in transport.entries() {
+            let frame = e.bytes;
+            if frame.len() > nf_protocol::moldudp64::HEADER_LEN {
+                // The message-block stream begins at the first message's
+                // 2-byte BE length header (HEADER_LEN).
+                total += nf_protocol::moldudp64::spec_slice_ingest(
+                    &frame[nf_protocol::moldudp64::HEADER_LEN..],
+                    &mut sink,
+                );
+            }
+        }
+    }
+    let dt = read_monotonic_raw_ns().saturating_sub(t0);
+    std::hint::black_box(sink);
+    assert!(total > 0, "hft_bench: zero messages sliced (spec arm)");
+    // Population proof: the fast path must count exactly the golden
+    // message population (catches silent slicer drops).
+    if let Some(g) = golden_count {
+        assert_eq!(
+            total, g,
+            "hft_bench: spec-slice population divergence (confluence break)"
+        );
+    }
+    assert!(dt > 0, "hft_bench: zero-duration pass (spec arm)");
+    ((total as f64) / (dt as f64) * 1e9) as u64
+}
+
 fn main() {
     // R8 phase-4: capture the topology truth BEFORE any arm pins anything
     // (the mask-pollution trap — see affinity::capture_topology).
@@ -417,6 +463,47 @@ fn main() {
 
     cs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     scs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+    // ── R23c spec arm (the speculative 512-bit slicer's pure-ingest row) ──
+    // The 20B mode's pricing instrument: the ingest loop counts every
+    // message through Engineer 2's `spec_slice_512` walk — no sequencer
+    // ladder, no arbitration — the raw feed-handler ceiling on a
+    // SINGLE-FEED schedule (every message rides exactly one frame, so
+    // the golden population assert is exact).
+    let spec_spec_rate;
+    {
+        let spec_cfg = ReplayConfig {
+            msgs_per_packet: Packetize::MtuBound(1400),
+            guarantee_coverage: true,
+            feeds_enabled: 1, // single feed: the population is exactly the corpus
+            ..Default::default()
+        };
+        let spec_sched = build_schedule(&gt, &spec_cfg);
+        let mut spec_piped =
+            nf_transport::pipeline::PipelinedReplayTransport::with_coalesce_cpu(
+                &gt, spec_sched, sess, co, rx_cpu,
+            );
+        for w in 0..warmup.min(2) {
+            let r = wall_pass_spec(&mut spec_piped, sess, golden_count);
+            eprintln!("HFT_BENCH_WARMUP {}/{} arm=spec rate={}", w + 1, warmup, r);
+        }
+        let mut spec_rates: Vec<u64> = Vec::with_capacity(runs);
+        for run in 0..runs {
+            let rate = wall_pass_spec(&mut spec_piped, sess, golden_count);
+            eprintln!("HFT_BENCH_RUN {}/{} arm=spec rate={}", run + 1, runs, rate);
+            spec_rates.push(rate);
+        }
+        spec_rates.sort();
+        spec_spec_rate = spec_rates[runs / 2];
+        eprintln!(
+            "PR1_R23_PURE_INGEST_VERDICT rate={} target={} -> {} (R23: 15B msg/s pure ingest with the speculative 512-bit slicer — the 20B mode's pricing row; the R8/R16 span-arm gates above stay the asserting floor)",
+            spec_spec_rate,
+            nf_protocol::gates::PR1_R23_PURE_INGEST_MIN_MSG_PER_SEC,
+            nf_protocol::gates::evaluate_pr1_r23_pure_ingest(spec_spec_rate).as_str()
+        );
+        spec_piped.diag_summary("spec");
+    }
+
     let n = cs.len();
     let median = if n % 2 == 1 {
         cs[n / 2]
@@ -468,6 +555,9 @@ fn main() {
         nf_protocol::gates::PR1_R16_PURE_INGEST_MIN_MSG_PER_SEC,
         r16_verdict
     );
+    // R23: the spec-slice ingest verdict (REPORTED — see the spec arm above).
+    let r23_spec_verdict =
+        nf_protocol::gates::evaluate_pr1_r23_pure_ingest(spec_spec_rate).as_str();
 
     if output_format == "json" {
         let cpu = get_cpu_model().replace('"', " ");
@@ -478,11 +568,13 @@ fn main() {
             "x86_64-unknown-linux-gnu"
         };
         println!(
-            "{{\n  \"median_cycles\": {:.4},\n  \"p95_cycles\": {:.4},\n  \"p99_cycles\": {:.4},\n  \"stddev\": {:.4},\n  \"cv_percent\": {:.4},\n  \"runs\": {},\n  \"warmup\": {},\n  \"cpu_model\": \"{}\",\n  \"freq_mhz\": {:.2},\n  \"target\": \"{}\",\n  \"sink\": \"count+span\",\n  \"sample\": \"{}\",\n  \"span_median_cycles\": {:.4},\n  \"span_p95_cycles\": {:.4},\n  \"span_p99_cycles\": {:.4},\n  \"span_stddev\": {:.4},\n  \"span_cv_percent\": {:.4},\n  \"span_rate_msg_per_sec\": {},\n  \"r8_pure_ingest_target\": {},\n  \"r8_pure_ingest_verdict\": \"{}\",\n  \"r16_pure_ingest_target\": {},\n  \"r16_pure_ingest_verdict\": \"{}\"\n}}",
+            "{{\n  \"median_cycles\": {:.4},\n  \"p95_cycles\": {:.4},\n  \"p99_cycles\": {:.4},\n  \"stddev\": {:.4},\n  \"cv_percent\": {:.4},\n  \"runs\": {},\n  \"warmup\": {},\n  \"cpu_model\": \"{}\",\n  \"freq_mhz\": {:.2},\n  \"target\": \"{}\",\n  \"sink\": \"count+span\",\n  \"sample\": \"{}\",\n  \"span_median_cycles\": {:.4},\n  \"span_p95_cycles\": {:.4},\n  \"span_p99_cycles\": {:.4},\n  \"span_stddev\": {:.4},\n  \"span_cv_percent\": {:.4},\n  \"span_rate_msg_per_sec\": {},\n  \"r8_pure_ingest_target\": {},\n  \"r8_pure_ingest_verdict\": \"{}\",\n  \"r16_pure_ingest_target\": {},\n  \"r16_pure_ingest_verdict\": \"{}\",\n  \"spec_rate_msg_per_sec\": {},\n  \"r23_pure_ingest_target\": {},\n  \"r23_pure_ingest_verdict\": \"{}\"\n}}",
             median, p95, p99, stddev, cv, n, warmup, cpu, cal.freq_mhz, target, sample,
             span_median, span_p95, span_p99, span_stddev, span_cv, span_rate,
             nf_protocol::gates::PR1_R8_PURE_INGEST_MIN_MSG_PER_SEC, r8_verdict,
-            nf_protocol::gates::PR1_R16_PURE_INGEST_MIN_MSG_PER_SEC, r16_verdict
+            nf_protocol::gates::PR1_R16_PURE_INGEST_MIN_MSG_PER_SEC, r16_verdict,
+            spec_spec_rate,
+            nf_protocol::gates::PR1_R23_PURE_INGEST_MIN_MSG_PER_SEC, r23_spec_verdict
         );
     } else {
         println!(
@@ -490,8 +582,9 @@ fn main() {
             median, p95, p99, stddev, cv, n, warmup
         );
         println!(
-            "HFT_BENCH_SPAN_RESULT span_median={:.2} span_p95={:.2} span_p99={:.2} span_stddev={:.4} span_cv={:.2}% span_rate_msg_per_sec={} r8_pure_ingest_verdict={}",
-            span_median, span_p95, span_p99, span_stddev, span_cv, span_rate, r8_verdict
+            "HFT_BENCH_SPAN_RESULT span_median={:.2} span_p95={:.2} span_p99={:.2} span_stddev={:.4} span_cv={:.2}% span_rate_msg_per_sec={} r8_pure_ingest_verdict={} spec_rate_msg_per_sec={} r23_pure_ingest_verdict={}",
+            span_median, span_p95, span_p99, span_stddev, span_cv, span_rate, r8_verdict,
+            spec_spec_rate, r23_spec_verdict
         );
     }
 }

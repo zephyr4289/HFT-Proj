@@ -635,6 +635,27 @@ fn fnv_lanes_64(lanes: &[u32; 8], len: usize) -> u64 {
     h.wrapping_mul(0x0100_0000_01B3)
 }
 
+/// R23c (Engineer 3's pipeline wiring): the WORKER's O(1) golden-value
+/// evaluation from the rxdesc affine tag — the EXACT
+/// `span_crc32c_8lane(body)` value reconstructed from the 8 lane
+/// REGISTER TAGS (the tag kernel's lanes are the reference kernel's own
+/// lane registers, tail folded into lane 0; the combine is the
+/// reference's FNV-1a-64 tail) — for ARBITRARY span lengths, ZERO
+/// payload reads, nine multiplies.
+///
+/// Relation to Engineer 2's kernels: for 64-byte-aligned spans this is
+/// value-identical to [`span_crc32c_8lane_affine_sub`] with a zero
+/// prefix projection (the lanes ARE the cumulative registers at the
+/// span's own origin — the K2 law with prefix = 0; pinned by
+/// `t_r23c_tag_core`). The pipeline's real spans (mean 1364.6 B, only
+/// ~2.7% 64-multiples) ride this combine; the (prefix, cum) raw-CRC
+/// triple in the same tag is verified per-span by the SCALAR affine law
+/// ([`span_crc32c_affine_sub`]) as the integrity check.
+#[inline]
+pub fn span_crc32c_8lane_from_tags(lanes: &[u32; 8], len: usize) -> u64 {
+    fnv_lanes_64(lanes, len)
+}
+
 /// The AVX-512 vector core of [`span_crc32c_8lane_affine_sub`] (the
 /// K2-verified op sequence; `c_adv` = G[L/8], precomposed by the caller).
 #[cfg(target_arch = "x86_64")]
@@ -4293,6 +4314,114 @@ mod tests {
             let hw = unsafe { clmul_reduce_mod_vm(a, b) };
             let sw = clmul_reduce_mod_vm_sw(a, b);
             assert_eq!(hw, sw, "kernel model drift at a={a:#x} b={b:#x}");
+        }
+    }
+
+    /// R23c (the pipeline wiring's bit-exactness pin): the rxdesc tag
+    /// kernel — `nf_transport::rxdesc::affine_frame_tag` (the RX ledger
+    /// fill AND the sink's fallback both produce tags through it) —
+    /// against the reference `span_crc32c_8lane` and a table-driven raw
+    /// CRC32C scan, over an edge-length sweep + pattern mix. Pins ALL
+    /// four facts: (1) the lane registers reproduce the reference value
+    /// through `span_crc32c_8lane_from_tags`; (2) the (prefix, cum)
+    /// mid-boundary pair equals the direct scans; (3) the raw_crc target
+    /// equals the independent second-half scan AND Engineer 2's scalar
+    /// affine projection (the worker's integrity check's exactness);
+    /// (4) for 64-multiples, the tag lanes through Engineer 2's
+    /// 8-lane affine kernel (zero prefix) give the same value.
+    #[test]
+    fn t_r23c_tag_core() {
+        fn table() -> [u32; 256] {
+            let mut t = [0u32; 256];
+            for (i, e) in t.iter_mut().enumerate() {
+                let mut c = i as u32;
+                for _ in 0..8 {
+                    c = if c & 1 != 0 {
+                        (c >> 1) ^ 0x82F6_3B78
+                    } else {
+                        c >> 1
+                    };
+                }
+                *e = c;
+            }
+            t
+        }
+        let t = table();
+        fn crc_scan(mut c: u32, t: &[u32; 256], buf: &[u8]) -> u32 {
+            for &b in buf {
+                c = (c >> 8) ^ t[((c ^ b as u32) & 0xFF) as usize];
+            }
+            c
+        }
+        struct Sm(u64);
+        impl Sm {
+            fn next(&mut self) -> u64 {
+                self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+                let mut z = self.0;
+                z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+                z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+                z ^ (z >> 31)
+            }
+        }
+        let mut sm = Sm(0x243F_6A88_85A3_08D3 ^ 0x1319_8A2E);
+        // The pipeline's real span shape first (edge lengths around the
+        // MTU-1400 bodies: 1217..=1380), then the structural edges.
+        let mut lens: Vec<usize> = (1217..=1380).collect();
+        lens.extend([0, 1, 2, 7, 8, 9, 15, 16, 17, 63, 64, 65, 127, 128, 129, 255, 256, 257, 511, 512, 1023, 1024, 1344, 2047, 2048]);
+        let mut body = vec![0u8; 2048];
+        for (i, &len) in lens.iter().enumerate() {
+            // Deterministic pattern mix (the Sm stream + per-case fills).
+            match i % 5 {
+                0 => body[..len].fill(0xA5),
+                1 => body[..len].fill(0x5A),
+                2 => {
+                    for (j, b) in body[..len].iter_mut().enumerate() {
+                        *b = ((j * 197 + 43) & 0xFF) as u8;
+                    }
+                }
+                3 => {
+                    for b in &mut body[..len] {
+                        *b = sm.next() as u8;
+                    }
+                }
+                _ => {
+                    let mut j = 0usize;
+                    while j < len {
+                        let run = (len - j).min(1 + (sm.next() as usize & 0x1F));
+                        let v = sm.next() as u8;
+                        body[j..j + run].fill(v);
+                        j += run;
+                    }
+                }
+            }
+            let tag = nf_transport::rxdesc::affine_frame_tag(&body[..len]);
+            // (1) The lanes + the combine == the reference golden value.
+            let want = span_crc32c_8lane(&body[..len]);
+            let got = span_crc32c_8lane_from_tags(&tag.lanes, len);
+            assert_eq!(got, want, "r23c lanes diverged at len={len}");
+            // (2) The raw triple vs the direct scans.
+            let h = len / 2;
+            let prefix = crc_scan(0, &t, &body[..h]);
+            let cum = crc_scan(0, &t, &body[..len]);
+            let raw2 = crc_scan(0, &t, &body[h..len]);
+            assert_eq!(tag.prefix_crc, prefix, "r23c prefix at len={len}");
+            assert_eq!(tag.cum_crc, cum, "r23c cum at len={len}");
+            assert_eq!(tag.raw_crc, raw2, "r23c raw at len={len}");
+            // (3) The worker's integrity check is exact: the scalar
+            // affine projection of the pair == the independent scan.
+            if len - h <= 2048 {
+                // SAFETY: width law — raw registers and C(len−h) ≤ 32 bits.
+                let proj = unsafe { span_crc32c_affine_sub(tag.cum_crc, tag.prefix_crc, len - h) };
+                assert_eq!(proj, raw2, "r23c affine projection at len={len}");
+            }
+            // (4) The 64-multiple equivalence with Engineer 2's 8-lane
+            // affine kernel (the zero-prefix projection — the shipped
+            // kernel's law applied to the tag's own lane registers).
+            if len % 64 == 0 && len > 0 {
+                let zero = [0u32; 8];
+                let v = span_crc32c_8lane_affine_sub(&tag.lanes, &zero, len);
+                assert_eq!(v, want, "r23c 8-lane affine equivalence at len={len}");
+            }
         }
     }
 

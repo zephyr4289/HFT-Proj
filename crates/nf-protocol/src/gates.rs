@@ -184,6 +184,46 @@ pub fn evaluate_pr1_r16_pure_ingest(span_rate_msg_per_sec: u64) -> GateVerdict {
     }
 }
 
+// R23: the affine-span algebra program (docs/36 — Engineer 1's GF(2) law,
+// Engineer 2's O(1) kernels, Engineer 3's pipeline wiring). Both verdicts
+// are REPORTED per draw (non-asserting until the median healthy draw
+// crosses them — the same elevation protocol the R16 gates used).
+
+/// R23: sustained full-verification target with the workers evaluating
+/// every span from REGISTER TAGS (zero payload reads — the 66.6 GB/s L3
+/// wall collapsed): >= 2.5B msg/s, the directive's 2.5–3.0B+ milestone
+/// band's floor. The R16 2B gate above remains the CI-hard floor; this
+/// verdict prices the affine arm on every draw.
+pub const PR1_R23_AFFINE_SUSTAINED_MIN_MSG_PER_SEC: u64 = 2_500_000_000;
+
+/// R23: pure-ingest target with the speculative 512-bit slicer wired into
+/// the ingest loop (the 20B mode's pricing row): >= 15B msg/s, the
+/// directive's 15–20B band's floor. Reported per draw alongside the R16
+/// 5B verdict (which stays the asserting arm's target).
+pub const PR1_R23_PURE_INGEST_MIN_MSG_PER_SEC: u64 = 15_000_000_000;
+
+/// R23: the affine-arm sustained verdict (see
+/// PR1_R23_AFFINE_SUSTAINED_MIN_MSG_PER_SEC).
+#[inline]
+pub fn evaluate_pr1_r23_affine_sustained(rate_msg_per_sec: u64) -> GateVerdict {
+    if rate_msg_per_sec >= PR1_R23_AFFINE_SUSTAINED_MIN_MSG_PER_SEC {
+        GateVerdict::Pass
+    } else {
+        GateVerdict::Fail
+    }
+}
+
+/// R23: the spec-slice pure-ingest verdict (see
+/// PR1_R23_PURE_INGEST_MIN_MSG_PER_SEC).
+#[inline]
+pub fn evaluate_pr1_r23_pure_ingest(rate_msg_per_sec: u64) -> GateVerdict {
+    if rate_msg_per_sec >= PR1_R23_PURE_INGEST_MIN_MSG_PER_SEC {
+        GateVerdict::Pass
+    } else {
+        GateVerdict::Fail
+    }
+}
+
 #[inline]
 pub fn evaluate_pr2_p50(p50_cycles: u64) -> GateVerdict {
     if p50_cycles < PR2_TARGET_P50_CYCLES {
@@ -295,5 +335,14 @@ mod tests {
         assert_eq!(evaluate_pr1_r16_pure_ingest(4_999_999_999), GateVerdict::Fail);
         assert_eq!(evaluate_pr1_r16_pure_ingest(5_000_000_000), GateVerdict::Pass);
         assert_eq!(evaluate_pr1_r16_pure_ingest(6_000_000_000), GateVerdict::Pass);
+
+        // R23 tripwires: 2.5B affine sustained / 15B spec-slice ingest —
+        // FAIL below, PASS exactly at the threshold.
+        assert_eq!(evaluate_pr1_r23_affine_sustained(2_499_999_999), GateVerdict::Fail);
+        assert_eq!(evaluate_pr1_r23_affine_sustained(0), GateVerdict::Fail);
+        assert_eq!(evaluate_pr1_r23_affine_sustained(2_500_000_000), GateVerdict::Pass);
+        assert_eq!(evaluate_pr1_r23_pure_ingest(14_999_999_999), GateVerdict::Fail);
+        assert_eq!(evaluate_pr1_r23_pure_ingest(15_000_000_000), GateVerdict::Pass);
+        assert_eq!(evaluate_pr1_r23_pure_ingest(20_000_000_000), GateVerdict::Pass);
     }
 }

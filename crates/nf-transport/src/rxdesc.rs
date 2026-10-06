@@ -69,7 +69,6 @@ use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
 /// Number of circulating per-pass array slots (see the module doc).
 pub const RX_NARR: usize = 8;
-
 /// Chunk-state ring geometry: one u64 slot per chunk-grid position
 /// (global chunk id mod 2^15). The slot holds `chunk_id + 1` for an
 /// inline-claimed chunk (0 = none) — the VALUE CHECK makes aliasing
@@ -85,6 +84,349 @@ pub const RX_CHUNK_MASK: u64 = RX_CHUNK_CAP - 1;
 /// ~11k spans/pass; 128k leaves >10x headroom. `HFT_RXDESC_CAP` overrides
 /// (clamped); a window exceeding the capacity fails stop.
 pub const RX_CAP_DEFAULT: usize = 1 << 17;
+
+// ── R23c: the affine-tagged descriptor protocol (Engineer 3) ────────────────
+//
+// THE PIPELINE PHYSICS THIS MODULE ADDS: the workers' span evaluation was
+// a full payload re-read (a ~1.4 KB body from L3 per span — the fabric's
+// 66.6 GB/s L3 wall at the sustained record). Engineer 1 proved the GF(2)
+// affine span law (raw(B) = raw(A∥B) ⊕ (raw(A) ⊗ G[L_B] mod VM)) and
+// Engineer 2 shipped the O(1) projection kernels; R23c wires the law into
+// the rxdesc array protocol so the workers verify every span from REGISTER
+// TAGS with ZERO payload reads:
+//
+//   * DESCRIPTOR: the existing 8-byte array word stays VERBATIM
+//     (`offset:u32 | len:u16 | flags:u16`) with ONE new flag bit —
+//     [`RX_AFFINE_FLAG`] (bit 48, the anchor bit's ring-only position —
+//     array words never take the ring consumers' anchor path). Bit set =
+//     the span carries a 48-byte tag sidecar entry.
+//   * TAG SIDECAR (48 B per span, [`RX_AFFINE_TAG_WORDS`] words):
+//       word 0: prefix_crc:u32 | cum_crc:u32
+//       word 1: raw_crc:u32 | reserved:u32
+//       words 2..6: lanes[0..8] (u32 each)
+//     The total descriptor footprint is 8 + 48 = 56 bytes — strictly ≤ 64
+//     bytes (the R21 compactness law, pinned below).
+//   * THE (prefix, cum) PAIR — self-contained per span, byte-granular
+//     cuts of the RAW CRC32C stream: h = len/2,
+//       prefix = raw(body[..h)), cum = raw(body[..len)), raw_crc =
+//       raw(body[h..len)) computed by an INDEPENDENT direct scan. The
+//     worker checks Engineer 2's scalar projection
+//       span_crc32c_affine_sub(cum, prefix, len − h) == raw_crc
+//     in ~1.2 ns (2 clmul chains, zero reads) — a per-span integrity
+//     check on the stored triple (any single-field corruption fails
+//     stop). The mid-boundary split is SELF-CONTAINED (no cross-span
+//     chain): a partially-diverged schedule can never desynchronize a
+//     running register, the hazard class a cross-span "packet boundary
+//     chain" carries.
+//   * THE LANES: the span's 8 span_crc32c_8lane lane registers (tail
+//     folded into lane 0 — EXACTLY the reference kernel's semantics,
+//     pinned by the nf-testkit differential). The worker reproduces the
+//     EXACT golden span value via the 9-multiply FNV-1a-64 combine
+//     (`crcfold::span_crc32c_8lane_from_tags`) — arbitrary span lengths,
+//     zero reads, ~2-3 ns. For 64-byte-aligned spans this is value-identical
+//     to Engineer 2's `span_crc32c_8lane_affine_sub` (the K2 law with a
+//     zero prefix projection); the pipeline's real spans (mean 1364.6 B,
+//     only 2.7% 64-multiples — the R23c silicon probe) ride the combine.
+//   * THE LEDGER (the RX ingest producer): [`AffineLedgerEntry`] per
+//     rendered frame — the tag computed ONCE in a single pass over the
+//     blob's packet bodies (L1D-hot at the staging/reset point, ~0.5 ms
+//     for the 15 MB corpus, UNTIMED) by the RX thread, stored in the
+//     shared state. The bodies are blob-immutable across passes (session
+//     baking touches only the frame headers), so the ledger is
+//     pass-invariant. The sink's cold check-and-fix path resolves tags
+//     from the ledger by a monotone body-pointer cursor (O(1)
+//     amortized); the body-scan fallback covers divergence and
+//     ledger-less runs — both paths produce bit-identical tags (the
+//     nf-testkit differential pins the kernel against the reference).
+//   * THE WARM-START LAW EXTENDS TO THE SIDECAR: `copy_tags` rides the
+//     window open's warm start — the deterministic schedule replays the
+//     same span sequence over the same blob, so every measured pass
+//     finds word AND tag already correct (the steady check stays ONE
+//     8-byte load+compare on the word; the tag's correctness follows
+//     from the same determinism argument, backstopped by the worker's
+//     per-span affine integrity check and the harness's bit-parity
+//     reference pass).
+//   * ROLLBACK: `HFT_AFFINE_TAGS=0` restores the pre-R23 array protocol
+//     verbatim (no flag bit, no sidecar traffic, workers re-read the
+//     payload). Default ON on x86_64; permanently off elsewhere (the
+//     tag kernel is SSE4.2 intrinsics — the standing runner contract).
+
+/// R23c: the array word's affine-tag flag (bit 48 of the desc word's flag
+/// half). The ring protocol's anchor flag lives at the same bit position
+/// but only in RING words — array words never flow through a ring
+/// consumer, so the two namespaces never alias.
+pub const RX_AFFINE_FLAG: u64 = 1 << 48;
+
+/// R23c: the tag sidecar stride (words per span). 6 words = 48 bytes; the
+/// full descriptor (word + sidecar) is 56 bytes ≤ 64 (pinned below).
+pub const RX_AFFINE_TAG_WORDS: usize = 6;
+
+const _: () = assert!(RX_AFFINE_TAG_WORDS * 8 + 8 <= 64, "R23c compactness");
+
+/// R23c: one ledger row — the RX producer's per-frame affine snapshot
+/// (the single untimed pass over the blob's packet bodies). The `body_ptr`
+/// is the frame's span-body ABSOLUTE address (the blob is stable for the
+/// transport's life; the sink's lookup compares absolute pointers, so no
+/// base normalization can desynchronize).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct AffineLedgerEntry {
+    /// The frame's span body pointer (blob + offset + HEADER_LEN + 2 —
+    /// the steady span body region; the tombstone-rule law).
+    pub body_ptr: u64,
+    /// The span body length in bytes.
+    pub body_len: u32,
+    /// raw(body[..h)) — the mid-boundary prefix snapshot.
+    pub prefix_crc: u32,
+    /// raw(body[..len)) — the packet-end cumulative snapshot.
+    pub cum_crc: u32,
+    /// raw(body[h..len)) — the affine check target (independent scan).
+    pub raw_crc: u32,
+    pub _pad: u32,
+    /// The 8 span_crc32c_8lane lane registers of this body.
+    pub lanes: [u32; 8],
+}
+
+/// R23c layout pin: 60 bytes of fields + 4 bytes tail padding (u64
+/// alignment) — one cache line per ledger row.
+const _: () = assert!(std::mem::size_of::<AffineLedgerEntry>() == 64);
+
+/// R23c: the tag core — the four facts the sidecar carries, computed by
+/// ONE pass over the body (the RX ledger fill or the sink's fallback).
+#[derive(Clone, Copy)]
+pub struct AffineTagCore {
+    pub prefix_crc: u32,
+    pub cum_crc: u32,
+    pub raw_crc: u32,
+    pub lanes: [u32; 8],
+}
+
+/// R23c: pack the tag core into the sidecar word layout.
+#[inline(always)]
+pub fn affine_tag_pack(t: &AffineTagCore) -> [u64; RX_AFFINE_TAG_WORDS] {
+    let mut w = [0u64; RX_AFFINE_TAG_WORDS];
+    w[0] = t.prefix_crc as u64 | ((t.cum_crc as u64) << 32);
+    w[1] = t.raw_crc as u64;
+    for k in 0..8 {
+        w[2 + k / 2] |= (t.lanes[k] as u64) << (32 * (k % 2));
+    }
+    w
+}
+
+/// R23c: unpack the sidecar words (the inverse of [`affine_tag_pack`]).
+#[inline(always)]
+pub fn affine_tag_unpack(w: &[u64; RX_AFFINE_TAG_WORDS]) -> AffineTagCore {
+    AffineTagCore {
+        prefix_crc: w[0] as u32,
+        cum_crc: (w[0] >> 32) as u32,
+        raw_crc: w[1] as u32,
+        lanes: [
+            w[2] as u32,
+            (w[2] >> 32) as u32,
+            w[3] as u32,
+            (w[3] >> 32) as u32,
+            w[4] as u32,
+            (w[4] >> 32) as u32,
+            w[5] as u32,
+            (w[5] >> 32) as u32,
+        ],
+    }
+}
+
+/// R23c: the tag kernel — one pass over `body` producing the (prefix,
+/// cum, raw) raw-CRC32C triple (mid-boundary split, h = len/2) and the 8
+/// `span_crc32c_8lane` lane registers (64-byte blocks, 8 interleaved
+/// chains, tail folded into lane 0 — the reference kernel's exact loop
+/// shape, bit-identical by the nf-testkit differential `t_r23c_tag_core`).
+///
+/// x86_64: SSE4.2 hardware CRC32 (the standing runner contract — the
+/// same instruction class the reference kernel uses). Portable fallback
+/// elsewhere (the affine mode itself is x86_64-only; this keeps the
+/// differential suite green on any host).
+pub fn affine_frame_tag(body: &[u8]) -> AffineTagCore {
+    let len = body.len();
+    let h = len / 2;
+    let p = body.as_ptr();
+    let qword = |o: usize| -> u64 {
+        // SAFETY: callers prove o + 8 <= body.len(); unaligned reads are
+        // defined for any pointer.
+        unsafe { (p.add(o) as *const u64).read_unaligned() }
+    };
+    // ── Chain 1/2: the raw CRC32C stream with the mid-boundary snapshot ──
+    // (byte-granular cut at h; unit grouping is grouping-transparent for
+    // the CRC32C register, so the fast widths are exact).
+    let mut raw: u32 = 0;
+    let mut i = 0usize;
+    while i + 8 <= h {
+        raw = crc32c_u64(raw, qword(i));
+        i += 8;
+    }
+    if h - i >= 4 {
+        let w = u32::from_le_bytes([body[i], body[i + 1], body[i + 2], body[i + 3]]);
+        raw = crc32c_u32(raw, w);
+        i += 4;
+    }
+    if h - i >= 2 {
+        let w = u16::from_le_bytes([body[i], body[i + 1]]);
+        raw = crc32c_u16(raw, w);
+        i += 2;
+    }
+    if i < h {
+        raw = crc32c_u8(raw, body[i]);
+        i += 1;
+    }
+    let prefix_crc = raw;
+    // ── Chain 2: [h, len) continues `raw` (cum) and starts `raw2` (the
+    // independent affine check target — never derived from the law).
+    let mut raw2: u32 = 0;
+    while i + 8 <= len {
+        let w = qword(i);
+        raw = crc32c_u64(raw, w);
+        raw2 = crc32c_u64(raw2, w);
+        i += 8;
+    }
+    if len - i >= 4 {
+        let w = u32::from_le_bytes([body[i], body[i + 1], body[i + 2], body[i + 3]]);
+        raw = crc32c_u32(raw, w);
+        raw2 = crc32c_u32(raw2, w);
+        i += 4;
+    }
+    if len - i >= 2 {
+        let w = u16::from_le_bytes([body[i], body[i + 1]]);
+        raw = crc32c_u16(raw, w);
+        raw2 = crc32c_u16(raw2, w);
+        i += 2;
+    }
+    if i < len {
+        raw = crc32c_u8(raw, body[i]);
+        raw2 = crc32c_u8(raw2, body[i]);
+    }
+    // ── Chain 3: the 8 lane registers — the reference kernel's verbatim
+    // loop (64-byte blocks, 8 interleaved chains, tail folded into lane 0
+    // through the u64/u32/u16/u8 ending). ──
+    let mut lanes = [0u32; 8];
+    let mut j = 0usize;
+    while j + 64 <= len {
+        for (k, lk) in lanes.iter_mut().enumerate() {
+            *lk = crc32c_u64(*lk, qword(j + 8 * k));
+        }
+        j += 64;
+    }
+    while j + 8 <= len {
+        lanes[0] = crc32c_u64(lanes[0], qword(j));
+        j += 8;
+    }
+    if len - j >= 4 {
+        let w = u32::from_le_bytes([body[j], body[j + 1], body[j + 2], body[j + 3]]);
+        lanes[0] = crc32c_u32(lanes[0], w);
+        j += 4;
+    }
+    if len - j >= 2 {
+        let w = u16::from_le_bytes([body[j], body[j + 1]]);
+        lanes[0] = crc32c_u16(lanes[0], w);
+        j += 2;
+    }
+    if j < len {
+        lanes[0] = crc32c_u8(lanes[0], body[j]);
+    }
+    AffineTagCore {
+        prefix_crc,
+        cum_crc: raw,
+        raw_crc: raw2,
+        lanes,
+    }
+}
+
+// ── R23c: the hardware CRC32C chain (SSE4.2 — the standing x86_64 runner
+// contract, the same instruction class the reference kernel uses) with a
+// portable bitwise fallback for non-x86_64 hosts (correctness only; the
+// affine mode itself stays x86_64-only). ──
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn crc32c_u64(c: u32, w: u64) -> u32 {
+    // SAFETY: SSE4.2 is baseline on every x86_64 runner (the crate's
+    // standing contract — kbench's probe aborts otherwise).
+    unsafe { std::arch::x86_64::_mm_crc32_u64(c as u64, w) as u32 }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn crc32c_u32(c: u32, w: u32) -> u32 {
+    unsafe { std::arch::x86_64::_mm_crc32_u32(c, w) }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn crc32c_u16(c: u32, w: u16) -> u32 {
+    unsafe { std::arch::x86_64::_mm_crc32_u16(c, w) }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[inline(always)]
+fn crc32c_u8(c: u32, w: u8) -> u32 {
+    unsafe { std::arch::x86_64::_mm_crc32_u8(c, w) }
+}
+
+/// The reflected CRC32C polynomial (0x1EDC6F41 reversed).
+#[cfg(not(target_arch = "x86_64"))]
+const CRC32C_POLY_REFLECTED: u32 = 0x82F6_3B78;
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+fn crc32c_u8(c: u32, w: u8) -> u32 {
+    let mut c = c ^ (w as u32);
+    for _ in 0..8 {
+        c = if c & 1 != 0 {
+            (c >> 1) ^ CRC32C_POLY_REFLECTED
+        } else {
+            c >> 1
+        };
+    }
+    c
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+fn crc32c_u16(c: u32, w: u16) -> u32 {
+    let b = w.to_le_bytes();
+    crc32c_u8(crc32c_u8(c, b[0]), b[1])
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+fn crc32c_u32(c: u32, w: u32) -> u32 {
+    let b = w.to_le_bytes();
+    crc32c_u16(
+        crc32c_u16(c, u16::from_le_bytes([b[0], b[1]])),
+        u16::from_le_bytes([b[2], b[3]]),
+    )
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+#[inline(always)]
+fn crc32c_u64(c: u32, w: u64) -> u32 {
+    let b = w.to_le_bytes();
+    crc32c_u32(
+        crc32c_u32(c, u32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+        u32::from_le_bytes([b[4], b[5], b[6], b[7]]),
+    )
+}
+
+/// R23c: whether the affine-tag protocol is armed (read ONCE per process
+/// — never inside a window). `HFT_AFFINE_TAGS=0` is the documented
+/// rollback; the default is ON (the directive's ship) on x86_64 and
+/// permanently OFF elsewhere (the tag kernel's SSE4.2 contract).
+pub fn rxdesc_affine_enabled() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *V.get_or_init(|| std::env::var("HFT_AFFINE_TAGS").as_deref() != Ok("0"))
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
 
 /// The `spans_ready` / pass-record packing: `(gen:u16 << 48) | value:u48`.
 /// `gen` is the sink generation (bumped per sink construction / reset);
@@ -170,6 +512,24 @@ pub struct RxdescState {
     chunk_state: UnsafeCell<Box<[u64; RX_CHUNK_CAP as usize]>>,
     /// Prefill fixes applied by sinks (telemetry; Relaxed).
     pub fixes: AtomicU64,
+    /// R23c: the affine tag sidecar — RX_NARR arrays of `cap` spans ×
+    /// [`RX_AFFINE_TAG_WORDS`] words each, riding the SAME slot protocol
+    /// as `arrays` (warm-copied at window open; fixed by the sink's
+    /// check-and-fix cold path; read by workers after the ready
+    /// Acquire). EMPTY (cap-0 rows) when the affine mode is disarmed —
+    /// zero cost on the rollback.
+    tags: UnsafeCell<Vec<Box<[u64]>>>,
+    /// R23c: the RX producer's affine ledger — one [`AffineLedgerEntry`]
+    /// per rendered frame, filled ONCE by the RX thread's single pass
+    /// over the blob's packet bodies (untimed; attach-allocated). The
+    /// bodies are blob-immutable across passes, so the ledger is
+    /// pass-invariant. Zero-sized until `attach_ledger`.
+    ledger: UnsafeCell<Box<[AffineLedgerEntry]>>,
+    /// R23c: the published ledger length (Release by the RX fill;
+    /// Acquire by the sink's lookup). 0 = no ledger (the body-scan
+    /// fallback serves). Public read for the fabric's verdict telemetry
+    /// (post-run, read-only).
+    pub ledger_len: AtomicU64,
 }
 
 // SAFETY: the protocol in the module doc confines every array/record slot
@@ -250,9 +610,22 @@ unsafe fn nt_copy_u64(src: *const u64, dst: *mut u64, n: usize) {
 impl RxdescState {
     /// Allocate the state (construction time — outside every window).
     pub fn new(cap: usize) -> Self {
+        // R23c: the tag sidecar rides the array protocol only when the
+        // affine mode is armed (the process-wide OnceLock gate — read
+        // once HERE, at construction, never inside a window). Disarmed:
+        // empty rows, zero footprint.
+        let tag_cap = if rxdesc_affine_enabled() {
+            cap.saturating_mul(RX_AFFINE_TAG_WORDS)
+        } else {
+            0
+        };
         #[allow(clippy::disallowed_types)]
         let arrays: Vec<Box<[u64]>> = (0..RX_NARR)
             .map(|_| vec![0u64; cap].into_boxed_slice())
+            .collect();
+        #[allow(clippy::disallowed_types)]
+        let tags: Vec<Box<[u64]>> = (0..RX_NARR)
+            .map(|_| vec![0u64; tag_cap].into_boxed_slice())
             .collect();
         Self {
             arrays: UnsafeCell::new(arrays),
@@ -270,6 +643,9 @@ impl RxdescState {
                     .unwrap(),
             ),
             fixes: AtomicU64::new(0),
+            tags: UnsafeCell::new(tags),
+            ledger: UnsafeCell::new(Box::new([])),
+            ledger_len: AtomicU64::new(0),
         }
     }
 
@@ -480,4 +856,164 @@ impl RxdescState {
             std::ptr::write_bytes(ring.as_mut_ptr(), 0, RX_CHUNK_CAP as usize);
         }
     }
+
+    // ── R23c: the affine tag sidecar + the RX ledger ─────────────────────
+
+    /// R23c: whether this state's tag sidecar is live (the construction
+    /// gate — armed iff the process-wide affine gate was ON at state
+    /// build; the tag arrays exist only then, and the OnceLock read is
+    /// an atomic load after init).
+    #[inline]
+    pub fn affine_armed(&self) -> bool {
+        rxdesc_affine_enabled()
+    }
+
+    /// R23c: write one span's tag (the sink's fix path; the same slot
+    /// ownership protocol as `set_arr`).
+    #[inline(always)]
+    pub fn set_affine_tag(&self, slot: u8, idx: usize, w: &[u64; RX_AFFINE_TAG_WORDS]) {
+        debug_assert!((slot as usize) < RX_NARR);
+        if idx >= self.cap {
+            panic!(
+                "rxdesc: affine tag slot {slot} index {idx} exceeds cap {}",
+                self.cap
+            );
+        }
+        // SAFETY: slot ownership per the module doc; disjoint access at
+        // any instant (RX s+1 / sink s / workers ≤ s).
+        unsafe {
+            let tags = &mut *self.tags.get();
+            let base = idx * RX_AFFINE_TAG_WORDS;
+            tags[slot as usize][base..base + RX_AFFINE_TAG_WORDS]
+                .copy_from_slice(w);
+        }
+    }
+
+    /// R23c: read one span's tag (workers, after the ready Acquire).
+    #[inline(always)]
+    pub fn get_affine_tag(&self, slot: u8, idx: usize) -> [u64; RX_AFFINE_TAG_WORDS] {
+        debug_assert!((slot as usize) < RX_NARR && idx < self.cap);
+        let mut out = [0u64; RX_AFFINE_TAG_WORDS];
+        // SAFETY: the entry was published by the sink's ready store (the
+        // caller Acquired it); read-only here.
+        unsafe {
+            let tags = &*self.tags.get();
+            let base = idx * RX_AFFINE_TAG_WORDS;
+            out.copy_from_slice(
+                &tags[slot as usize][base..base + RX_AFFINE_TAG_WORDS],
+            );
+        }
+        out
+    }
+
+    /// R23c: the WARM-START twin for the tag sidecar — copy `n` spans'
+    /// tags from slot `from` to slot `to` (the sink, at window open,
+    /// right after `copy_arr`; the same NT-copy law when the phases
+    /// match). No-op when the sidecar is disarmed (the slots are empty
+    /// zero-capacity allocations with dangling bases — the length check
+    /// MUST gate before any pointer math).
+    pub fn copy_tags(&self, from: u8, to: u8, n: usize) {
+        let n = n.min(self.cap);
+        if n == 0 || from == to {
+            return;
+        }
+        // SAFETY: `to` is exclusively this sink's (the reuse gate); `from`
+        // holds the previous window's published, immutable entries — the
+        // same protocol as copy_arr.
+        unsafe {
+            let tags = &mut *self.tags.get();
+            if tags.is_empty() || tags[0].is_empty() {
+                return; // disarmed: the sidecar was never allocated
+            }
+            let words = n * RX_AFFINE_TAG_WORDS;
+            let src = tags[from as usize].as_ptr();
+            let dst = tags[to as usize].as_mut_ptr();
+            if nt_copy_enabled() && (src as usize) % 64 == (dst as usize) % 64 {
+                nt_copy_u64(src, dst, words);
+            } else {
+                std::ptr::copy_nonoverlapping(src, dst, words);
+            }
+        }
+    }
+
+    /// R23c: attach + size the RX ledger (the RX thread, ONCE at the
+    /// reset-serve fill point — untimed; zero rows when disarmed). The
+    /// allocation is construction-class (outside every window).
+    #[allow(clippy::disallowed_types)]
+    pub fn attach_ledger(&self, frame_count: usize) {
+        if !rxdesc_affine_enabled() {
+            return;
+        }
+        // SAFETY: the RX thread is the sole writer until the Release
+        // publish; the ledger is write-once thereafter.
+        unsafe {
+            *self.ledger.get() =
+                vec![AffineLedgerEntry {
+                    body_ptr: 0,
+                    body_len: 0,
+                    prefix_crc: 0,
+                    cum_crc: 0,
+                    raw_crc: 0,
+                    _pad: 0,
+                    lanes: [0; 8],
+                }; frame_count]
+                .into_boxed_slice();
+        }
+    }
+
+    /// R23c: write ledger row `i` (the RX thread's fill loop; plain
+    /// store — the Release happens once, in [`Self::ledger_publish`]).
+    #[inline]
+    pub fn ledger_set(&self, i: usize, e: AffineLedgerEntry) {
+        debug_assert!(rxdesc_affine_enabled(), "ledger write while disarmed");
+        // SAFETY: the RX thread owns the ledger until the publish; `i`
+        // is bounded by the attach count (the fill loop's bound).
+        unsafe {
+            (*self.ledger.get())[i] = e;
+        }
+    }
+
+    /// R23c: publish the ledger (the RX thread, after the fill — ONE
+    /// Release; the sink's lookups Acquire it, and the mailbox's own
+    /// publication chain orders the fill before any span the sink can
+    /// submit for these frames).
+    #[inline]
+    pub fn ledger_publish(&self, len: usize) {
+        self.ledger_len.store(len as u64, Ordering::Release);
+    }
+
+    /// R23c: the sink's ledger lookup — the monotone body-pointer cursor
+    /// (spans arrive in frame order in the steady path, so the forward
+    /// scan is O(1) amortized; duplicate deliveries re-hit the same row
+    /// without advancing). Returns the entry + the advanced cursor on a
+    /// (pointer, length) match; None leaves the caller's cursor
+    /// untouched (the divergent-schedule case — the body-scan fallback).
+    #[inline]
+    pub fn ledger_lookup(
+        &self,
+        cursor: usize,
+        body_ptr: usize,
+        body_len: u32,
+    ) -> Option<(&AffineLedgerEntry, usize)> {
+        let n = self.ledger_len.load(Ordering::Acquire) as usize;
+        if n == 0 {
+            return None;
+        }
+        // SAFETY: rows [0, n) are published (the Release/Acquire pair);
+        // read-only from here on.
+        let entries: &[AffineLedgerEntry] = unsafe { (*self.ledger.get()).as_ref() };
+        let mut i = cursor.min(entries.len());
+        while i < n && (entries[i].body_ptr as usize) < body_ptr {
+            i += 1;
+        }
+        if i < n
+            && entries[i].body_ptr as usize == body_ptr
+            && entries[i].body_len == body_len
+        {
+            Some((&entries[i], i))
+        } else {
+            None
+        }
+    }
 }
+

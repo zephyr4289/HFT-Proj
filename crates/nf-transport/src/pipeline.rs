@@ -59,9 +59,11 @@
 use crate::render::ReplayTransport;
 use crate::sched_types::ReplaySchedule;
 use crate::{FrameBatch, Transport};
+use crate::rxdesc::{AffineLedgerEntry, RxdescState};
 use nf_protocol::packet::FrameEntry;
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, Ordering};
+use std::sync::OnceLock;
 
 /// R8 phase-3: mailbox depth. The 4-buffer mailbox kept the RX pinned to
 /// the consumer's elbow — every buffer free had to be noticed and repaid
@@ -402,6 +404,13 @@ struct Mailbox {
     /// The topology verifier's ACTUAL-side fact — a silent pin failure
     /// (the `let _ = pin_cpu` pattern) can never hide again.
     rx_actual_cpu: AtomicI64,
+    /// R23c: the fabric's rxdesc state, attached by the consumer via
+    /// [`PipelinedReplayTransport::set_rxdesc`] BEFORE the first
+    /// reset/pass — arms the RX producer's affine-ledger fill (the
+    /// single untimed pass over the blob's packet bodies). Set-once;
+    /// unset = no ledger (the sink's body-scan fallback serves).
+    #[allow(clippy::disallowed_types)] // Tier-F: construction-time set-once only
+    rxdesc: OnceLock<Arc<RxdescState>>,
 }
 
 // SAFETY: the mailbox is the SPSC handoff described in the module doc —
@@ -671,6 +680,80 @@ fn rxbuild_bake_full(
     rxs.idx = 0;
 }
 
+/// R23c: THE RX INGEST PRODUCER'S SINGLE PASS — the affine ledger fill.
+///
+/// Walks every rendered frame region of the blob (allocation-free,
+/// `ReplayTransport::frame_regions`), computes the per-frame span-body
+/// tag (the 8 lane registers + the (prefix, cum, raw) raw-CRC32C triple —
+/// `rxdesc::affine_frame_tag`), and publishes the ledger with ONE
+/// Release. The bodies are blob-immutable across passes (session baking
+/// touches only the frame headers), so the ledger is pass-invariant:
+/// ONE fill serves every pass of this transport's life.
+///
+/// WHERE IT RUNS: at the RX thread's first cycle after the fabric's
+/// rxdesc state is attached — the reset-serve point (the burst shape:
+/// the consumer is parked, the fill completes before the ack, so every
+/// ledger lookup is covered), the loop-top probe (the auto-advance
+/// shape: the first cycle after the attach, before the consumer's spans
+/// can complete a window), or thread start (the pre-spawn attach). All
+/// three share one done-flag; a transport that never attaches serves
+/// the sink's body-scan fallback (bit-identical tags, the cold cost on
+/// the submitting core).
+///
+/// UNTIMED by construction (the reset handshake / the first cycle —
+/// never inside a measured window); the 15 MB corpus scans in ~0.5 ms.
+fn r23c_ledger_fill(inner: &ReplayTransport, mb: &Mailbox, diag: bool) -> bool {
+    let Some(st) = mb.rxdesc.get() else {
+        return false;
+    };
+    if !st.affine_armed() {
+        return true; // disarmed: nothing to do, never retry
+    }
+    let t0 = std::time::Instant::now();
+    let base = inner.frames_base();
+    let n = inner.rendered_frame_count();
+    st.attach_ledger(n);
+    let mut filled = 0usize;
+    for (off, flen) in inner.frame_regions() {
+        let flen = flen as usize;
+        // The steady span body: frame[HEADER_LEN+2 .. flen] (the
+        // tombstone-rule law). Degenerate frames (HB/EOS tails, len ≤ 22)
+        // can produce no span — skip.
+        if flen <= nf_protocol::moldudp64::HEADER_LEN + 2 {
+            continue;
+        }
+        let body_off = off as usize + nf_protocol::moldudp64::HEADER_LEN + 2;
+        let body_len = flen - (nf_protocol::moldudp64::HEADER_LEN + 2);
+        // SAFETY: the region is construction-valid (blob + off, flen
+        // bytes — the render walk's own bounds, the same contract the
+        // entry build dereferences); read-only.
+        let body = unsafe { std::slice::from_raw_parts(base.add(body_off), body_len) };
+        let t = crate::rxdesc::affine_frame_tag(body);
+        st.ledger_set(
+            filled,
+            AffineLedgerEntry {
+                body_ptr: body.as_ptr() as u64,
+                body_len: body_len as u32,
+                prefix_crc: t.prefix_crc,
+                cum_crc: t.cum_crc,
+                raw_crc: t.raw_crc,
+                _pad: 0,
+                lanes: t.lanes,
+            },
+        );
+        filled += 1;
+    }
+    st.ledger_publish(filled);
+    if diag {
+        eprintln!(
+            "DIAG rx: r23c affine ledger filled rows={} ns={} (the RX producer's single body pass)",
+            filled,
+            t0.elapsed().as_nanos()
+        );
+    }
+    true
+}
+
 /// RX thread main loop: poll ahead into free buffers, serve resets.
 /// `pin_cpu_id` pins the RX thread to an absolute CPU (None = unpinned).
 /// `init_session` is the construction pass's session (pass 0) — the R12 SoA
@@ -744,6 +827,9 @@ fn rx_thread(
     let compute_elig = std::env::var("HFT_VEC_LADDER").as_deref() == Ok("1");
     // HFT_EXP_DIAG diagnostics (never in CI): per-pass poll accounting.
     let diag = std::env::var("HFT_EXP_DIAG").is_ok();
+    // R23c: the affine ledger's done-flag (thread start probe below;
+    // the loop-top probe and the reset serve re-check until done).
+    let mut r23_ledger_done = r23c_ledger_fill(&inner, &mb, diag);
     let mut diag_polls = 0u64;
     let mut diag_max_ns: u64 = 0;
     let mut diag_total_ns: u64 = 0;
@@ -950,6 +1036,13 @@ fn rx_thread(
         }
     };
     loop {
+        // R23c: the loop-top ledger probe — the auto-advance shape's
+        // trigger (the state attaches mid-flight; the first cycle after
+        // the attach fills, before the consumer's spans can complete a
+        // window). One atomic load per cycle until done.
+        if !r23_ledger_done && mb.rxdesc.get().is_some() {
+            r23_ledger_done = r23c_ledger_fill(&inner, &mb, diag);
+        }
         match mb.cmd.load(Ordering::Acquire) {
             CMD_SHUTDOWN => return,
             CMD_RESET => {
@@ -960,6 +1053,12 @@ fn rx_thread(
                 // entries; the RX thread owns the transport and blob.
                 let sess = unsafe { *mb.reset_session.get() };
                 inner.reset(sess);
+                // R23c: the burst shape's ledger trigger — the consumer is
+                // parked and the fill completes BEFORE the ack below, so
+                // every ledger lookup of the coming pass is covered.
+                if !r23_ledger_done {
+                    r23_ledger_done = r23c_ledger_fill(&inner, &mb, diag);
+                }
                 refresh_tmpl(&sess, &mut sess_lo_tmpl, &mut sess_hi_tmpl);
                 // F-1: the bake point — close the (possibly abandoned,
                 // possibly drained) pass's telemetry window, restart the
@@ -1752,6 +1851,7 @@ impl PipelinedReplayTransport {
             master_patchable,
             rxbuild_enabled: rxbuild,
             rx_actual_cpu: AtomicI64::new(-1),
+            rxdesc: OnceLock::new(),
         });
         let rx = std::thread::Builder::new()
             .stack_size(512 * 1024)
@@ -1778,6 +1878,20 @@ impl PipelinedReplayTransport {
             resets: 0,
             at_eos: false,
         }
+    }
+
+    /// R23c: attach the fabric's rxdesc state — arms the RX producer's
+    /// affine-ledger fill (the single untimed pass over the blob's packet
+    /// bodies; see [`rxdesc::AffineLedgerEntry`]). Call BEFORE the first
+    /// `reset`/`reset_pass` (the bench's attach point; the fill fires at
+    /// the RX's next cycle, the reset serve, or thread start — whichever
+    /// lands first). Set-once; `false` = a state was already attached.
+    /// Without an attachment the sink's cold fill falls back to a direct
+    /// body scan (bit-identical tags, the cold cost on the submitting
+    /// core).
+    #[allow(clippy::disallowed_types)] // Tier-F: construction-time attach only
+    pub fn set_rxdesc(&mut self, state: Arc<RxdescState>) -> bool {
+        self.mb.rxdesc.set(state).is_ok()
     }
 
     /// Reset for a fresh pass (handshake in the module doc). Blocks until

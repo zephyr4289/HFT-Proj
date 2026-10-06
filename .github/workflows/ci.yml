@@ -202,6 +202,7 @@ jobs:
           cp /tmp/bench_hydra.txt /tmp/shard_output/bench_hydra.txt 2>/dev/null || true
           cp /tmp/kbench.txt /tmp/shard_output/kbench.txt 2>/dev/null || true
           cp /tmp/bench_results.json /tmp/shard_output/bench_results.json 2>/dev/null || true
+          cp /tmp/bench_affine.txt /tmp/shard_output/bench_affine.txt 2>/dev/null || true
           echo "${{ matrix.shard }}" > /tmp/shard_output/shard_num.txt
           echo "${{ steps.gate.outputs.cpu_name }}" > /tmp/shard_output/cpu_name.txt
 
@@ -299,6 +300,41 @@ jobs:
                           if ingest_val != "N/A":
                               break
 
+              # R23c: the spec-slice ingest row (the 20B mode's pricing —
+              # REPORTED) from the JSON.
+              spec_val = "N/A"
+              if os.path.isfile(bench_results):
+                  try:
+                      import json
+                      with open(bench_results, 'r', errors='ignore') as f:
+                          bdata = json.load(f)
+                          if 'spec_rate_msg_per_sec' in bdata:
+                              spec_val = f"{int(bdata['spec_rate_msg_per_sec']):,}"
+                  except Exception:
+                      pass
+
+              # R23c: the affine arm's zero-re-read sustained rate (the
+              # 11ab verdict lines).
+              affine_val = "N/A"
+              affine_zero = "N/A"
+              bench_affine = os.path.join(sdir, 'bench_affine.txt')
+              if os.path.isfile(bench_affine):
+                  with open(bench_affine, 'r', errors='ignore') as f:
+                      for line in f:
+                          m = re.search(r'PR1_R23_AFFINE_SUSTAINED_VERDICT rate=([0-9,]+)', line)
+                          if m:
+                              raw_num = m.group(1).replace(',', '')
+                              try:
+                                  affine_val = f"{int(raw_num):,}"
+                              except Exception:
+                                  affine_val = raw_num
+                          m2 = re.search(
+                              r'R23B_AFFINE_VERDICT arm=sustained armed=(\w+) tag_hits=(\d+) payload_fallbacks=(\d+) ledger_rows=(\d+)',
+                              line,
+                          )
+                          if m2 and m2.group(1) == 'true' and m2.group(3) == '0':
+                              affine_zero = '0 reads'
+
               rate_val = "N/A"
               if os.path.isfile(bench_hydra):
                   with open(bench_hydra, 'r', errors='ignore') as f:
@@ -328,16 +364,19 @@ jobs:
                   'rate': rate_val,
                   'kbench': kbench_val,
                   'parity': '0x881639cead506f25 (BIT-EXACT)',
-                  'allocs': '0'
+                  'allocs': '0',
+                  'spec': spec_val,
+                  'affine': affine_val,
+                  'affine_zero': affine_zero,
               })
 
           with open(step_summary, 'a') as out:
               out.write("## 🚀 Silicon Target Acquisition & Benchmark Scoreboard (120-Shard Fleet)\n\n")
               if hits:
-                  out.write("| Draw | Shard | Host Silicon | Pure Ingest Front A (msg/s) | Sustained Full-Verify (msg/s) | kbench fold512_r 1t | Bit Parity | Allocations |\n")
-                  out.write("| :---: | :---: | :--- | :---: | :---: | :---: | :---: | :---: |\n")
+                  out.write("| Draw | Shard | Host Silicon | Pure Ingest Front A (msg/s) | Sustained Full-Verify (msg/s) | kbench fold512_r 1t | Bit Parity | Allocations | R23c Spec Ingest (msg/s) | R23c Affine Zero-Read Sustained |\n")
+                  out.write("| :---: | :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |\n")
                   for idx, h in enumerate(hits, 1):
-                      out.write(f"| **#{idx}** | Shard {h['shard']} | `{h['cpu']}` | **{h['ingest']}** | **{h['rate']}** | {h['kbench']} | `{h['parity']}` | `{h['allocs']}` |\n")
+                      out.write(f"| **#{idx}** | Shard {h['shard']} | `{h['cpu']}` | **{h['ingest']}** | **{h['rate']}** | {h['kbench']} | `{h['parity']}` | `{h['allocs']}` | {h['spec']} | **{h['affine']}** ({h['affine_zero']}) |\n")
                   zen5_cnt = sum(1 for h in hits if "9V45" in h['cpu'])
                   xeon6_cnt = sum(1 for h in hits if "6973P" in h['cpu'])
                   emerald_cnt = sum(1 for h in hits if "8573C" in h['cpu'])
