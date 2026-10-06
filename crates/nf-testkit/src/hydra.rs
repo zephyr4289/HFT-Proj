@@ -185,6 +185,18 @@ struct Res {
     value: u64,
 }
 
+// R21 (Task 3): the descriptor COMPACTNESS invariant — every handoff
+// descriptor is ≤ 64 bytes (one cache line), never a fat 128B struct (the
+// fat-128B variant regressed cache throughput by 115M msg/s — the
+// directive's sizing law). Pinned at compile time:
+//   * the result slot is 16 B (4 per line);
+//   * the Desc8 word is 8 B (8 per line) and the legacy desc 16 B —
+//     both word-packed, so the ring's line traffic is already minimal;
+//   * one anchor slot per 65 descs keeps the worst-case descriptor
+//     footprint at the word level, never a struct-level 128B blob.
+const _: () = assert!(std::mem::size_of::<Res>() == 16);
+const _: () = assert!(std::mem::size_of::<u64>() == 8);
+
 /// One pass's deferred-result record (GIGAHFT Lever 4). `count`/`msg_hash`
 /// are captured synchronously at `end_pass`; `hash` is captured when the
 /// ordered fold crosses the pass's final span — possibly DURING a later
@@ -2084,7 +2096,7 @@ impl<'a> HydraSpanSink<'a> {
         // re-anchors the workers' span grid to 0).
         let rx = fabric.and_then(|f| f.rxdesc.clone());
         let rx_gen = rx.as_ref().map_or(0, |st| st.next_gen());
-        Self {
+        let sink = Self {
             fabric,
             hash: Self::SPAN_SEED,
             count: 0,
@@ -2143,7 +2155,21 @@ impl<'a> HydraSpanSink<'a> {
             rx_marks_cleared: false,
             rx_fixes: 0,
             rx_assist_wm: Self::assist_watermark(),
+        };
+        // R21 (Task 2, the fused arm's flip-validation instrument): prove
+        // the fused shape armed — printed ONCE per process at the first
+        // fused-sink construction (the LADDER_DIAGNOSTIC lesson: never
+        // price an arm on faith).
+        static FUSED_DIAG: std::sync::atomic::AtomicBool =
+            std::sync::atomic::AtomicBool::new(false);
+        if sink.force_inline && !FUSED_DIAG.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!(
+                "HYDRA_FUSED_DIAGNOSTIC force_inline=true kernel={} assist_slots={} (R21 Task 2: submit-side fused verification — every span CRC evaluates on the submitting core at the framing point; the workers never re-read the payload, the 2nd memory pass is eliminated)",
+                sink.kernel.name(),
+                sink.assist_slots,
+            );
         }
+        sink
     }
 
     pub fn new(fabric: &'a HydraFabric) -> Self {

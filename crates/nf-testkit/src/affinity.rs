@@ -305,6 +305,122 @@ pub fn pipeline_placement() -> (Option<usize>, Option<usize>) {
     (Some(main), rx)
 }
 
+// ── R21 (Task 4): deterministic physical-core topology VERIFICATION ─────
+//
+// The directive's law: the (Main Sequencer, RX Ingest Producer) pair must
+// land on DISTINCT PHYSICAL CORES sharing the SAME L3 domain — the shape
+// that locks in the 0.21 cyc/msg (12B msg/s) ingest mode. Until now the
+// placement was a best-effort SELECTION with no runtime verification (the
+// R8 mask-pollution incident is exactly what silent drift costs). This
+// block makes the placement a first-class, loudly-verdicted fact.
+
+/// R21: the topology verdict for a (main, rx) pair — the three states the
+/// verification line distinguishes (a violation is never silently
+/// flattened into "not verified").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TopologyVerdict {
+    /// Distinct physical cores, same L3 domain — the deterministic mode.
+    Verified,
+    /// The pair provably violates the law (SMT siblings, same cpu, or
+    /// split L3) — carries the human-readable reason.
+    Violated(String),
+    /// The host does not expose the sysfs truth needed to judge.
+    Unverifiable(String),
+}
+
+impl TopologyVerdict {
+    pub fn is_violation(&self) -> bool {
+        matches!(self, Self::Violated(_))
+    }
+}
+
+/// R21: verify the (main/sequencer, rx/producer) pair against the Task 4
+/// law: DISTINCT physical cores (disjoint SMT sibling groups) sharing the
+/// SAME L3 domain (identical index-3 `shared_cpu_list`), read from sysfs
+/// truth — never from the placement's intentions.
+pub fn verify_pair_topology(main_cpu: usize, rx_cpu: usize) -> TopologyVerdict {
+    if main_cpu == rx_cpu {
+        return TopologyVerdict::Violated(format!(
+            "main and rx both on cpu{main_cpu} (same core, no pipeline overlap)"
+        ));
+    }
+    // Distinct physical cores: rx must not sit in main's SMT sibling group.
+    match (read_sibling_group(main_cpu), read_sibling_group(rx_cpu)) {
+        (Some(sa), Some(sb)) => {
+            if sa.contains(&rx_cpu) {
+                return TopologyVerdict::Violated(format!(
+                    "main cpu{main_cpu} and rx cpu{rx_cpu} are SMT siblings \
+                     (one physical core — the mailbox handoff timeslices)"
+                ));
+            }
+            let _ = sb;
+        }
+        (None, _) | (_, None) => {
+            return TopologyVerdict::Unverifiable(
+                "thread_siblings_list unavailable (no SMT topology in sysfs)".to_string(),
+            );
+        }
+    }
+    // Same L3 domain: identical index-3 sharing lists.
+    match (read_l3_shared(main_cpu), read_l3_shared(rx_cpu)) {
+        (Some(la), Some(lb)) => {
+            let key = |mut v: Vec<usize>| {
+                v.sort_unstable();
+                v.dedup();
+                v
+            };
+            if key(la) != key(lb) {
+                return TopologyVerdict::Violated(format!(
+                    "main cpu{main_cpu} and rx cpu{rx_cpu} sit in DIFFERENT L3 domains \
+                     (cross-CCD/CCX mailbox handoff — the 2.5x consumer-side penalty)"
+                ));
+            }
+        }
+        _ => {
+            return TopologyVerdict::Unverifiable(
+                "cache/index3/shared_cpu_list unavailable (no L3 topology in sysfs)".to_string(),
+            );
+        }
+    }
+    TopologyVerdict::Verified
+}
+
+/// R21: verify a pipeline placement and PRINT the verdict line
+/// (`TOPOLOGY_VERIFICATION ...` — a first-class CI artifact, the
+/// flip-validation law: a placement is never trusted on faith).
+/// `HFT_TOPOLOGY_STRICT=1` promotes a VIOLATION to a hard failure (the
+/// deterministic-pinning gate); an UNVERIFIABLE host degrades to the
+/// warning in both modes (a host without sysfs truth cannot be held to
+/// a law it cannot express).
+pub fn verify_pipeline_placement(main_cpu: Option<usize>, rx_cpu: Option<usize>) {
+    let verdict = match (main_cpu, rx_cpu) {
+        (Some(m), Some(r)) => verify_pair_topology(m, r),
+        _ => TopologyVerdict::Unverifiable(
+            "placement returned no cpu pair (empty cpuset or single-cpu host)".to_string(),
+        ),
+    };
+    let strict = std::env::var("HFT_TOPOLOGY_STRICT").as_deref() == Ok("1");
+    match &verdict {
+        TopologyVerdict::Verified => eprintln!(
+            "TOPOLOGY_VERIFICATION main={:?} rx={:?} -> VERIFIED (distinct physical cores, same L3 domain — the deterministic 0.21 cyc/msg mode)",
+            main_cpu, rx_cpu
+        ),
+        TopologyVerdict::Violated(why) => {
+            eprintln!(
+                "TOPOLOGY_VERIFICATION main={:?} rx={:?} -> VIOLATED: {why}",
+                main_cpu, rx_cpu
+            );
+            if strict {
+                panic!("HFT_TOPOLOGY_STRICT: pipeline placement violates the Task 4 law: {why}");
+            }
+        }
+        TopologyVerdict::Unverifiable(why) => eprintln!(
+            "TOPOLOGY_VERIFICATION main={:?} rx={:?} -> UNVERIFIABLE: {why} (HFT_TOPOLOGY_STRICT=1 does not fail unverifiable hosts)",
+            main_cpu, rx_cpu
+        ),
+    }
+}
+
 #[cfg(test)]
 mod l3_tests {
     use super::*;
@@ -324,6 +440,56 @@ mod l3_tests {
         let (main, rx) = pipeline_placement();
         if let (Some(m), Some(r)) = (main, rx) {
             assert_ne!(m, r, "main and rx must be distinct cpus");
+        }
+    }
+
+    /// R21 (Task 4): the verification predicate's hard law — a pair on the
+    /// SAME cpu is always a violation (SMT-sibling check or identity);
+    /// the L3 domain checks cannot rescue co-location.
+    #[test]
+    fn t_topology_verification_same_cpu_violates() {
+        for c in cpu_order() {
+            let v = verify_pair_topology(c, c);
+            assert!(
+                matches!(v, TopologyVerdict::Violated(_)),
+                "same-cpu pair (cpu{c}) must be a Violated verdict, got {v:?}"
+            );
+        }
+    }
+
+    /// R21 (Task 4): the placement's own output verifies (or is honestly
+    /// unverifiable) — the selection and the verifier share the same sysfs
+    /// truth, so a VERIFIED placement is the deterministic mode and a
+    /// VIOLATED one is a real host-shape fact (single-representative
+    /// fallbacks), never an internal inconsistency.
+    #[test]
+    fn t_topology_verification_placement_consistent() {
+        let (main, rx) = pipeline_placement();
+        let v = match (main, rx) {
+            (Some(m), Some(r)) => verify_pair_topology(m, r),
+            _ => return, // single-cpu host: nothing to verify
+        };
+        // The verifier must agree with the selector's own sysfs reads:
+        // a violation is allowed ONLY when the placement genuinely had to
+        // fall back (the L3 group had < 2 distinct representatives). On
+        // any host where the placement took the L3-group path, the pair
+        // must verify or be unverifiable.
+        let groups = l3_groups();
+        let has_multi_rep_group = groups.iter().any(|g| {
+            g.iter()
+                .filter(|c| {
+                    read_sibling_group(**c)
+                        .map(|s| s.iter().min() == Some(*c))
+                        .unwrap_or(true)
+                })
+                .count()
+                >= 2
+        });
+        if has_multi_rep_group {
+            assert!(
+                !v.is_violation(),
+                "placement took the L3-group path but the verifier rejected it: {v:?}"
+            );
         }
     }
 }

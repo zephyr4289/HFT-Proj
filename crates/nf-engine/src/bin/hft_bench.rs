@@ -300,6 +300,24 @@ fn main() {
     if let Some(cpu) = main_cpu {
         let _ = nf_testkit::affinity::pin_current_to(cpu);
     }
+    // R21 (Task 4): the placement is now a VERIFIED fact, not a hope —
+    // the TOPOLOGY_VERIFICATION line carries the sysfs-truth verdict
+    // into every draw log (HFT_TOPOLOGY_STRICT=1 promotes a violation
+    // to a hard failure; the deterministic 0.21 cyc/msg mode gate).
+    nf_testkit::affinity::verify_pipeline_placement(main_cpu, rx_cpu);
+    if let Some(cpu) = main_cpu {
+        let actual = nf_testkit::affinity::current_cpu();
+        if actual != cpu {
+            eprintln!(
+                "TOPOLOGY_VERIFICATION main ACTUAL cpu{actual} != intended cpu{cpu} (pin failed — the thread floated; the placement's premise is broken)"
+            );
+            if std::env::var("HFT_TOPOLOGY_STRICT").as_deref() == Ok("1") {
+                panic!(
+                    "HFT_TOPOLOGY_STRICT: main-thread pin to cpu{cpu} failed (landed on cpu{actual})"
+                );
+            }
+        }
+    }
     // Single transport for all passes (see wall_pass): identical bytes, warm pages.
     let mut transport = ReplayTransport::new(&gt, sched.clone(), sess);
     // R8: RX coalescing for the throughput arms (NAPI-style receipt batching;
@@ -371,6 +389,22 @@ fn main() {
     // attacks) + the warm-start verdict line (fixes/last_pass_fixes; the
     // CI arm greps RXWARM_DIAGNOSTIC).
     piped.diag_summary("span");
+    // R21 (Task 4): the RX's ACTUAL landing vs intent — the diag line
+    // carries rx_actual_cpu; this verdict makes any drift a first-class
+    // CI artifact (a silent `let _ = pin` failure can never hide again).
+    match (rx_cpu, piped.rx_actual_cpu()) {
+        (Some(intended), Some(actual)) if actual != intended => {
+            eprintln!(
+                "TOPOLOGY_VERIFICATION rx ACTUAL cpu{actual} != intended cpu{intended} (RX pin failed — the producer floated)"
+            );
+            if std::env::var("HFT_TOPOLOGY_STRICT").as_deref() == Ok("1") {
+                panic!(
+                    "HFT_TOPOLOGY_STRICT: RX pin to cpu{intended} failed (landed on cpu{actual})"
+                );
+            }
+        }
+        _ => {}
+    }
     // F-3 (I-6): the span arm's entry-walk telemetry — which ladder shape
     // the consumer ran (HFT_VEC_LADDER=1 arms the vectorized 8-entry group
     // path + the RX's elig baking; unset is the scalar steady_step). The

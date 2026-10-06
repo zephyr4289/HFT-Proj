@@ -61,7 +61,7 @@ use crate::sched_types::ReplaySchedule;
 use crate::{FrameBatch, Transport};
 use nf_protocol::packet::FrameEntry;
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicU8, Ordering};
 
 /// R8 phase-3: mailbox depth. The 4-buffer mailbox kept the RX pinned to
 /// the consumer's elbow — every buffer free had to be noticed and repaid
@@ -397,6 +397,11 @@ struct Mailbox {
     /// (the classic path verbatim — and HFT_RXWARM keeps its own mode; if
     /// both are set, rxbuild wins and warm is ignored).
     rxbuild_enabled: bool,
+    /// R21 (Task 4): the RX thread's ACTUAL landing cpu (`sched_getcpu`
+    /// recorded right after the pin attempt; -1 before the first record).
+    /// The topology verifier's ACTUAL-side fact — a silent pin failure
+    /// (the `let _ = pin_cpu` pattern) can never hide again.
+    rx_actual_cpu: AtomicI64,
 }
 
 // SAFETY: the mailbox is the SPSC handoff described in the module doc —
@@ -689,6 +694,9 @@ fn rx_thread(
     if let Some(cpu) = pin_cpu_id {
         let _ = pin_cpu(cpu);
     }
+    // R21 (Task 4): record where the RX actually landed (the verifier's
+    // ACTUAL-side fact; intended = `pin_cpu_id`).
+    mb.rx_actual_cpu.store(unsafe { libc::sched_getcpu() } as i64, Ordering::Relaxed);
     // F-2: rxbuild takes precedence — a both-armed run is rxbuild (the
     // construction already normalizes; this is the defense in depth).
     let warm_enabled = warm_enabled && !rxbuild_enabled;
@@ -1743,6 +1751,7 @@ impl PipelinedReplayTransport {
             master_evt,
             master_patchable,
             rxbuild_enabled: rxbuild,
+            rx_actual_cpu: AtomicI64::new(-1),
         });
         let rx = std::thread::Builder::new()
             .stack_size(512 * 1024)
@@ -2115,14 +2124,26 @@ impl PipelinedReplayTransport {
         )
     }
 
+    /// R21 (Task 4): the RX thread's ACTUAL landing cpu (None before its
+    /// first record — the topology verifier's ACTUAL-side fact).
+    pub fn rx_actual_cpu(&self) -> Option<usize> {
+        let v = self.mb.rx_actual_cpu.load(Ordering::Relaxed);
+        (v >= 0).then_some(v as usize)
+    }
+
     /// R8 phase-2 diagnostics: one always-on telemetry line per run covering
     /// the transport's whole life (RX production cost, buffer starvation,
     /// consumer parks). Read-only, post-run.
     pub fn diag_summary(&self, label: &str) {
         let rx = &self.mb.rx_stats;
         let cs = &self.mb.cons_stats;
+        // R21 (Task 4): the RX's ACTUAL landing cpu (the verifier's
+        // ACTUAL-side fact — intended is the constructor's rx_cpu arg;
+        // a mismatch means the pin failed and the placement's premise
+        // is broken; -1 = the RX has not started yet).
+        let actual = self.mb.rx_actual_cpu.load(Ordering::Relaxed);
         eprintln!(
-            "DIAG rx {label}: publications={} polls={} prod_ms={:.1} bufwait_laps={} resets={} eos_parks={} nbuf={}",
+            "DIAG rx {label}: publications={} polls={} prod_ms={:.1} bufwait_laps={} resets={} eos_parks={} nbuf={} rx_actual_cpu={}",
             rx.publications.load(Ordering::Relaxed),
             rx.polls.load(Ordering::Relaxed),
             rx.prod_ns.load(Ordering::Relaxed) as f64 / 1e6,
@@ -2130,6 +2151,7 @@ impl PipelinedReplayTransport {
             rx.resets.load(Ordering::Relaxed),
             rx.eos_parks.load(Ordering::Relaxed),
             self.mb.nbuf,
+            actual,
         );
         // F-5: the auto-advance telemetry line (always printed — the
         // pass boundary's exposed bake cost on the sustained critical

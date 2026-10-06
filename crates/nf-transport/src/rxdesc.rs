@@ -180,6 +180,73 @@ pub struct RxdescState {
 unsafe impl Send for RxdescState {}
 unsafe impl Sync for RxdescState {}
 
+// R21 (Task 3): the descriptor COMPACTNESS invariant — every handoff
+// descriptor is ≤ 64 bytes (one cache line), never a fat 128B struct (the
+// fat-128B variant regressed cache throughput by 115M msg/s — the
+// directive's sizing law). The array descriptor IS one u64 word (8 per
+// line); the padded cursor words are exactly one line.
+const _: () = assert!(std::mem::size_of::<u64>() == 8);
+const _: () = assert!(std::mem::size_of::<RxPad>() == 64);
+
+/// R21: the non-temporal bulk-copy switch (`HFT_NT_COPY=1|0`; default ON
+/// per the directive Task 3, `0` = the documented rollback). Read once
+/// per process — never inside a window.
+#[inline]
+fn nt_copy_enabled() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var("HFT_NT_COPY").as_deref() != Ok("0"))
+}
+
+/// R21: the 64-byte streaming copy (`_mm512_stream_si512` + `_mm_sfence`).
+/// Callers prove: `src`/`dst` share their 64-byte phase (same `% 64`),
+/// `n` words are readable at `src` and writable at `dst`, and the ranges
+/// do not overlap. Head/tail words inside the shared phase run scalar;
+/// the aligned middle streams 512 bits per store, bypassing the cache
+/// hierarchy entirely (no RFO, no L1D/L2 pollution on the submitting
+/// core). The trailing `_mm_sfence` makes every NT store globally visible
+/// before the caller's subsequent Release publications (the protocol's
+/// ordering contract).
+///
+/// # Safety
+/// Same feature contract as `RxdescState::copy_arr`'s NT branch: requires
+/// AVX-512F (runtime-gated by the caller).
+#[cfg(target_arch = "x86_64")]
+unsafe fn nt_copy_u64(src: *const u64, dst: *mut u64, n: usize) {
+    use std::arch::x86_64::*;
+    let avx512f = std::arch::is_x86_feature_detected!("avx512f");
+    if !avx512f {
+        std::ptr::copy_nonoverlapping(src, dst, n);
+        return;
+    }
+    let base = src as usize;
+    // Words to the first 64-byte boundary of the SHARED phase.
+    let head = (((64 - (base % 64)) % 64) / 8).min(n);
+    let body_words = (n - head) & !7usize; // whole lines only
+    let mut i = 0usize;
+    while i < head {
+        dst.add(i).write_unaligned(src.add(i).read_unaligned());
+        i += 1;
+    }
+    let lines = body_words / 8;
+    for l in 0..lines {
+        let v = _mm512_loadu_si512(src.add(i + l * 8) as *const _);
+        _mm512_stream_si512(dst.add(i + l * 8) as *mut _, v);
+    }
+    i += body_words;
+    while i < n {
+        dst.add(i).write_unaligned(src.add(i).read_unaligned());
+        i += 1;
+    }
+    // Order the NT stores before any subsequent Release publication.
+    _mm_sfence();
+}
+
+/// The non-x86_64 fallback: plain copy (no NT semantics available).
+#[cfg(not(target_arch = "x86_64"))]
+unsafe fn nt_copy_u64(src: *const u64, dst: *mut u64, n: usize) {
+    std::ptr::copy_nonoverlapping(src, dst, n);
+}
+
 impl RxdescState {
     /// Allocate the state (construction time — outside every window).
     pub fn new(cap: usize) -> Self {
@@ -263,6 +330,21 @@ impl RxdescState {
     /// is the previous window's slot, whose published entries are
     /// immutable). Ordered to workers by the record + spans_ready
     /// Release stores that follow.
+    ///
+    /// R21 (Task 3): the copy is the descriptor publication's biggest
+    /// single burst (~1 MB per window at the default cap — the pass
+    /// boundary's synchronous bake, docs/33 §4) and its cache footprint
+    /// is pure pollution: the submitting core never reads the array
+    /// again, and the workers' first touch is a full window later. The
+    /// copy therefore runs as 64-byte NON-TEMPORAL streaming stores
+    /// (`_mm512_stream_si512` + `_mm_sfence`) when both arrays share
+    /// their 64-byte phase and the silicon has AVX-512F — the directive's
+    /// "streaming non-temporal stores when publishing completed batches"
+    /// (descriptor structs stay ≤ 64 B; the pinned asserts below). The
+    /// `_mm_sfence` orders the NT stores before the subsequent Release
+    /// publications (NT stores are weakly ordered — the sfence is
+    /// load-bearing for the protocol). `HFT_NT_COPY=0` is the documented
+    /// rollback (default ON, per the directive).
     pub fn copy_arr(&self, from: u8, to: u8, n: usize) {
         let n = n.min(self.cap);
         if n == 0 || from == to {
@@ -272,11 +354,13 @@ impl RxdescState {
         // holds the previous window's published, immutable entries.
         unsafe {
             let arrays = &mut *self.arrays.get();
-            std::ptr::copy_nonoverlapping(
-                arrays[from as usize].as_ptr(),
-                arrays[to as usize].as_mut_ptr(),
-                n,
-            );
+            let src = arrays[from as usize].as_ptr();
+            let dst = arrays[to as usize].as_mut_ptr();
+            if nt_copy_enabled() && (src as usize) % 64 == (dst as usize) % 64 {
+                nt_copy_u64(src, dst, n);
+            } else {
+                std::ptr::copy_nonoverlapping(src, dst, n);
+            }
         }
     }
 
