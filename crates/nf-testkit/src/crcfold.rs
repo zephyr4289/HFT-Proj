@@ -426,6 +426,45 @@ impl CrcKernel {
         }
     }
 
+    /// R19 (HFT_ENDPIPE): evaluate FOUR spans through the software-pipelined
+    /// ending schedule — the R10 pair mechanism generalized to ILP=4:
+    /// four vector folds issue first (independent clmul chains on p5),
+    /// then four lane-0 tails (four INDEPENDENT serial p1 chains — span
+    /// k's ending overlaps spans k+1..k+3's instead of serializing behind
+    /// its own fold), then four lane endings, then four FNV-1a combines
+    /// (four independent imul chains in flight). Values are identical to
+    /// `(eval(a), eval(b), eval(c), eval(d))` by construction — the same
+    /// pure per-span functions in the same per-span order; only the
+    /// instruction schedule changes (the quad differential pins it).
+    /// Run tails shorter than four spans fall back to the pair/single
+    /// paths by the CALLER (the worker's group formation).
+    ///
+    /// # Safety
+    /// Same feature contract as [`Self::eval`].
+    #[inline(always)]
+    pub unsafe fn eval_quad(
+        &self,
+        a: &[u8],
+        b: &[u8],
+        c: &[u8],
+        d: &[u8],
+    ) -> (u64, u64, u64, u64) {
+        match self {
+            Self::Scalar => (
+                span_crc32c_8lane(a),
+                span_crc32c_8lane(b),
+                span_crc32c_8lane(c),
+                span_crc32c_8lane(d),
+            ),
+            Self::Fold512 => {
+                let (x, y) = imp::span_fold_eval_pair(a, b);
+                let (z, w) = imp::span_fold_eval_pair(c, d);
+                (x, y, z, w)
+            }
+            Self::Reflect => imp::span_fold_eval_quad_r(a, b, c, d),
+        }
+    }
+
     /// R11: evaluate one span through the TRI-STREAM fold — the body's
     /// block-pair units split mod-3 across three independent (even, odd)
     /// state pairs (six independent clmul chains over ONE sequential load
@@ -589,11 +628,11 @@ pub(crate) mod imp {
     /// block pair with two 1-cycle `vpunpckl/hqdq` instead of 3-cycle
     /// `vpermt2q` shuffles.
     #[derive(Clone, Copy)]
-    struct FoldStates {
-        even: __m512i,
-        odd: __m512i,
+    pub struct FoldStates {
+        pub even: __m512i,
+        pub odd: __m512i,
         /// Number of 16-byte units already folded.
-        units: usize,
+        pub units: usize,
     }
 
     /// rev64 of every qword: per-byte bit reverse (GFNI affine) + byte swap
@@ -1300,7 +1339,7 @@ pub(crate) mod imp {
     /// SAFETY: `p` must hold >= 128*wp bytes; requires the AVX-512 +
     /// VPCLMULQDQ feature contract (callers gate it).
     #[inline(always)]
-    unsafe fn fold_word_pairs_r(p: *const u8, wp: usize) -> FoldStates {
+    pub unsafe fn fold_word_pairs_r(p: *const u8, wp: usize) -> FoldStates {
         let khi = _mm512_set1_epi64(RKHI as i64);
         let klo = _mm512_set1_epi64(RKLO as i64);
         if wp == 0 {
@@ -1401,7 +1440,7 @@ pub(crate) mod imp {
     /// VPCLMULQDQ feature contract (callers gate it). `wp >= 1` by the
     /// FOLD_MIN_LEN dispatcher gate.
     #[inline(always)]
-    unsafe fn fold_word_pairs_r2(p: *const u8, wp: usize) -> FoldStates {
+    pub unsafe fn fold_word_pairs_r2(p: *const u8, wp: usize) -> FoldStates {
         let khi2 = _mm512_set1_epi64(DFOLD_K2_HI as i64);
         let klo2 = _mm512_set1_epi64(DFOLD_K2_LO as i64);
         debug_assert!(wp >= 1);
@@ -2027,6 +2066,384 @@ pub(crate) mod imp {
         let vb = finish_span_r_inner3(b, stb, vend, vtail, dfold);
         (va, vb)
     }
+
+    // ── R19: the HFT_ENDPIPE ending stages ───────────────────────────────
+    //
+    // The ending stack split into independently schedulable stages. Each
+    // stage is a pure function of its inputs; the SERIAL path
+    // (finish_span_r_*) runs them back-to-back per span, the PIPELINED
+    // path (span_fold_eval_quad_r + the `endpipe` module) issues the
+    // same stages for FOUR spans with the stage boundaries offset across
+    // neighbors — the per-span serial latency chains (the ~26% ending
+    // blob: 16 chained crc32, the 9-link FNV imul chain) overlap each
+    // other and the next spans' vector folds instead of serializing
+    // behind their own (ROADMAP3 §4.3; the R10 pair mechanism at ILP=4).
+    //
+    // Values are IDENTICAL by construction: every stage is extracted
+    // verbatim from the corresponding section of finish_span_r_vtail /
+    // finish_span_r_inner, and the quad differential pins the
+    // composition against the scalar kernel on every body.
+
+    /// R19 stage 2 (vtail shape): lane 0's composed tail field + the
+    /// vector Barrett reduce — extracted verbatim from
+    /// [`finish_span_r_vtail`]'s lane-0 section. Input contract: `len >=
+    /// FOLD_MIN_LEN` (the caller's dispatch gate — same as the serial
+    /// path's).
+    #[inline(always)]
+    unsafe fn ep_lane0_vtail(body: &[u8], st: &FoldStates) -> u32 {
+        let len = body.len();
+        let p = body.as_ptr();
+        let blocks = len / 64;
+        let tail = len % 64;
+        let odd = blocks % 2 == 1;
+        // Lane 0's remaining stream length: the unpaired word (B odd) +
+        // the tail bytes.
+        let r = 8 * (blocks % 2) + tail;
+        debug_assert!(r <= 71);
+        let v0 = _mm512_castsi512_si128(st.even);
+        let mut f0 = _mm_xor_si128(
+            _mm_clmulepi64_si128(v0, _mm_set1_epi64x(super::VTAIL_G[r] as i64), 0x00),
+            _mm_clmulepi64_si128(v0, _mm_set1_epi64x(super::VTAIL_KH[r] as i64), 0x01),
+        );
+        let mut t = r;
+        if odd {
+            // The unpaired word w = qword 0 of block B-1 (t = r).
+            // SAFETY: 64*(B-1)+8 <= len (block B-1 is full; B >= 3 by
+            // the FOLD_MIN_LEN gate).
+            let w = (p.add(64 * (blocks - 1)) as *const u64).read_unaligned();
+            f0 = _mm_xor_si128(
+                f0,
+                _mm_clmulepi64_si128(
+                    _mm_set_epi64x(0, w as i64),
+                    _mm_set1_epi64x(super::VTAIL_AT[t] as i64),
+                    0x00,
+                ),
+            );
+            t -= 8;
+        }
+        let mut base = 64 * blocks;
+        while t >= 8 {
+            // SAFETY: t >= 8 guarantees base+8 <= 64*B + tail = len.
+            let q = (p.add(base) as *const u64).read_unaligned();
+            f0 = _mm_xor_si128(
+                f0,
+                _mm_clmulepi64_si128(
+                    _mm_set_epi64x(0, q as i64),
+                    _mm_set1_epi64x(super::VTAIL_AT[t] as i64),
+                    0x00,
+                ),
+            );
+            t -= 8;
+            base += 8;
+        }
+        // The partial byte group (t = r mod 8 bytes): the LAST t bytes of
+        // the body, as the high t bytes of the u64 ending at len.
+        // SAFETY: len >= 192 > 8 (FOLD_MIN_LEN gate).
+        if t > 0 {
+            let v = ((p.add(len - 8) as *const u64).read_unaligned()) >> (64 - 8 * t);
+            f0 = _mm_xor_si128(
+                f0,
+                _mm_clmulepi64_si128(
+                    _mm_set_epi64x(0, v as i64),
+                    _mm_set1_epi64x(super::VTAIL_AT[t] as i64),
+                    0x00,
+                ),
+            );
+        }
+        vend_xmm(f0)
+    }
+
+    /// R19 stage 2 (R14/R13 shape): lane 0's scalar continuation — the
+    /// fold_extra_r unit chain through the tail plus the final crc chain
+    /// — extracted verbatim from [`finish_span_r_inner`]'s lane-0
+    /// section. Input contract: `len >= FOLD_MIN_LEN`.
+    #[inline(always)]
+    unsafe fn ep_lane0_cont(body: &[u8], st: &FoldStates) -> u32 {
+        let len = body.len();
+        let p = body.as_ptr();
+        let blocks = len / 64;
+        let tail = len % 64;
+        let wp = blocks / 2;
+
+        // Lane 0's state: even register's qwords 0/1 (the serial path's
+        // store/reload replaced by the register-only low-128 extract —
+        // identical values).
+        let mut v0_hi: u64;
+        let mut v0_lo: u64;
+        let lane0_units_total = (8 * blocks + tail) / 16;
+        if wp == 0 {
+            v0_hi = 0;
+            v0_lo = 0;
+        } else {
+            let x0 = _mm512_castsi512_si128(st.even);
+            v0_lo = _mm_cvtsi128_si64(x0) as u64;
+            v0_hi = _mm_extract_epi64(x0, 1) as u64;
+        }
+        let mut first_pending = wp == 0;
+        #[inline(always)]
+        unsafe fn fold_extra_r(
+            a: u64,
+            b: u64,
+            v0_hi: &mut u64,
+            v0_lo: &mut u64,
+            first: &mut bool,
+        ) {
+            if *first {
+                *v0_lo = a;
+                *v0_hi = b;
+                *first = false;
+            } else {
+                let (h, l) = fold_step_u128_r(*v0_hi, *v0_lo, b, a);
+                *v0_hi = h;
+                *v0_lo = l;
+            }
+        }
+        if blocks % 2 == 1 {
+            // SAFETY: 64*(B-1)+8 <= len (block B-1 is full).
+            let w = (p.add(64 * (blocks - 1)) as *const u64).read_unaligned();
+            if tail >= 8 {
+                // Unit [w_{B-1} || tail[0..8)].
+                // SAFETY: 64*B + 8 <= len (tail >= 8).
+                let t0 = (p.add(64 * blocks) as *const u64).read_unaligned();
+                fold_extra_r(w, t0, &mut v0_hi, &mut v0_lo, &mut first_pending);
+                let rest = tail - 8;
+                let u = rest / 16;
+                for j in 0..u {
+                    // SAFETY: 64*B + 8 + 16j + 16 <= len.
+                    let base = 64 * blocks + 8 + 16 * j;
+                    let a = (p.add(base) as *const u64).read_unaligned();
+                    let b = (p.add(base + 8) as *const u64).read_unaligned();
+                    fold_extra_r(a, b, &mut v0_hi, &mut v0_lo, &mut first_pending);
+                }
+            }
+        } else {
+            let u = tail / 16;
+            for j in 0..u {
+                // SAFETY: 64*B + 16j + 16 <= len (tail >= 16(j+1)).
+                let base = 64 * blocks + 16 * j;
+                let a = (p.add(base) as *const u64).read_unaligned();
+                let b = (p.add(base + 8) as *const u64).read_unaligned();
+                fold_extra_r(a, b, &mut v0_hi, &mut v0_lo, &mut first_pending);
+            }
+        }
+        debug_assert_eq!(wp + {
+            let mut x = 0usize;
+            if blocks % 2 == 1 && tail >= 8 {
+                x = 1 + (tail - 8) / 16;
+            } else if blocks % 2 == 0 {
+                x = tail / 16;
+            }
+            x
+        }, lane0_units_total);
+
+        // Lane 0 ending: natural state (if any unit folded) + last r0 bytes.
+        let r0 = (8 * blocks + tail) % 16;
+        let mut c = 0u32;
+        if lane0_units_total > 0 {
+            c = crc_u64(crc_u64(0, v0_lo), v0_hi);
+        }
+        if r0 > 0 {
+            if r0 <= tail {
+                // last r0 bytes = tail's last r0 bytes (contiguous)
+                // SAFETY: 64*B + tail - r0 .. 64*B + tail <= len.
+                c = chain_bytes(c, body, 64 * blocks + tail - r0, 64 * blocks + tail);
+            } else {
+                // B odd, tail < 8, r0 = 8 + tail: [w_{B-1}][tail[0..tail)]
+                // SAFETY: 64*(B-1) + 8 <= len.
+                let w = (p.add(64 * (blocks - 1)) as *const u64).read_unaligned();
+                c = crc_u64(c, w);
+                // SAFETY: 64*B + tail <= len.
+                c = chain_bytes(c, body, 64 * blocks, 64 * blocks + tail);
+            }
+        }
+        c
+    }
+
+    /// R19 stage 2 dispatch: the [`finish_span_r_inner3`] gate, split out
+    /// so the pipeline can schedule the lane-0 tail independently of the
+    /// lane endings.
+    #[inline(always)]
+    pub unsafe fn ep_lane0_dispatch(
+        body: &[u8],
+        st: &FoldStates,
+        vend: bool,
+        vtail: bool,
+        dfold: bool,
+    ) -> u32 {
+        if vend && (vtail || dfold) {
+            let blocks = body.len() / 64;
+            let r = 8 * (blocks % 2) + body.len() % 64;
+            if dfold || r >= 16 {
+                return ep_lane0_vtail(body, st);
+            }
+        }
+        ep_lane0_cont(body, st)
+    }
+
+    /// R19 stage 3: the lane endings — lanes 1..7 (the vector Barrett
+    /// reduce when `vend`, the crc-chain otherwise; identical to the
+    /// serial path's per-dispatch shape) + lane 0's placement (stage 2's
+    /// output) + the odd-block last-word crc chains. Extracted verbatim
+    /// from the endings sections of [`finish_span_r_vtail`] /
+    /// [`finish_span_r_inner`].
+    #[inline(always)]
+    pub unsafe fn ep_lanes(body: &[u8], st: &FoldStates, vend: bool, lane0: u32) -> [u32; 8] {
+        let p = body.as_ptr();
+        let blocks = body.len() / 64;
+        let mut lanes = [0u32; 8];
+        if vend {
+            // R14/R15: the vector Barrett ending. Lane CRCs land in the
+            // low 32 bits of each 128-bit field's LOW qword: even field
+            // j = lane 2j (field 0 = lane 0, finished by stage 2), odd
+            // field j = lane 2j+1.
+            let mut e = [0u64; 8];
+            let mut o = [0u64; 8];
+            _mm512_storeu_si512(e.as_mut_ptr() as *mut _, vend_zmm(st.even));
+            _mm512_storeu_si512(o.as_mut_ptr() as *mut _, vend_zmm(st.odd));
+            for j in 1..4usize {
+                lanes[2 * j] = e[2 * j] as u32;
+            }
+            for j in 0..4usize {
+                lanes[2 * j + 1] = o[2 * j] as u32;
+            }
+        } else {
+            let mut e = [0u64; 8];
+            let mut o = [0u64; 8];
+            _mm512_storeu_si512(e.as_mut_ptr() as *mut _, st.even);
+            _mm512_storeu_si512(o.as_mut_ptr() as *mut _, st.odd);
+            for j in 0..4usize {
+                let lane = 2 * j;
+                // Lane 0 is stage 2's output.
+                if lane != 0 {
+                    lanes[lane] = crc_u64(crc_u64(0, e[2 * j]), e[2 * j + 1]);
+                }
+                lanes[lane + 1] = crc_u64(crc_u64(0, o[2 * j]), o[2 * j + 1]);
+            }
+        }
+        lanes[0] = lane0;
+        // Lanes 1..7: r = 8*(B mod 2); if r == 8, chain the last word
+        // (stream order — the 7 independent p1 crc chains).
+        if blocks % 2 == 1 {
+            // SAFETY: 64*(B-1) + 8k + 8 <= len for k = 1..7 (block is full).
+            for k in 1..8usize {
+                let w = (p.add(64 * (blocks - 1) + 8 * k) as *const u64).read_unaligned();
+                lanes[k] = crc_u64(lanes[k], w);
+            }
+        }
+        lanes
+    }
+
+    /// R19 stage 4: the FNV-1a-64 lane combine + length — the serial imul
+    /// chain (~3 cyc/link, 9 links — the blob's other half). Independent
+    /// ACROSS spans (each span's h starts at the offset basis), which is
+    /// exactly what the quad exploits.
+    #[inline(always)]
+    pub fn ep_fnv(lanes: &[u32; 8], len: usize) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for c in lanes {
+            h ^= *c as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h ^= len as u64 & 0xFFFF_FFFF;
+        h = h.wrapping_mul(0x100000001b3);
+        h
+    }
+
+    /// R19 (HFT_ENDPIPE): FOUR spans through the software-pipelined
+    /// ending schedule. Stage map (per quad):
+    ///
+    /// * Stage 1 — four vector folds (the p5 clmul streams; span k+1's
+    ///   fold issues while span k's is still draining).
+    /// * Stage 2 — four lane-0 tails, back-to-back: four INDEPENDENT
+    ///   serial chains (the R10 mechanism at ILP=4) instead of four
+    ///   consecutive begin-after-end chains.
+    /// * Stage 3 — four lane endings (vend_zmm pairs + the odd-word crc
+    ///   chains — independent per span).
+    /// * Stage 4 — four FNV combines: four independent imul chains.
+    ///
+    /// Steady state in the worker's drain: quad n's folds overlap quad
+    /// n-1's endings — the ending blob hides under the fold's p5 work
+    /// (the fold is the throughput-critical resource by design; the
+    /// refutation ledger's "port-issue-bound" verdict applies to the
+    /// fold streams, not this ending interleave).
+    ///
+    /// Values identical to four serial `span_fold_eval_r` calls by
+    /// construction (same pure per-span functions, same per-span order);
+    /// `t_endpipe_quad_differential` pins it on the length battery ×
+    /// every dispatch axis, with four DIFFERENT bodies per quad (the
+    /// cross-span independence proof).
+    ///
+    /// # Safety
+    /// Requires AVX-512F/BW, VPCLMULQDQ, GFNI, SSE4.2 (callers gate it).
+    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
+    pub unsafe fn span_fold_eval_quad_r(
+        a: &[u8],
+        b: &[u8],
+        c: &[u8],
+        d: &[u8],
+    ) -> (u64, u64, u64, u64) {
+        // Short spans take the serial path per-body (the FOLD_MIN_LEN gate
+        // is per-span; the scalar kernel IS the value for short bodies —
+        // same guards as the pair).
+        if a.len() < FOLD_MIN_LEN
+            || b.len() < FOLD_MIN_LEN
+            || c.len() < FOLD_MIN_LEN
+            || d.len() < FOLD_MIN_LEN
+        {
+            return (
+                span_fold_eval_r(a),
+                span_fold_eval_r(b),
+                span_fold_eval_r(c),
+                span_fold_eval_r(d),
+            );
+        }
+        let vend = super::vend_enabled();
+        let dfold = super::dfold_enabled() && vend;
+        let vtail = super::vtail_enabled() || dfold;
+        // Stage 1: four vector folds — the p5 streams.
+        // SAFETY: 128*(len/64/2) <= len for each body (FOLD_MIN_LEN gate).
+        let sta = if dfold {
+            fold_word_pairs_r2(a.as_ptr(), a.len() / 64 / 2)
+        } else {
+            fold_word_pairs_r(a.as_ptr(), a.len() / 64 / 2)
+        };
+        let stb = if dfold {
+            fold_word_pairs_r2(b.as_ptr(), b.len() / 64 / 2)
+        } else {
+            fold_word_pairs_r(b.as_ptr(), b.len() / 64 / 2)
+        };
+        let stc = if dfold {
+            fold_word_pairs_r2(c.as_ptr(), c.len() / 64 / 2)
+        } else {
+            fold_word_pairs_r(c.as_ptr(), c.len() / 64 / 2)
+        };
+        let std_ = if dfold {
+            fold_word_pairs_r2(d.as_ptr(), d.len() / 64 / 2)
+        } else {
+            fold_word_pairs_r(d.as_ptr(), d.len() / 64 / 2)
+        };
+        // Stage 2: four lane-0 tails — four independent serial chains.
+        let la = ep_lane0_dispatch(a, &sta, vend, vtail, dfold);
+        let lb = ep_lane0_dispatch(b, &stb, vend, vtail, dfold);
+        let lc = ep_lane0_dispatch(c, &stc, vend, vtail, dfold);
+        let ld = ep_lane0_dispatch(d, &std_, vend, vtail, dfold);
+        // Stage 3: four lane endings.
+        let ea = ep_lanes(a, &sta, vend, la);
+        let eb = ep_lanes(b, &stb, vend, lb);
+        let ec = ep_lanes(c, &stc, vend, lc);
+        let ed = ep_lanes(d, &std_, vend, ld);
+        // Stage 4: four FNV combines — four independent imul chains.
+        let va = ep_fnv(&ea, a.len());
+        let vb = ep_fnv(&eb, b.len());
+        let vc = ep_fnv(&ec, c.len());
+        let vd = ep_fnv(&ed, d.len());
+        (
+            std::hint::black_box(va),
+            std::hint::black_box(vb),
+            std::hint::black_box(vc),
+            std::hint::black_box(vd),
+        )
+    }
 }
 
 #[cfg(not(target_arch = "x86_64"))]
@@ -2079,6 +2496,21 @@ pub(crate) mod imp {
     }
 
     #[inline(always)]
+    pub unsafe fn span_fold_eval_quad_r(
+        a: &[u8],
+        b: &[u8],
+        c: &[u8],
+        d: &[u8],
+    ) -> (u64, u64, u64, u64) {
+        (
+            span_crc32c_8lane(a),
+            span_crc32c_8lane(b),
+            span_crc32c_8lane(c),
+            span_crc32c_8lane(d),
+        )
+    }
+
+    #[inline(always)]
     pub unsafe fn span_fold_eval2(a: &[u8], b: &[u8]) -> (u64, u64) {
         (span_crc32c_8lane(a), span_crc32c_8lane(b))
     }
@@ -2091,6 +2523,232 @@ pub(crate) mod imp {
     #[inline(always)]
     pub unsafe fn span_fold_eval_tri(body: &[u8]) -> u64 {
         span_crc32c_8lane(body)
+    }
+}
+
+/// R19 (HFT_ENDPIPE): the public ending-stage API — the kbench
+/// ending-only twins' checkpoint surface. The WORKER never goes through
+/// here (its quad keeps the fold states in registers via
+/// [`CrcKernel::eval_quad`]); this module exists so the microbenchmark
+/// can time the ending stack in isolation with the fold states
+/// precomputed (untimed), serial vs pipelined, on identical inputs —
+/// the ROADMAP3 §4.3 "measure first" row (`fold512_end16s` vs
+/// `fold512_end16p`).
+///
+/// Every function here composes the SAME stage helpers the register
+/// path uses (`imp::ep_*`), so the rows measure exactly what the worker
+/// executes; the stage-level differential (`t_endpipe_quad_differential`)
+/// pins value equality with the serial kernel on every dispatch axis.
+#[cfg(target_arch = "x86_64")]
+pub mod endpipe {
+    use super::imp;
+    use std::arch::x86_64::_mm512_loadu_si512;
+    use std::arch::x86_64::_mm512_storeu_si512;
+
+    /// The ending-path configuration snapshot (the vend/vtail/dfold axes —
+    /// mirrors [`imp::span_fold_eval_r_forced_d`]'s dispatch).
+    ///
+    /// `dfold` without `vend` resolves to dfold OFF (the class-ending
+    /// requirement; same as the kernel's internal resolution).
+    #[derive(Clone, Copy, Debug)]
+    pub struct EndCfg {
+        pub vend: bool,
+        pub vtail: bool,
+        pub dfold: bool,
+    }
+
+    impl EndCfg {
+        /// The production snapshot: the `HFT_CRC_VEND` / `HFT_CRC_VTAIL`
+        /// / `HFT_CRC_DFOLD` env gates (OnceLock-read — allocation-free
+        /// after first use).
+        pub fn from_env() -> Self {
+            let vend = super::vend_enabled();
+            let dfold = super::dfold_enabled() && vend;
+            Self {
+                vend,
+                vtail: super::vtail_enabled() || dfold,
+                dfold,
+            }
+        }
+    }
+
+    /// One span's stage-1 output, checkpointed to memory: the (even, odd)
+    /// state registers as 16 little-endian qwords (`q[0..8]` = even,
+    /// `q[8..16]` = odd). The ending stages reload them with 512-bit
+    /// loads. Both the serial and the pipelined ending row pay the same
+    /// checkpoint traffic — the kbench fight is symmetric by design.
+    #[derive(Clone)]
+    #[repr(C, align(64))]
+    pub struct FoldState {
+        q: [u64; 16],
+    }
+
+    impl FoldState {
+        /// The all-zero state (a body shorter than [`super::FOLD_MIN_LEN`]
+        /// never folds — its `end_span` takes the scalar kernel).
+        fn zeroed() -> Self {
+            Self { q: [0; 16] }
+        }
+    }
+
+    /// Stage 1 alone: one span's vector fold, checkpointed. Short bodies
+    /// return the zero state (the ending re-dispatches them to the scalar
+    /// kernel — see [`end_span`]).
+    ///
+    /// # Safety
+    /// Requires AVX-512F/BW, VPCLMULQDQ, GFNI, SSE4.2 (callers gate via
+    /// [`super::fold512_available`]).
+    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
+    pub unsafe fn fold_span(body: &[u8], cfg: EndCfg) -> FoldState {
+        if body.len() < super::FOLD_MIN_LEN {
+            return FoldState::zeroed();
+        }
+        let wp = body.len() / 64 / 2;
+        // SAFETY: 128*wp <= len (the FOLD_MIN_LEN gate above).
+        let st = if cfg.dfold {
+            imp::fold_word_pairs_r2(body.as_ptr(), wp)
+        } else {
+            imp::fold_word_pairs_r(body.as_ptr(), wp)
+        };
+        let mut fs = FoldState::zeroed();
+        // SAFETY: fs.q is a 128-byte, 64-aligned stack/heap buffer.
+        _mm512_storeu_si512(fs.q.as_mut_ptr() as *mut _, st.even);
+        _mm512_storeu_si512(fs.q.as_mut_ptr().add(8) as *mut _, st.odd);
+        fs
+    }
+
+    /// Stages 2-4 alone: one span's full ending on precomputed states —
+    /// the serial schedule (one span at a time, the production default's
+    /// per-span latency chains). Short bodies take the scalar kernel
+    /// (the fold was a no-op — the value is the scalar value).
+    ///
+    /// # Safety
+    /// Requires AVX-512F/BW, VPCLMULQDQ, GFNI, SSE4.2; `st` must be the
+    /// [`fold_span`] image of `body`.
+    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
+    pub unsafe fn end_span(body: &[u8], st: &FoldState, cfg: EndCfg) -> u64 {
+        if body.len() < super::FOLD_MIN_LEN {
+            return crate::sink::span_crc32c_8lane(body);
+        }
+        // SAFETY: the 128-byte q array is 64-aligned, fully initialized.
+        let fst = imp::FoldStates {
+            even: _mm512_loadu_si512(st.q.as_ptr() as *const _),
+            odd: _mm512_loadu_si512(st.q.as_ptr().add(8) as *const _),
+            units: (body.len() / 64 / 2) as usize,
+        };
+        let lane0 = imp::ep_lane0_dispatch(body, &fst, cfg.vend, cfg.vtail, cfg.dfold);
+        let lanes = imp::ep_lanes(body, &fst, cfg.vend, lane0);
+        imp::ep_fnv(&lanes, body.len())
+    }
+
+    /// Stages 2-4 over FOUR spans — the pipelined schedule (four
+    /// lane-0 tails, four lane endings, four FNV combines; the same
+    /// stage order the register-path quad issues, straight-line — no
+    /// per-stage loops: the kbench row must price the SCHEDULE, not a
+    /// loop structure). `out` receives the four values in span order.
+    ///
+    /// # Safety
+    /// Requires AVX-512F/BW, VPCLMULQDQ, GFNI, SSE4.2; `sts[i]` must be
+    /// the [`fold_span`] image of `bodies[i]`.
+    #[target_feature(enable = "avx512f,avx512bw,vpclmulqdq,gfni,sse4.2,pclmulqdq")]
+    pub unsafe fn end_quad4(
+        bodies: [&[u8]; 4],
+        sts: [&FoldState; 4],
+        cfg: EndCfg,
+        out: &mut [u64; 4],
+    ) {
+        let min = super::FOLD_MIN_LEN;
+        // Short bodies take the scalar kernel per slot (the checkpoint
+        // fold was a no-op for them — same dispatch as end_span).
+        if bodies[0].len() < min {
+            out[0] = crate::sink::span_crc32c_8lane(bodies[0]);
+        }
+        if bodies[1].len() < min {
+            out[1] = crate::sink::span_crc32c_8lane(bodies[1]);
+        }
+        if bodies[2].len() < min {
+            out[2] = crate::sink::span_crc32c_8lane(bodies[2]);
+        }
+        if bodies[3].len() < min {
+            out[3] = crate::sink::span_crc32c_8lane(bodies[3]);
+        }
+        // Stage 1 (checkpoint reload): the four state registers.
+        // SAFETY: the 128-byte q arrays are 64-aligned, initialized.
+        let st0 = imp::FoldStates {
+            even: _mm512_loadu_si512(sts[0].q.as_ptr() as *const _),
+            odd: _mm512_loadu_si512(sts[0].q.as_ptr().add(8) as *const _),
+            units: (bodies[0].len() / 64 / 2) as usize,
+        };
+        let st1 = imp::FoldStates {
+            even: _mm512_loadu_si512(sts[1].q.as_ptr() as *const _),
+            odd: _mm512_loadu_si512(sts[1].q.as_ptr().add(8) as *const _),
+            units: (bodies[1].len() / 64 / 2) as usize,
+        };
+        let st2 = imp::FoldStates {
+            even: _mm512_loadu_si512(sts[2].q.as_ptr() as *const _),
+            odd: _mm512_loadu_si512(sts[2].q.as_ptr().add(8) as *const _),
+            units: (bodies[2].len() / 64 / 2) as usize,
+        };
+        let st3 = imp::FoldStates {
+            even: _mm512_loadu_si512(sts[3].q.as_ptr() as *const _),
+            odd: _mm512_loadu_si512(sts[3].q.as_ptr().add(8) as *const _),
+            units: (bodies[3].len() / 64 / 2) as usize,
+        };
+        // Stage 2: four lane-0 tails — four independent chains.
+        let l0 = if bodies[0].len() >= min {
+            imp::ep_lane0_dispatch(bodies[0], &st0, cfg.vend, cfg.vtail, cfg.dfold)
+        } else {
+            0
+        };
+        let l1 = if bodies[1].len() >= min {
+            imp::ep_lane0_dispatch(bodies[1], &st1, cfg.vend, cfg.vtail, cfg.dfold)
+        } else {
+            0
+        };
+        let l2 = if bodies[2].len() >= min {
+            imp::ep_lane0_dispatch(bodies[2], &st2, cfg.vend, cfg.vtail, cfg.dfold)
+        } else {
+            0
+        };
+        let l3 = if bodies[3].len() >= min {
+            imp::ep_lane0_dispatch(bodies[3], &st3, cfg.vend, cfg.vtail, cfg.dfold)
+        } else {
+            0
+        };
+        // Stage 3: four lane endings.
+        let e0 = if bodies[0].len() >= min {
+            imp::ep_lanes(bodies[0], &st0, cfg.vend, l0)
+        } else {
+            [0u32; 8]
+        };
+        let e1 = if bodies[1].len() >= min {
+            imp::ep_lanes(bodies[1], &st1, cfg.vend, l1)
+        } else {
+            [0u32; 8]
+        };
+        let e2 = if bodies[2].len() >= min {
+            imp::ep_lanes(bodies[2], &st2, cfg.vend, l2)
+        } else {
+            [0u32; 8]
+        };
+        let e3 = if bodies[3].len() >= min {
+            imp::ep_lanes(bodies[3], &st3, cfg.vend, l3)
+        } else {
+            [0u32; 8]
+        };
+        // Stage 4: four FNV combines — four independent imul chains.
+        if bodies[0].len() >= min {
+            out[0] = imp::ep_fnv(&e0, bodies[0].len());
+        }
+        if bodies[1].len() >= min {
+            out[1] = imp::ep_fnv(&e1, bodies[1].len());
+        }
+        if bodies[2].len() >= min {
+            out[2] = imp::ep_fnv(&e2, bodies[2].len());
+        }
+        if bodies[3].len() >= min {
+            out[3] = imp::ep_fnv(&e3, bodies[3].len());
+        }
     }
 }
 
@@ -2243,6 +2901,123 @@ mod tests {
             let a = unsafe { kernel.eval_rpath_noend(b) };
             let b2 = unsafe { kernel.eval_rpath_noend(b) };
             assert_eq!(a, b2, "noend row not deterministic at len={len}");
+        }
+    }
+
+    /// R19 (HFT_ENDPIPE): the quad + stage-level differential. Four
+    /// DIFFERENT bodies per quad (the cross-span independence proof —
+    /// identical inputs would mask slot mix-ups), across the
+    /// fabric-shaped length battery (MTU-class 1344, power boundaries,
+    /// FOLD_MIN_LEN edges, and lengths that straddle the r>=16 vtail
+    /// gate), on EVERY dispatch axis (vend/vtail/dfold — the quad's
+    /// internal dispatch must resolve identically to the serial forced
+    /// paths):
+    ///
+    /// * the register-path quad (`imp::span_fold_eval_quad_r`) == four
+    ///   scalar evals;
+    /// * the checkpoint API (`endpipe::fold_span` -> `end_span`) == the
+    ///   forced serial path, per span;
+    /// * the checkpoint pipelined schedule (`endpipe::end_quad4`) == the
+    ///   same four values.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn t_endpipe_quad_differential() {
+        if !fold512_available() {
+            eprintln!("(fold512 unavailable on this CPU — endpipe differential skipped)");
+            return;
+        }
+        let kernel = CrcKernel::Reflect;
+        let mut buf = [0u8; 8400];
+        let mut seed = 0x0E12_578C_31A4_90F7u64;
+        let mut next = || {
+            seed = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = seed;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        };
+        let quads: [(usize, usize, usize, usize); 12] = [
+            (0, 1, 2, 3),
+            (63, 64, 65, 127),
+            (128, 129, 191, 192),
+            (193, 255, 256, 383),
+            (384, 511, 512, 600),
+            (1000, 1344, 1345, 1408),
+            (2047, 2048, 2049, 2100),
+            (3000, 2000, 1500, 1000),
+            (200, 208, 216, 224),
+            (209, 210, 211, 212),
+            (1344, 1392, 1440, 1488),
+            (2048, 192, 4200, 63),
+        ];
+        for (la, lb, lc, ld) in quads {
+            for (i, e) in buf.iter_mut().enumerate() {
+                *e = (next() >> ((i % 8) * 8)) as u8;
+            }
+            let ba = &buf[..la];
+            let bb = &buf[la..la + lb];
+            let bc = &buf[la + lb..la + lb + lc];
+            let bd = &buf[la + lb + lc..la + lb + lc + ld];
+            let want = [
+                span_crc32c_8lane(ba),
+                span_crc32c_8lane(bb),
+                span_crc32c_8lane(bc),
+                span_crc32c_8lane(bd),
+            ];
+            // The register-path quad (env-default dispatch).
+            let (qa, qb, qc, qd) =
+                unsafe { imp::span_fold_eval_quad_r(ba, bb, bc, bd) };
+            assert_eq!(
+                (qa, qb, qc, qd),
+                (want[0], want[1], want[2], want[3]),
+                "endpipe quad diverged at lens {la}/{lb}/{lc}/{ld}"
+            );
+            // Every forced dispatch axis, checkpoint API vs forced serial.
+            for (vend, vtail, dfold) in [
+                (true, false, false),
+                (true, true, false),
+                (false, false, false),
+                (true, true, true),
+            ] {
+                let cfg = endpipe::EndCfg { vend, vtail, dfold };
+                let bodies = [ba, bb, bc, bd];
+                let mut forced = [0u64; 4];
+                for k in 0..4 {
+                    forced[k] =
+                        unsafe { kernel.eval_rpath4(bodies[k], vend, vtail, dfold) };
+                    assert_eq!(
+                        forced[k], want[k],
+                        "forced serial diverged: len={} vend={vend} vtail={vtail} dfold={dfold}",
+                        bodies[k].len()
+                    );
+                    // Stage checkpoint: fold_span -> end_span == forced.
+                    let st = unsafe { endpipe::fold_span(bodies[k], cfg) };
+                    let v = unsafe { endpipe::end_span(bodies[k], &st, cfg) };
+                    assert_eq!(
+                        v, want[k],
+                        "endpipe stage serial diverged: len={} vend={vend} vtail={vtail} dfold={dfold}",
+                        bodies[k].len()
+                    );
+                }
+                // The checkpoint pipelined schedule == the same values.
+                let sts = [
+                    unsafe { endpipe::fold_span(ba, cfg) },
+                    unsafe { endpipe::fold_span(bb, cfg) },
+                    unsafe { endpipe::fold_span(bc, cfg) },
+                    unsafe { endpipe::fold_span(bd, cfg) },
+                ];
+                let mut out = [0u64; 4];
+                unsafe {
+                    endpipe::end_quad4(bodies, [&sts[0], &sts[1], &sts[2], &sts[3]], cfg, &mut out)
+                };
+                for k in 0..4 {
+                    assert_eq!(
+                        out[k], want[k],
+                        "endpipe stage quad diverged: slot {k} len={} vend={vend} vtail={vtail} dfold={dfold}",
+                        bodies[k].len()
+                    );
+                }
+            }
         }
     }
 
