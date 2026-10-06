@@ -7,11 +7,6 @@ on:
         description: "Optional note for this census batch"
         required: false
         default: "Manual 100-shard fleet census run"
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: false
-
 permissions:
   contents: write
   actions: read
@@ -271,7 +266,19 @@ jobs:
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git pull origin exp/fleet-silicon-census --rebase || true
-          git add census_data/
-          git commit -m "data(census): record run ${GITHUB_RUN_NUMBER} dataset (${GITHUB_SHA}) [skip ci]" || echo "No changes to commit"
-          git push origin exp/fleet-silicon-census || true
+          for i in {1..10}; do
+            echo "Attempt $i to pull, stage, and push census dataset..."
+            git pull origin exp/fleet-silicon-census --rebase || true
+            git add census_data/
+            if git diff --staged --quiet; then
+              echo "No new census files to commit"
+              break
+            fi
+            git commit -m "data(census): record run ${GITHUB_RUN_NUMBER} dataset (${GITHUB_SHA}) [skip ci]" || true
+            if git push origin exp/fleet-silicon-census; then
+              echo "Successfully pushed census data for run ${GITHUB_RUN_NUMBER}"
+              break
+            fi
+            echo "Push conflict detected. Retrying in $((i * 2))s..."
+            sleep $((i * 2))
+          done
