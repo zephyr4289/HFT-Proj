@@ -2,6 +2,11 @@ name: Fleet Silicon Census
 on:
   push:
   workflow_dispatch:
+    inputs:
+      batch_note:
+        description: "Optional note for this census batch"
+        required: false
+        default: "Manual 100-shard fleet census run"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
