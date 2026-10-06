@@ -1,0 +1,272 @@
+name: Fleet Silicon Census
+on:
+  push:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  # =========================================================================
+  # 100-SHARD CONCURRENT HARDWARE PROBE (Max Concurrency: 20 Slots)
+  # Executes ultra-fast (~5-10s) microarchitectural profiling on all runners.
+  # =========================================================================
+  probe:
+    name: "Probe Shard ${{ matrix.shard }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        shard:
+          - 1
+          - 2
+          - 3
+          - 4
+          - 5
+          - 6
+          - 7
+          - 8
+          - 9
+          - 10
+          - 11
+          - 12
+          - 13
+          - 14
+          - 15
+          - 16
+          - 17
+          - 18
+          - 19
+          - 20
+          - 21
+          - 22
+          - 23
+          - 24
+          - 25
+          - 26
+          - 27
+          - 28
+          - 29
+          - 30
+          - 31
+          - 32
+          - 33
+          - 34
+          - 35
+          - 36
+          - 37
+          - 38
+          - 39
+          - 40
+          - 41
+          - 42
+          - 43
+          - 44
+          - 45
+          - 46
+          - 47
+          - 48
+          - 49
+          - 50
+          - 51
+          - 52
+          - 53
+          - 54
+          - 55
+          - 56
+          - 57
+          - 58
+          - 59
+          - 60
+          - 61
+          - 62
+          - 63
+          - 64
+          - 65
+          - 66
+          - 67
+          - 68
+          - 69
+          - 70
+          - 71
+          - 72
+          - 73
+          - 74
+          - 75
+          - 76
+          - 77
+          - 78
+          - 79
+          - 80
+          - 81
+          - 82
+          - 83
+          - 84
+          - 85
+          - 86
+          - 87
+          - 88
+          - 89
+          - 90
+          - 91
+          - 92
+          - 93
+          - 94
+          - 95
+          - 96
+          - 97
+          - 98
+          - 99
+          - 100
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Execute Hardware & Microarchitecture Probe
+        run: |
+          chmod +x ./scripts/census_probe.sh
+          ./scripts/census_probe.sh "${{ matrix.shard }}" /tmp/shard_output
+
+      - name: Upload Shard Census Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shard-census-${{ matrix.shard }}
+          path: /tmp/shard_output/
+          retention-days: 1
+
+  # =========================================================================
+  # AGGREGATOR: Consolidate Dataset, Commit in Sequence & Publish Report
+  # =========================================================================
+  aggregate-census:
+    name: "Aggregate & Record Census Dataset"
+    needs: probe
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download All Shard Census Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/raw_census
+          pattern: shard-census-*
+          merge-multiple: false
+        continue-on-error: true
+
+      - name: Process & Store Census Dataset
+        id: process
+        run: |
+          python3 - <<'PYEOF'
+          import os, glob, json, shutil
+          from collections import Counter
+
+          run_number = os.environ.get('GITHUB_RUN_NUMBER', '0')
+          run_id = os.environ.get('GITHUB_RUN_ID', '0')
+          step_summary = os.environ.get('GITHUB_STEP_SUMMARY')
+
+          census_dir = "census_data"
+          run_dir = os.path.join(census_dir, f"run_{run_number}_{run_id}")
+          os.makedirs(run_dir, exist_ok=True)
+          cumulative_file = os.path.join(census_dir, "cumulative_census_dataset.jsonl")
+
+          raw_dirs = sorted(glob.glob('/tmp/raw_census/shard-census-*'))
+          records = []
+
+          for sdir in raw_dirs:
+              if not os.path.isdir(sdir):
+                  continue
+              for jf in glob.glob(os.path.join(sdir, '*.json')):
+                  try:
+                      with open(jf, 'r') as f:
+                          data = json.load(f)
+                          records.append(data)
+                          # Copy into run directory
+                          shutil.copy2(jf, os.path.join(run_dir, os.path.basename(jf)))
+                  except Exception as e:
+                      print(f"Error reading {jf}: {e}")
+
+          # Append to cumulative dataset
+          with open(cumulative_file, 'a') as cf:
+              for rec in records:
+                  cf.write(json.dumps(rec) + "\n")
+
+          # Generate Run Summary JSON
+          summary_data = {
+              "run_number": int(run_number),
+              "run_id": run_id,
+              "total_shards_probed": len(records),
+              "records": records
+          }
+          with open(os.path.join(run_dir, "summary.json"), 'w') as sf:
+              json.dump(summary_data, sf, indent=2)
+
+          # Statistical Analysis
+          total = len(records)
+          cpu_models = Counter([r['cpu']['model_name'] for r in records])
+          skus = Counter([r['dmi']['product_name'] for r in records])
+          has_avx512 = sum(1 for r in records if r['isa'].get('avx512f'))
+          has_vpclmul = sum(1 for r in records if r['isa'].get('vpclmulqdq'))
+          has_gfni = sum(1 for r in records if r['isa'].get('gfni'))
+          
+          bw_list = [r['memory_benchmark']['bandwidth_1t_gb_s'] for r in records if r['memory_benchmark'].get('bandwidth_1t_gb_s', 0) > 0]
+          avg_bw = sum(bw_list) / len(bw_list) if bw_list else 0.0
+          max_bw = max(bw_list) if bw_list else 0.0
+          min_bw = min(bw_list) if bw_list else 0.0
+
+          # Markdown Summary
+          with open(step_summary, 'a') as out:
+              out.write(f"## 🏛️ Fleet Silicon Census — Run #{run_number} ({total} Shards Probed)\n\n")
+              out.write(f"**Total Hosts Profiled:** `{total}` | **Run ID:** `{run_id}`\n\n")
+              
+              out.write("### 📊 CPU Distribution & Frequency\n\n")
+              out.write("| CPU Model | Count | Percentage | Class Classification |\n")
+              out.write("| :--- | :---: | :---: | :--- |\n")
+              for model, count in cpu_models.most_common():
+                  pct = (count / total) * 100 if total > 0 else 0
+                  if "8573C" in model:
+                      cls = "🏆 **Record-Class (Emerald/Sapphire Rapids)**"
+                  elif "8370C" in model:
+                      cls = "🥈 **Target-Class (Ice Lake)**"
+                  elif "AMD" in model:
+                      cls = "🟦 **AMD EPYC (Zen Architecture)**"
+                  else:
+                      cls = "Standard CPU"
+                  out.write(f"| `{model}` | **{count}** | `{pct:.1f}%` | {cls} |\n")
+
+              out.write("\n### ⚡ Microarchitectural Feature Availability\n\n")
+              out.write(f"- **AVX-512 Support (`avx512f`):** `{has_avx512}/{total}` (`{(has_avx512/total*100):.1f}%`)\n")
+              out.write(f"- **512-bit Carryless Multiplication (`vpclmulqdq`):** `{has_vpclmul}/{total}` (`{(has_vpclmul/total*100):.1f}%`)\n")
+              out.write(f"- **Galois Field New Instructions (`gfni`):** `{has_gfni}/{total}` (`{(has_gfni/total*100):.1f}%`)\n\n")
+
+              out.write("### 🚀 Memory Streaming Bandwidth (1-Thread)\n\n")
+              out.write(f"- **Mean Bandwidth:** `{avg_bw:.2f} GB/s`\n")
+              out.write(f"- **Peak Bandwidth:** `{max_bw:.2f} GB/s`\n")
+              out.write(f"- **Minimum Bandwidth:** `{min_bw:.2f} GB/s`\n\n")
+
+              out.write("### ☁️ Azure Virtual Machine SKUs\n\n")
+              out.write("| Product Name / SKU | Count | Percentage |\n")
+              out.write("| :--- | :---: | :---: |\n")
+              for sku, count in skus.most_common():
+                  pct = (count / total) * 100 if total > 0 else 0
+                  out.write(f"| `{sku}` | **{count}** | `{pct:.1f}%` |\n")
+          PYEOF
+
+      - name: Commit Sequential Census Data to Branch
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git pull origin exp/fleet-silicon-census --rebase || true
+          git add census_data/
+          git commit -m "data(census): record run ${GITHUB_RUN_NUMBER} dataset (${GITHUB_SHA}) [skip ci]" || echo "No changes to commit"
+          git push origin exp/fleet-silicon-census || true
