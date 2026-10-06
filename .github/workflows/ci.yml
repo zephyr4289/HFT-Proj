@@ -13,9 +13,13 @@ permissions:
 
 jobs:
   # =========================================================================
-  # CONTINUOUS SATURATION QUEUE: 80 Shards (Max Concurrency: 20 Slots)
+  # CONTINUOUS SATURATION QUEUE: 120 Shards (Max Concurrency: 20 Slots)
   # Dynamic replenishment: Non-target runners exit in < 1s, immediately
-  # popping the next shard from the 80-runner queue to keep 20 slots 100% busy.
+  # popping the next shard from the 120-runner queue to keep 20 slots 100% busy.
+  # Targets Top-3 Census Proven Silicon Families:
+  #   1. AMD EPYC 9V45 (Zen 5 / Zen 4 - 58 GB/s pool, 12B/3B capacity)
+  #   2. Intel Xeon 6973P-C (Xeon 6 / Granite Rapids - 30 GB/s pool, 5.4B/1.5B capacity)
+  #   3. Intel Xeon Platinum 8573C / 8370C (Emerald Rapids / Sapphire Rapids / Ice Lake)
   # =========================================================================
   shards:
     name: "Shard ${{ matrix.shard }}"
@@ -106,6 +110,46 @@ jobs:
           - 78
           - 79
           - 80
+          - 81
+          - 82
+          - 83
+          - 84
+          - 85
+          - 86
+          - 87
+          - 88
+          - 89
+          - 90
+          - 91
+          - 92
+          - 93
+          - 94
+          - 95
+          - 96
+          - 97
+          - 98
+          - 99
+          - 100
+          - 101
+          - 102
+          - 103
+          - 104
+          - 105
+          - 106
+          - 107
+          - 108
+          - 109
+          - 110
+          - 111
+          - 112
+          - 113
+          - 114
+          - 115
+          - 116
+          - 117
+          - 118
+          - 119
+          - 120
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: 0
@@ -120,15 +164,19 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Fast-Discard Gate (Target Silicon Probe)
+      - name: Fast-Discard Gate (Top-3 Silicon Probe)
         id: gate
         run: |
           CPU_NAME=$(grep -m1 "model name" /proc/cpuinfo | cut -d: -f2 | xargs || echo "Unknown CPU")
           echo "Host CPU: $CPU_NAME"
           echo "cpu_name=$CPU_NAME" >> "$GITHUB_OUTPUT"
-          if grep -qE "8573C|8370C" /proc/cpuinfo; then
+          # Target Top-3 Census Proven Silicon Families:
+          # 1. AMD EPYC 9V45 (Zen 5 / Zen 4 - 58 GB/s pool, 12B/3B capacity)
+          # 2. Intel Xeon 6973P-C (Xeon 6 / Granite Rapids - 30 GB/s pool, 5.4B/1.5B capacity)
+          # 3. Intel Xeon Platinum 8573C / 8370C (Emerald Rapids / Sapphire Rapids / Ice Lake)
+          if grep -qE "9V45|6973P|8573C|8370C" /proc/cpuinfo; then
             echo "matched=true" >> "$GITHUB_OUTPUT"
-            echo "🎯 TARGET SILICON ACQUIRED ($CPU_NAME). Proceeding to full benchmark."
+            echo "🎯 TOP-3 TARGET SILICON ACQUIRED ($CPU_NAME). Proceeding to full benchmark."
           else
             echo "matched=false" >> "$GITHUB_OUTPUT"
             echo "❌ Non-target silicon ($CPU_NAME). Fast-discarding in < 1s."
@@ -355,16 +403,19 @@ jobs:
               return features
 
           with open(step_summary, 'a') as out:
-              out.write("## 🚀 Silicon Target Acquisition & Benchmark Scoreboard (80-Shard Fleet)\n\n")
+              out.write("## 🚀 Silicon Target Acquisition & Benchmark Scoreboard (120-Shard Fleet)\n\n")
               if hits:
                   out.write("| Draw | Shard | Host Silicon | Pure Ingest Front A (msg/s) | Sustained Full-Verify (msg/s) | kbench fold512_r 1t | Bit Parity | Allocations |\n")
                   out.write("| :---: | :---: | :--- | :---: | :---: | :---: | :---: | :---: |\n")
                   for idx, h in enumerate(hits, 1):
                       out.write(f"| **#{idx}** | Shard {h['shard']} | `{h['cpu']}` | **{h['ingest']}** | **{h['rate']}** | {h['kbench']} | `{h['parity']}` | `{h['allocs']}` |\n")
-                  out.write(f"\n✅ **Target hits acquired:** {len(hits)} shards landed on certified Xeon silicon.\n")
+                  zen5_cnt = sum(1 for h in hits if "9V45" in h['cpu'])
+                  xeon6_cnt = sum(1 for h in hits if "6973P" in h['cpu'])
+                  emerald_cnt = sum(1 for h in hits if "8573C" in h['cpu'])
+                  out.write(f"\n✅ **Target Quorum Acquired:** **{len(hits)} / 15** target shards completed (Zen 5: `{zen5_cnt}`, Xeon 6: `{xeon6_cnt}`, Emerald Rapids: `{emerald_cnt}`).\n")
               else:
-                  out.write("⚠️ **No shards acquired target silicon (8573C / 8370C) across all 80 shards.**\n")
-                  out.write("All shards fast-discarded in < 2s.\n")
+                  out.write("⚠️ **No shards acquired target silicon (9V45 / 8573C / 6973P) across all 120 shards.**\n")
+                  out.write("All shards fast-discarded in < 1s.\n")
 
           # R20: the Feature Fleet Matrix table — every permutation arm's
           # sustained rate per draw, plus per-feature BEST highlighting
