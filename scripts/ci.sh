@@ -312,6 +312,41 @@ HFT_CRC_DFOLD=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | t
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_dfold.txt
 grep -q "allocs=0" /tmp/bench_dfold.txt
 
+echo "=== 11oa. R21: Octo-Stream Fold (ofold) ARMED Soak (attribution) ==="
+# R21 Task 1: the T=8 block-parity octo-stream reflect fold — the
+# directive's 8-parallel-accumulator shape (16 independent clmul chains
+# over ONE load stream; ONE K^8 reduced-pair step per stream, the merge a
+# 14-clmul offset table — scripts/r21_ofold_derive.py P0/P1/P2, the
+# 2178-body differential + the Rust exhaustive sweeps). Same census per
+# step as dfold, deeper chains: if the fold is latency-bound on the wide
+# OoO classes the row gains; the seed+merge overhead prices against it at
+# small wp. DEFAULT OFF (no draw evidence yet; the dfold law) — this arm
+# runs it ON for per-draw attribution. kbench's fold512_ro vs fold512_rv
+# rows give the kernel-level twin. Bit-exactness: the arm's per-pass
+# checks + the D-oracle parity + t_ofold_constants_derivation.
+# HFT_CRC_OFOLD=0 is the documented rollback (the default IS the
+# rollback).
+HFT_CRC_OFOLD=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_ofold.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_ofold.txt
+grep -q "allocs=0" /tmp/bench_ofold.txt
+
+echo "=== 11fb. R21: Fused In-Register Verification ARMED (the Task 2 shape) ==="
+# R21 Task 2: the SUBMIT-SIDE FUSED verification — every span CRC
+# evaluates on the submitting core at the framing point (HFT_INLINE_FORCE
+# claims every chunk inline), so the workers NEVER re-read the payload
+# bytes: the verification's 2nd memory read pass is eliminated entirely
+# and the handoff degenerates to values, not bytes (the 62 GB/s re-read
+# bandwidth the briefing names disappears from the verify path). The
+# HYDRA_FUSED_DIAGNOSTIC line proves the shape armed per draw (the
+# flip-validation law); the per-pass bit-parity asserts + ALLOC_DELTA=0
+# run unchanged (the fused path IS the inline-assist machinery's
+# deterministic parity configuration). Sustained-vs-11b on the same draw
+# prices the fused fabric shape per class.
+HFT_INLINE_FORCE=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_fused.txt
+grep -q "HYDRA_FUSED_DIAGNOSTIC" /tmp/bench_fused.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_fused.txt
+grep -q "allocs=0" /tmp/bench_fused.txt
+
 echo "=== 11w. R16b/R17: Array-Driven Submission (rxdesc) ARMED (attribution) ==="
 # THE R17 DEFAULT FLIP (senior roadmaps 1-3, unanimous): the fleet priced
 # the array-driven submission at -10..-21% vs the ring on BOTH silicon
@@ -439,6 +474,12 @@ grep -q "LADDER_DIAGNOSTIC" /tmp/bench_f3_control.json
 grep -q "LADDER_DIAGNOSTIC span: vectorized=false" /tmp/bench_f3_control.json
 grep -q "RXBUILD_DIAGNOSTIC" /tmp/bench_f3_control.json
 grep -q "enabled=true" /tmp/bench_f3_control.json
+# R21 (Task 4): the topology verdict is a first-class CI artifact — the
+# placement (main/sequencer, rx/producer) is verified against sysfs truth
+# on every draw (HFT_TOPOLOGY_STRICT=1 hard-fails violations; the gate
+# here asserts the LINE's presence so the verdict can never go silent).
+grep -q "TOPOLOGY_VERIFICATION" /tmp/bench_f3_control.json
+grep -q "rx_actual_cpu=" /tmp/bench_f3_control.json
 HFT_VEC_LADDER=1 cargo run --release -p nf-engine --bin hft_bench -- --sample data/tests/sample-mini.itch --runs 5 --warmup 2 --output-format json 2>&1 | tee /tmp/bench_f3_armed.json
 grep -q "span_rate_msg_per_sec" /tmp/bench_f3_armed.json
 grep -q "LADDER_DIAGNOSTIC" /tmp/bench_f3_armed.json
