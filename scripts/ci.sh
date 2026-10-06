@@ -180,26 +180,29 @@ HFT_FABRIC_PLACE=siblings cargo run --release -p nf-engine --bin bench -- --hydr
 grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_place_siblings.txt
 grep -q "allocs=0" /tmp/bench_place_siblings.txt
 
-echo "=== 11l. R22: Tri-Stream Fold ROLLBACK Soak (the default is ARMED) ==="
+echo "=== 11l. R22.1: Tri-Stream Fold ARMED Soak (the value-exact mirror tri) ==="
 # R11: the fold kernel's two state chains run one clmul->xor->clmul->xor
 # dependency per 128 body bytes; measured fold512 sits at ~9 cyc/step —
-# near that chain's length. The tri-stream split (mod-3 block pairs,
-# K^3 reduced-pair step in the ending ring, offset merge) gives the OoO
-# engine six chains over ONE load stream at unchanged per-byte issue
-# cost. R22: the T=3 shape is DEFAULT ON in the worker drain (the
-# directive's fold512_tri wiring — the Zen 5 kbench draw priced the
-# kernel at 64.90 GB/s vs 59.33 sequential, and the T=8 merge LOSES at
-# the real ~wp 10.5 mix; the natural-domain tri_r kernel runs the
-# class-exact shape with the forced composed-field endings on every
-# fold-class silicon). This arm keeps the UNARMED side of the ledger
-# running on every push (the 11e prepatch precedent): HFT_WORKER_TRI=0
-# is the documented rollback, and the 11b-vs-11l delta per draw IS the
-# arming's attribution. kbench's fold512_tri_r vs fold512_r rows price
-# the kernel-level effect on the same draw. D11 + the crcfold
-# differential sweep pin the values bit-exact.
-HFT_WORKER_TRI=0 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_tri_off.txt
-grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_tri_off.txt
-grep -q "allocs=0" /tmp/bench_tri_off.txt
+# near that chain's length. The tri-stream split (mod-3 block pairs)
+# gives the OoO engine six chains over ONE load stream at unchanged
+# per-byte issue cost.
+# R22 HISTORY (the ledger law in action): the R22 commit defaulted the
+# worker drain ON with the natural class-exact tri (forced vend+vtail
+# endings) — the run #455 fleet verdict REJECTED it: −9..−14% same-draw
+# sustained on Zen 5 (11b armed vs 11l rollback, 8 draws), −2..−6% on
+# Emerald; kernel-level tri_r/fold512_rc = 0.67–0.86 (the forced
+# composed-field endings cost 12–25% on AMD). R22.1 reverted the
+# default and rewired eval_tri to the VALUE-EXACT mirror tri (cheap
+# endings; kbench parity-to−3% packed on Zen 5, parity on Emerald —
+# and the only T=3 shape whose latency-slack mechanism survives the
+# L3-bound fabric question). This arm prices THAT shape through the
+# worker loop per draw (the R9c→R9d law decides any future default
+# flip). kbench's fold512_tri (mirror) and fold512_tri_r (class-exact)
+# rows are the kernel-level twins. D11 + the crcfold differential
+# sweep pin the values bit-exact.
+HFT_WORKER_TRI=1 cargo run --release -p nf-engine --bin bench -- --hydra-only | tee /tmp/bench_tri.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_tri.txt
+grep -q "allocs=0" /tmp/bench_tri.txt
 
 echo "=== 11m. R12: Vectorized Watermark Ladder ARMED Soak (the refuted experiment) ==="
 # R12 verdict (the R9c->R9d law): the CI attribution measured the ladder

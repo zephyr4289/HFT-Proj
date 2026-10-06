@@ -535,18 +535,46 @@ impl CrcKernel {
     /// kernel is chain-bound or port-bound is exactly what the kbench
     /// `fold512_tri` row decides.
     ///
-    /// R22: the `Reflect` arm is now the NATURAL-DOMAIN tri-stream
-    /// ([`imp::span_fold_eval_tri_r`], the class-exact K^3 shape) — the
-    /// worker drain's default verification kernel (the directive's
-    /// fold512_tri wiring; the Zen 5 kbench row priced T=3 at 64.90 GB/s
-    /// vs 59.33 sequential, and the T=8 merge loses at the real ~wp 10.5
-    /// mix). `HFT_WORKER_TRI=0` rolls the worker drain back to the
-    /// sequential natural kernel.
+    /// R22: the arm initially shipped the NATURAL-domain tri here (the
+    /// class-exact K^3 shape with the forced composed-field endings).
+    /// R22.1 (the run #455 fleet verdict, 16 consolidated draws): that
+    /// shape is fleet-REJECTED — tri_r/fold512_rc = 0.67–0.86 on the Zen
+    /// 5 draws (the forced vend+vtail-all-r endings cost 12–25% on AMD,
+    /// which the split's ~9% chain saving cannot recover), −9..−14%
+    /// SUSTAINED on the same-draw 11b-vs-11l arms, −2..−6% on Emerald.
+    /// The `Reflect` arm now runs the MIRROR-domain tri — the VALUE-EXACT
+    /// shape (its states are bit-identical to the sequential mirror
+    /// kernel's, so the endings stay the cheap mirror path, no forced
+    /// class machinery): parity-to−3% packed on Zen 5, parity on Emerald,
+    /// and the only T=3 configuration whose latency-slack mechanism
+    /// survives the L3-bound fabric question. The 11l armed soak prices
+    /// it through the worker loop; the natural class-exact axis remains
+    /// first-class via [`Self::eval_tri_r`] (the kbench `fold512_tri_r`
+    /// row).
     ///
     /// # Safety
     /// Same feature contract as [`Self::eval`].
     #[inline(always)]
     pub unsafe fn eval_tri(&self, body: &[u8]) -> u64 {
+        match self {
+            Self::Scalar => span_crc32c_8lane(body),
+            Self::Fold512 => imp::span_fold_eval_tri(body),
+            Self::Reflect => imp::span_fold_eval_tri(body),
+        }
+    }
+
+    /// R22: evaluate one span through the NATURAL-domain tri-stream (the
+    /// class-exact K^3 shape — [`imp::span_fold_eval_tri_r`], forced
+    /// vend+vtail-all-r endings). Split out from [`Self::eval_tri`] by
+    /// the R22.1 fleet ruling (the class-exact shape is kbench
+    /// attribution-only as a worker default: the forced composed-field
+    /// endings lose on AMD — see `eval_tri`'s R22.1 note); the kbench
+    /// `fold512_tri_r` row keeps pricing it per draw.
+    ///
+    /// # Safety
+    /// Same feature contract as [`Self::eval`].
+    #[inline(always)]
+    pub unsafe fn eval_tri_r(&self, body: &[u8]) -> u64 {
         match self {
             Self::Scalar => span_crc32c_8lane(body),
             Self::Fold512 => imp::span_fold_eval_tri(body),
@@ -2325,18 +2353,19 @@ pub(crate) mod imp {
     }
 
     /// R22: the natural-domain TRI-STREAM fold kernel (single span) — the
-    /// worker drain's default verification shape (the directive's
-    /// fold512_tri wiring). Bit-exact with `span_crc32c_8lane` (the P2
+    /// class-exact K^3 shape. Bit-exact with `span_crc32c_8lane` (the P2
     /// differential + the exhaustive sweeps); the tri states are
     /// CLASS-exact, so the composed-field endings run for ALL r — the
     /// dfold/ofold dispatch law. The ofold axis preempts when armed (the
     /// deeper split — the precedence law); the class endings are FORCED
-    /// on every fold-class silicon (the R22 arming: the directive prices
-    /// the full T=3 shape per draw on the Zen 5 and Emerald fleets — the
-    /// R14 vend-loss ledger predates Zen 5's four VPCLMUL pipes;
-    /// `HFT_WORKER_TRI=0` rolls the worker drain back to the sequential
-    /// natural kernel, and the CRC-chain ending remains reachable via the
-    /// kbench `fold512_rc` attribution row).
+    /// on every fold-class silicon.
+    /// R22.1 (the run #455 fleet verdict, 16 draws): this shape as a WORKER
+    /// DEFAULT is REJECTED — the forced composed-field endings cost 12-25%
+    /// on Zen 5 (same-draw rc 61.6-66.5 GB/s vs tri_r 41.9-45.9), -9..-14%
+    /// sustained on the same-draw 11b-vs-11l arms, -2..-6% on Emerald. The
+    /// kernel stays in the tree as the class-exact attribution axis (the
+    /// kbench `fold512_tri_r` row via [`super::CrcKernel::eval_tri_r`]); it
+    /// is NOT a worker default. See docs/34 §6.
     ///
     /// # Safety
     /// Requires AVX-512F/BW, VPCLMULQDQ, GFNI, SSE4.2.

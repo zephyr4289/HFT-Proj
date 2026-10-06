@@ -490,20 +490,20 @@ fn mode_fold512_tri(buf: &[u8], sink: &mut u64) -> usize {
     off
 }
 
-/// R22: the natural-domain TRI-STREAM fold (the worker drain's DEFAULT
-/// verification shape — the directive's fold512_tri wiring). fold512_tri_r
-/// vs fold512_r on the SAME draw prices the full armed shape (the class-
-/// exact K^3 interleave + the forced vend+vtail-all-r endings) against the
-/// sequential natural kernel with its silicon-default endings — the exact
-/// delta the 11b sustained verdict converts. The mirror-domain tri row
-/// (`fold512_tri`) stays for the cross-domain attribution ledger.
+/// R22: the natural-domain TRI-STREAM fold (the class-exact K^3 shape).
+/// R22.1: the fleet verdict (run #455, 16 draws) rejected the class-exact
+/// shape as a worker default — the forced composed-field endings cost
+/// 12–25% on Zen 5 (tri_r/fold512_rc = 0.67–0.86 on the AMD draws). This
+/// row STAYS as the per-draw attribution instrument for that verdict (via
+/// `eval_tri_r`, split from `eval_tri`); the worker-loop armed soak (11l)
+/// prices the VALUE-EXACT mirror tri instead.
 fn mode_fold512_tri_r(buf: &[u8], sink: &mut u64) -> usize {
     let kernel = CrcKernel::Reflect;
     let mut off = 0usize;
     let mut acc = 0u64;
     while off + SPAN <= buf.len() {
         // SAFETY: main() only dispatches here when fold512_available().
-        acc ^= unsafe { kernel.eval_tri(&buf[off..off + SPAN]) };
+        acc ^= unsafe { kernel.eval_tri_r(&buf[off..off + SPAN]) };
         off += SPAN;
     }
     *sink = acc;

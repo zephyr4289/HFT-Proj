@@ -54,3 +54,36 @@ Local throughput context (NOT fleet evidence): the VM's 1t rows read `fold512_r`
 ## 5. Rollbacks and the Certification Path
 
 Every lever carries its knob: `HFT_WORKER_TRI=0` (the worker drain, default ON per the directive), `HFT_CRC_OFOLD` unchanged (default OFF, preempts tri when armed), and the pre-existing `HFT_CRC_VEND`/`HFT_CRC_VTAIL` overrides still bind every NON-tri evaluation path (the tri shape forces its endings internally, per §2.1). The certification path is the one the review directive prescribed: push, let the 120-shard queue draw the Zen 5 / 6973P-C / 8573C fleet, and read three numbers per draw — 11b (armed) vs 11l (rollback) for the sustained conversion, and `fold512_tri_r` vs `fold512_r` for the kernel-level attribution. The conversion math the fleet is pricing: the null ceiling says ~1.15B msg/s of CRC cost; the kernel rows say T=3 removes ~9% of the fold-loop's cycle cost on Zen 5; the sustained verdict decides how much of that survives the merge, the endings, and the supply coupling — with the 2.5B frontier as the bar the review set.
+
+## 6. First Fleet Verdict — Run #455 (16 consolidated draws): the R22 Default REJECTED, the R22.1 Correction
+
+The 120-shard run on the R22 arming commit (`1a66aff`) returned the fleet's answer, and it is a rejection. The consolidated-draw table (11b = the armed default; 11l = the same-draw rollback soak; kbench 1t rows from the same process; `f512_rc` = the crc-chain ending row, which IS the worker's per-class default shape on AMD where the vend silicon table is false):
+
+| Draw (silicon) | 11b armed sustained | 11l rollback sustained | same-draw delta | `fold512_r` | `fold512_tri_r` | `fold512_rc` | `fold512_tri` (mirror) |
+|---|---|---|---|---|---|---|---|
+| s109 (9V45 Zen 5) | 1.566B | 1.741B | −10.1% | 48.95 | 41.96 | 61.57 | 59.85 |
+| s115 (9V45) | 1.685B | 1.888B | −10.8% | 59.26 | 45.89 | 65.75 | 63.50 |
+| s118 (9V45) | 1.524B | 1.734B | −12.1% | 54.42 | 42.21 | 59.94 | 60.32 |
+| s119 (9V45) | 1.574B | 1.783B | −11.7% | 55.62 | 41.93 | 62.02 | 46.21 |
+| s17 (9V45) | 1.554B | 1.774B | −12.4% | 55.93 | 44.58 | 62.43 | 62.65 |
+| s45 (9V45) | 1.604B | 1.745B | −8.1% | 61.45 | 44.41 | 66.22 | 63.65 |
+| s48 (9V45) | 1.590B | 1.773B | −10.3% | 56.59 | 44.26 | 66.18 | 62.16 |
+| s61 (9V45) | 1.680B | 1.752B | −4.1% | 59.45 | 45.84 | 66.51 | 64.77 |
+| s11/s38/s42/s46/s47/s60 (8573C) | 1.07–1.17B | 1.10–1.19B | −2.0..−5.9% | 27.3–32.8 | 26.9–32.8 | 27.2–31.0 | 29.9–32.3 |
+| s25 (6973P-C) | 1.183B | 1.206B | −1.9% | 29.62 | 28.68 | 29.74 | 29.68 |
+
+(Sustained-arm order confounds exist — later arms read slightly higher on noisy draws — but the kernel-level rows and the sustained deltas agree in direction and the kbench ratios are order-immune.)
+
+Three findings, honestly recorded:
+
+1. **The mechanism is the ENDINGS, not the split.** On Zen 5 the crc-chain ending is the fast shape (`fold512_rc` 59.9–66.5 GB/s) while the composed-field endings cost 12–25% (`fold512_rv` 54.1–61.3, `fold512_tri_r` 41.9–45.9). The class-exact tri's forced vend+vtail-all-r dispatch law — my §2.1 deviation — is exactly what the R14 vend ledger predicted for AMD, now confirmed on Zen 5 with four VPCLMUL pipes: the ending's serialization is a census problem, not a pipe-count problem. The tri split's ~9% chain saving cannot recover a 20%+ ending tax.
+2. **The directive's premise needed a control correction.** The 64.90 GB/s `fold512_tri` reading (run #454) was priced against `fold512_r` — the vend-ended row, which IS the worker's shape on Intel (vend silicon-default true) but is NOT the worker's shape on AMD (crc-chain ≈ `fold512_rc`). Against the true per-class default, the mirror tri is parity-to−3% packed on Zen 5 and parity on Emerald at the real ~wp 10.5 mix.
+3. **Parity and zero-alloc held everywhere.** All 121 shards' D1 differential oracles, `HYDRA_BITPARITY` (golden `0x881639cead506f25`), and `ALLOC_DELTA == 0` passed on every arm — the arming was value-safe; the fleet rejected it on speed alone. (The single red shard, #109, tripped the R12 noisy-draw variance gate, cv 51.3% > 25% — the same statistical class as run #454's shard 38, unrelated to the arming.)
+
+**The R22.1 correction (this commit), per the R9c→R9d law (a default that hurts any class does not ship):**
+
+* The worker drain's default returns to the per-class sequential kernel (`kernel.eval`); `HFT_WORKER_TRI` is OPT-IN again (`=1` arms, CI arm 11l keeps the armed soak).
+* `eval_tri`'s Reflect arm now runs the **value-exact mirror tri** — the shape whose endings stay cheap (no forced class machinery): the only T=3 configuration with a live mechanism in the L3-bound fabric (the split's latency slack is worth more under load latency, which is exactly the R11 hypothesis the packed kbench cannot price). Arm 11l prices it through the worker loop per draw; a future default flip follows the ≥3-healthy-draws certification law.
+* The natural class-exact tri stays first-class as the attribution axis: `eval_tri_r` (new), the kbench `fold512_tri_r` row (re-pointed), the differential pins, and the constants law — the algebraic toolkit survives; only the default is gone.
+
+The 1.15B msg/s verification gap remains open, and run #455 sharpened the map: the fold kernel is NOT the binding constraint at the real span mix (every T-variant prices parity-to-negative against the per-class default there). The gap lives in the fabric's supply/latency coupling — the R11 §8.1 analysis, now with 16 more draws of evidence — which points the next round at the selective supply-side folding and the transposed-arena lane, not at deeper interleave splits.

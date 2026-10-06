@@ -683,13 +683,15 @@ fn lane_worker(
     // stream; six independent clmul chains instead of two). The kbench
     // `fold512_tri` row prices the kernel-level effect; this sweep prices
     // it on the real span mix through the full worker loop.
-    // R22: the knob is DEFAULT ON — the directive's fold512_tri wiring
-    // (the Zen 5 kbench draw priced the kernel at 64.90 GB/s vs 59.33
-    // sequential, the sweet spot over the T=8 merge at the real ~wp 10.5
-    // mix). `HFT_WORKER_TRI=0` is the documented rollback (CI arm 11l
-    // keeps the un-armed side of the ledger on every push). Read once at
-    // worker start, outside every window.
-    let tri = std::env::var("HFT_WORKER_TRI").as_deref() != Ok("0");
+    // R22/R22.1: the arming shipped here briefly DEFAULTED the knob ON
+    // (the natural class-exact tri) — the run #455 fleet verdict REJECTED
+    // it (−9..−14% same-draw sustained on Zen 5, −2..−6% on Emerald; the
+    // forced composed-field endings cost 12–25% on AMD). The knob is
+    // OPT-IN again (`HFT_WORKER_TRI=1`, CI arm 11l — the armed soak), and
+    // `eval_tri` now runs the VALUE-EXACT mirror tri (the cheap endings
+    // survive; the class-exact shape stays kbench-only via eval_tri_r).
+    // Read once at worker start, outside every window.
+    let tri = std::env::var("HFT_WORKER_TRI").as_deref() == Ok("1");
     let pf = PfCfg::detect(kernel);
     // R15: the drain granularity (HFT_WORKER_BATCH, the supply-side sweep —
     // read once at worker start, outside every window).
@@ -881,11 +883,11 @@ fn lane_worker(
                             // design — see null_mode doc).
                             (dlen as u64) | ((dsid as u64) << 32)
                         } else if tri {
-                            // R11/R22: the tri-stream fold — same value as
-                            // eval (D11 + the P2 differential), different
-                            // ILP structure. DEFAULT (the R22 arming); the
-                            // sequential natural kernel is the HFT_WORKER_TRI=0
-                            // rollback below.
+                            // R11/R22/R22.1: the tri-stream fold — same
+                            // value as eval (D11 + the P2 differential),
+                            // different ILP structure. eval_tri runs the
+                            // VALUE-EXACT mirror tri (the R22.1 fleet
+                            // ruling); the armed soak is CI arm 11l.
                             let body = unsafe {
                                 std::slice::from_raw_parts(dptr as *const u8, dlen as usize)
                             };
@@ -967,11 +969,12 @@ fn lane_worker_rxdesc(
     // worker_batch() parses an env var, which ALLOCATES. The first 11u
     // shard caught the per-iteration call as an ALLOC_DELTA violation).
     let wbatch = worker_batch();
-    // R22: the tri-stream fold — DEFAULT ON in every worker shape (the
-    // directive's fold512_tri wiring; see lane_worker's R22 note).
-    // `HFT_WORKER_TRI=0` is the rollback. Read once here, outside every
-    // window (law #9: env parsing is allocation).
-    let tri = std::env::var("HFT_WORKER_TRI").as_deref() != Ok("0");
+    // R22/R22.1: the tri-stream fold — the arming briefly defaulted ON
+    // (the run #455 fleet verdict rejected the class-exact shape: −9..−14%
+    // same-draw sustained on Zen 5). OPT-IN again (`HFT_WORKER_TRI=1`, CI
+    // arm 11l); eval_tri runs the value-exact mirror tri. Read once here,
+    // outside every window (law #9: env parsing is allocation).
+    let tri = std::env::var("HFT_WORKER_TRI").as_deref() == Ok("1");
     // Result cursor — per-LANE lifetime, continuing across generations
     // (the fresh sink's fold starts from the lane's res_tail, exactly as
     // the ring protocol's continuation).
@@ -1192,8 +1195,9 @@ fn lane_worker_rxdesc(
                         )
                     };
                     // SAFETY: feature contract verified at spawn.
-                    // R22: the tri-stream fold is the DEFAULT shape (the
-                    // class-exact K^3 interleave; same value as eval).
+                    // R22/R22.1: the tri-stream fold is the OPT-IN armed
+                    // shape (11l) — eval_tri runs the value-exact mirror
+                    // tri (same value as eval).
                     if tri {
                         unsafe { kernel.eval_tri(body) }
                     } else {
@@ -1303,11 +1307,12 @@ fn lane_worker_rxdesc_diet(
     // The drain batch (read ONCE at worker start — outside every window;
     // worker_batch() parses an env var, which ALLOCATES).
     let wbatch = worker_batch();
-    // R22: the tri-stream fold — DEFAULT ON in every worker shape (the
-    // directive's fold512_tri wiring; see lane_worker's R22 note).
-    // `HFT_WORKER_TRI=0` is the rollback. Read once here, outside every
-    // window (law #9: env parsing is allocation).
-    let tri = std::env::var("HFT_WORKER_TRI").as_deref() != Ok("0");
+    // R22/R22.1: the tri-stream fold — the arming briefly defaulted ON
+    // (the run #455 fleet verdict rejected the class-exact shape: −9..−14%
+    // same-draw sustained on Zen 5). OPT-IN again (`HFT_WORKER_TRI=1`, CI
+    // arm 11l); eval_tri runs the value-exact mirror tri. Read once here,
+    // outside every window (law #9: env parsing is allocation).
+    let tri = std::env::var("HFT_WORKER_TRI").as_deref() == Ok("1");
     // R16e: the strand-A wait depth (HFT_FRONTIER_LAPS; 0 = strand A
     // off — the pre-diet wake cadence with B+C armed). Read once here,
     // outside every window (law #9).
@@ -1636,8 +1641,9 @@ fn lane_worker_rxdesc_diet(
                         )
                     };
                     // SAFETY: feature contract verified at spawn.
-                    // R22: the tri-stream fold is the DEFAULT shape (the
-                    // class-exact K^3 interleave; same value as eval).
+                    // R22/R22.1: the tri-stream fold is the OPT-IN armed
+                    // shape (11l) — eval_tri runs the value-exact mirror
+                    // tri (same value as eval).
                     if tri {
                         unsafe { kernel.eval_tri(body) }
                     } else {
