@@ -2209,7 +2209,7 @@ impl PipelinedReplayTransport {
             unsafe {
                 (*self.mb.master.get())
                     .as_ref()
-                    .map(|m| m.as_slice())
+                    .map(|m| &m[..])
             }
         } else {
             None
