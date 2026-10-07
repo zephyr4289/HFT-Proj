@@ -93,10 +93,11 @@
 
 use crate::crcfold::CrcKernel;
 use crate::sink::span_crc32c_8lane;
-use crate::crcfold::{span_crc32c_8lane_from_tags, span_crc32c_affine_sub};
+#[cfg(debug_assertions)]
+use crate::crcfold::span_crc32c_affine_sub;
 use nf_arbitrator::types::{Event, LiveFeedProof, Sink, SpanRec};
 use nf_transport::rxdesc::{
-    affine_frame_tag, affine_tag_pack, affine_tag_unpack, rxdesc_unpack_span, AffineTagCore,
+    affine_frame_tag, affine_tag_pack, rxdesc_unpack_span, AffineTagCore,
     RxdescState, RX_AFFINE_FLAG, RX_AFFINE_TAG_WORDS, RX_NARR,
 };
 use std::cell::UnsafeCell;
@@ -669,7 +670,7 @@ fn affine_tag_eval(
     w: u64,
     slot: u8,
     idx: usize,
-    gid: u64,
+    _gid: u64,
     stats: &WorkerStats,
 ) -> u64 {
     let t: [u64; RX_AFFINE_TAG_WORDS] = rx.get_affine_tag(slot, idx);
@@ -687,7 +688,7 @@ fn affine_tag_eval(
             let proj = unsafe { span_crc32c_affine_sub(cum_crc, prefix_crc, len - h) };
             assert_eq!(
                 proj, raw_crc,
-                "R23c affine tag integrity violation (span {gid}): the (prefix, cum) projection \
+                "R23c affine tag integrity violation (span {_gid}): the (prefix, cum) projection \
                  diverged from the stored raw CRC — sidecar corruption, fail-stop"
             );
         }
