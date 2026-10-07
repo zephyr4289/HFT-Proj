@@ -554,11 +554,10 @@ pub fn spec_slice_ingest(payload: &[u8], sink: &mut u64) -> u64 {
     let mut pos = 0usize;
     let mut count = 0u64;
     let mut acc = *sink;
-    let ptr = payload.as_ptr();
 
     while pos + 2 <= len {
-        // Read 2-byte BE message length directly without iterator/stack allocations
-        let msg_len = u16::from_be(unsafe { std::ptr::read_unaligned(ptr.add(pos) as *const u16) }) as usize;
+        // Read 2-byte BE message length directly in 100% safe Rust (forbid(unsafe_code))
+        let msg_len = u16::from_be_bytes([payload[pos], payload[pos + 1]]) as usize;
         let next_pos = pos + 2 + msg_len;
         if next_pos > len {
             break;
