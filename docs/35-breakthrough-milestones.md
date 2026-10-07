@@ -19,6 +19,7 @@ This document is the authoritative historical and architectural ledger of `HFT-P
 | **Phase 9: The 1.9B / 12.1B Frontier** | **`1,959,208,315 msg/s`** | **`12,103,822,455 msg/s`** | **`0.2145 cyc/msg`** | AMD EPYC 9V45 (Zen 5 @ 4.56 GHz) | Distinct physical-core pinning within shared L3 domain, 512-bit SIMD framing, SPSC ring saturation | [`docs/33-r21-fused-verify.md`](33-r21-fused-verify.md) |
 | **Phase 10: R21/R22 & 2.0B Breakthrough** | **`2,009,064,872 msg/s`** | **`11,514,625,207 msg/s`** | **`0.2255 cyc/msg`** | AMD EPYC 9V45 (Zen 5 Shard 40) | Deterministic Sysfs Topology Verification, 64B NT streaming stores, `fold512_rc` 66.6 GB/s carryless fold | [`docs/34-r22-tri-drain.md`](34-r22-tri-drain.md) |
 | **Phase 11: Transport Fabric Ceiling** | **`3,093,915,848 msg/s`** | **`12.1B+ msg/s`** | N/A (Non-CRC) | AMD EPYC 9V45 (Shard 40) | Formal proof via `11z` null instrument: pipeline fabric easily sustains **> 3.09B msg/s** | [`docs/33-r21-fused-verify.md`](33-r21-fused-verify.md) |
+| **Phase 12: R23 Run 464 Frontier** | **`2,004,527,099 msg/s`** (10.02B msgs) | **`13,599,919,343 msg/s`** (13.6B peak / 13.15B med) | **`0.1975 cyc/msg`** | AMD EPYC 9V45 (Zen 5 Shard 75) | Galois Field $O(1)$ Affine Subtraction (zero-payload-read in-register verify: 217.8M tag hits), zero-copy master frame slicing | [`docs/37-run464-frontier.md`](37-run464-frontier.md) |
 
 ---
 
@@ -67,6 +68,12 @@ This document is the authoritative historical and architectural ledger of `HFT-P
 * **Non-Temporal 64B Streaming Stores:** Added AVX-512 streaming stores (`_mm512_stream_si512` + `_mm_sfence`) to bypass L1D/L2 cache pollution during descriptor batch handoffs.
 * **Breaking 2.0 Billion msg/s:** On Zen 5 (Shard 40, Run #458), sustained full-verify hit **`2,009,064,872 msg/s`** (2.009B msg/s) with `fold512_rc` memory folding sustaining **66.6 GB/s**.
 * **Transport Fabric Capacity Proven at 3.094B msg/s:** The `11z` null-instrument arm established that the core transport fabric sustains **`3,093,915,848 msg/s`** (3.094B/s), isolating the remaining CRC verification tax at ~1.08B msg/s.
+
+### 9. R23 / Run 464: 13.599B Ingest & 2.0045B Sustained (Zero-Re-Read Vector Frontier)
+* **Pure Ingest Shattered:** Shard 75 on AMD EPYC 9V45 (Zen 5) hit **`13,599,919,343 msg/s`** peak and **`13,146,788,989 msg/s`** median (**`0.1975 cycles/message`**), beating the 12.103B record by **+1.496B msg/s**.
+* **Sustained Full-Verify Milestone:** Sustained full-verification clocked **`2,004,527,099 msg/s`** across a continuous 5.0-second run, verifying **`10,022,892,086 messages` (10.02 Billion msgs)** in-window with **217.8 Million in-register affine tag evaluations** (`payload_fallbacks = 0`).
+* **Galois Field $O(1)$ Affine Subtraction:** Proved and deployed $O(1)$ polynomial quotient subtraction over GF(2), providing **97.79 GB/s per core (3.056B msg/s on 1 core alone, >6.11B aggregate on 2 workers)** with zero memory payload touches.
+* **Documentation:** See [`docs/37-run464-frontier.md`](37-run464-frontier.md) ([GitHub Actions Run #37596346300](https://github.com/zephyr4289/HFT-Proj/actions/runs/37596346300)).
 
 ---
 
