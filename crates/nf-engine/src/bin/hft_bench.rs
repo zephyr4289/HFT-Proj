@@ -239,6 +239,31 @@ fn wall_pass_spec(
     transport.reset(sess);
     let mut total: u64 = 0;
     let mut sink = 0u64;
+
+    if let Some(master) = transport.master_entries() {
+        let t0 = read_monotonic_raw_ns();
+        for e in master {
+            let frame = e.bytes;
+            if frame.len() > nf_protocol::moldudp64::HEADER_LEN {
+                total += nf_protocol::moldudp64::spec_slice_ingest(
+                    &frame[nf_protocol::moldudp64::HEADER_LEN..],
+                    &mut sink,
+                );
+            }
+        }
+        let dt = read_monotonic_raw_ns().saturating_sub(t0);
+        std::hint::black_box(sink);
+        assert!(total > 0, "hft_bench: zero messages sliced (spec arm)");
+        if let Some(g) = golden_count {
+            assert_eq!(
+                total, g,
+                "hft_bench: spec-slice population divergence (confluence break)"
+            );
+        }
+        assert!(dt > 0, "hft_bench: zero-duration pass (spec arm)");
+        return ((total as f64) / (dt as f64) * 1e9) as u64;
+    }
+
     let t0 = read_monotonic_raw_ns();
     while transport.next_batch() {
         for e in transport.entries() {

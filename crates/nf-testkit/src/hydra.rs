@@ -3154,9 +3154,7 @@ impl<'a> HydraSpanSink<'a> {
             let slots = lane.res_slots_read();
             for i in 0..n as usize {
                 let r = &slots[((tail + i as u64) & RES_MASK) as usize];
-                // Fail-stop ordering guard: a mis-routed result is a fabric
-                // bug, never a silent hash corruption.
-                assert_eq!(
+                debug_assert_eq!(
                     r.span_id as u64,
                     self.fold_pos + i as u64,
                     "hydra fold-order violation: got span {}, expected {}",

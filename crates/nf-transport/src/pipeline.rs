@@ -2202,6 +2202,20 @@ impl PipelinedReplayTransport {
         unsafe { (*self.mb.bufs[(t & self.mb.nbuf_mask) as usize].get()).clock }
     }
 
+    /// Return the entire pass's master frame entries when rxbuild is enabled.
+    #[inline]
+    pub fn master_entries(&self) -> Option<&[FrameEntry<'static>]> {
+        if self.mb.rxbuild_enabled {
+            unsafe {
+                (*self.mb.master.get())
+                    .as_ref()
+                    .map(|m| m.as_slice())
+            }
+        } else {
+            None
+        }
+    }
+
     /// F-1 (HFT_RXWARM) telemetry: (cumulative fixes, uncovered frames,
     /// last-pass fixes). The steady-state law: last_pass_fixes == 0 from
     /// pass 2 (the kill rule is "fixes > 0 persistent"); pass 1's fill
