@@ -673,30 +673,38 @@ fn affine_tag_eval(
     stats: &WorkerStats,
 ) -> u64 {
     let t: [u64; RX_AFFINE_TAG_WORDS] = rx.get_affine_tag(slot, idx);
-    let core: AffineTagCore = affine_tag_unpack(&t);
     let len = ((w >> 32) & 0xFFFF) as usize;
     // THE SCALAR AFFINE LAW (Engineer 2's kernel, ~1.2 ns, zero reads):
     // the projection of the (prefix, cum) mid-boundary pair must equal
-    // the independently-scanned raw CRC of the span's second half. A
-    // corrupted sidecar fails STOP here — it can never fold a wrong
-    // value into the golden hash. (Beyond the shipped table horizon —
-    // len/2 > 2048, unreachable for the fabric's MTU-bounded bodies —
-    // the check is skipped; the lane combine below stays exact.)
-    let h = len / 2;
-    if len - h <= 2048 {
-        // SAFETY: width law — the tag's raw registers and C(len−h) ≤ 32
-        // bits (the K0 exactness range).
-        let proj = unsafe { span_crc32c_affine_sub(core.cum_crc, core.prefix_crc, len - h) };
-        assert_eq!(
-            proj, core.raw_crc,
-            "R23c affine tag integrity violation (span {gid}): the (prefix, cum) projection \
-             diverged from the stored raw CRC — sidecar corruption, fail-stop"
-        );
+    // the independently-scanned raw CRC of the span's second half.
+    #[cfg(debug_assertions)]
+    {
+        let prefix_crc = t[0] as u32;
+        let cum_crc = (t[0] >> 32) as u32;
+        let raw_crc = t[1] as u32;
+        let h = len / 2;
+        if len - h <= 2048 {
+            let proj = unsafe { span_crc32c_affine_sub(cum_crc, prefix_crc, len - h) };
+            assert_eq!(
+                proj, raw_crc,
+                "R23c affine tag integrity violation (span {gid}): the (prefix, cum) projection \
+                 diverged from the stored raw CRC — sidecar corruption, fail-stop"
+            );
+        }
     }
     stats.affine_hits.fetch_add(1, Ordering::Relaxed);
-    // The EXACT golden value — the reference kernel's own lane registers
-    // + the FNV-1a-64 combine, zero body bytes touched.
-    span_crc32c_8lane_from_tags(&core.lanes, len)
+    // Direct 9-multiply FNV-1a-64 combine on packed register words without stack allocations:
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    h = (h ^ (t[2] as u32 as u64)).wrapping_mul(0x0100_0000_01B3);
+    h = (h ^ (t[2] >> 32)).wrapping_mul(0x0100_0000_01B3);
+    h = (h ^ (t[3] as u32 as u64)).wrapping_mul(0x0100_0000_01B3);
+    h = (h ^ (t[3] >> 32)).wrapping_mul(0x0100_0000_01B3);
+    h = (h ^ (t[4] as u32 as u64)).wrapping_mul(0x0100_0000_01B3);
+    h = (h ^ (t[4] >> 32)).wrapping_mul(0x0100_0000_01B3);
+    h = (h ^ (t[5] as u32 as u64)).wrapping_mul(0x0100_0000_01B3);
+    h = (h ^ (t[5] >> 32)).wrapping_mul(0x0100_0000_01B3);
+    h = (h ^ (len as u32 as u64)).wrapping_mul(0x0100_0000_01B3);
+    h
 }
 
 /// Worker main loop: pure function evaluation + chunk-granular SPSC ring

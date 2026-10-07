@@ -928,11 +928,7 @@ impl RxdescState {
             let words = n * RX_AFFINE_TAG_WORDS;
             let src = tags[from as usize].as_ptr();
             let dst = tags[to as usize].as_mut_ptr();
-            if nt_copy_enabled() && (src as usize) % 64 == (dst as usize) % 64 {
-                nt_copy_u64(src, dst, words);
-            } else {
-                std::ptr::copy_nonoverlapping(src, dst, words);
-            }
+            std::ptr::copy_nonoverlapping(src, dst, words);
         }
     }
 

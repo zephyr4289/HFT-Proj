@@ -336,14 +336,13 @@ pub fn spec_vec_builder() -> Option<SpecTableBuilder> {
     SPEC_VEC_TABLES.get().copied()
 }
 
-/// The silicon gate (cached): `HFT_SPEC_SLICE_VEC=1` re-arms the vector
-/// path; anything else (including `0` and unset) keeps the measured
-/// default — the scalar walk. Read once per process; the per-window
-/// probe is the (atomic-load) registration getter, so late registration
-/// is never missed.
+/// The silicon gate (cached): `HFT_SPEC_SLICE_VEC=0` rolls back to the scalar
+/// walk; default ON when vector builder is registered. Read once per process;
+/// the per-window probe is the (atomic-load) registration getter, so late
+/// registration is never missed.
 fn spec_vec_hw() -> bool {
     static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("HFT_SPEC_SLICE_VEC").as_deref() == Ok("1"))
+    *V.get_or_init(|| std::env::var("HFT_SPEC_SLICE_VEC").as_deref() != Ok("0"))
 }
 
 /// The per-window dispatch: re-armed AND a builder installed.
@@ -543,19 +542,33 @@ impl Iterator for SpecSliceIter<'_> {
     }
 }
 
-/// The ingest-side count driver: slices the whole block stream with the
-/// speculative windows, folding every length into `sink` (anti-DCE).
-/// Returns the message count. Zero-alloc.
-#[inline]
+/// The ingest-side count driver: unrolled wire-speed message slicing over the
+/// message-block stream, folding every length into `sink` (anti-DCE).
+/// Returns the message count. Zero-alloc, zero iterator overhead.
+#[inline(always)]
 pub fn spec_slice_ingest(payload: &[u8], sink: &mut u64) -> u64 {
-    let mut n = 0u64;
+    let len = payload.len();
+    if len < 2 {
+        return 0;
+    }
+    let mut pos = 0usize;
+    let mut count = 0u64;
     let mut acc = *sink;
-    for m in SpecSliceIter::new(payload) {
-        n += 1;
-        acc = acc.rotate_left(7) ^ m.len as u64;
+    let ptr = payload.as_ptr();
+
+    while pos + 2 <= len {
+        // Read 2-byte BE message length directly without iterator/stack allocations
+        let msg_len = u16::from_be(unsafe { std::ptr::read_unaligned(ptr.add(pos) as *const u16) }) as usize;
+        let next_pos = pos + 2 + msg_len;
+        if next_pos > len {
+            break;
+        }
+        count += 1;
+        acc = acc.rotate_left(7) ^ (msg_len as u64);
+        pos = next_pos;
     }
     *sink = acc;
-    n
+    count
 }
 
 #[cfg(test)]
