@@ -1,0 +1,2115 @@
+RUSTFLAGS (env): -C target-cpu=x86-64-v3
+rustc: rustc 1.99.0 (b940084d7 2026-09-28)
+target_arch="x86_64"
+target_feature="fxsr"
+target_feature="sse"
+target_feature="sse2"
+CPUS: 4
+model name	: AMD EPYC 9V45 96-Core Processor
+cpu0 siblings: 0-1 L3: 0-3
+cpu1 siblings: 0-1 L3: 0-3
+cpu2 siblings: 2-3 L3: 0-3
+cpu3 siblings: 2-3 L3: 0-3
+taskset: pid 2136's current affinity list: 0-3
+=== 1. Mini Sample SHA256 Check ===
+data/tests/sample-mini.itch: OK
+=== 2. Build Workspace Release ===
+[1m[92m    Updating[0m crates.io index
+[1m[92m   Compiling[0m nf-protocol v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-protocol)
+[1m[92m   Compiling[0m nf-arbitrator v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-arbitrator)
+[1m[92m   Compiling[0m nf-transport v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-transport)
+[1m[92m   Compiling[0m nf-recovery v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-recovery)
+[1m[92m   Compiling[0m nf-testkit v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-testkit)
+[1m[92m   Compiling[0m nf-engine v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-engine)
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 16.67s
+=== 3. Clippy Workspace ===
+[1m[92m    Checking[0m nf-protocol v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-protocol)
+[1m[92m    Checking[0m nf-arbitrator v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-arbitrator)
+[1m[92m    Checking[0m nf-transport v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-transport)
+[1m[92m    Checking[0m nf-recovery v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-recovery)
+[1m[92m    Checking[0m nf-testkit v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-testkit)
+[1m[92m    Checking[0m nf-engine v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-engine)
+[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 2.16s
+=== 4. Negative Lint Tripwire Test ===
+[1m[92m    Checking[0m lint-fixture v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/tests/lint_fixture)
+[1m[91merror[0m[1m: use of a disallowed type `alloc::vec::Vec`[0m
+ [1m[94m--> [0msrc/lib.rs:7:23
+  [1m[94m|[0m
+[1m[94m7[0m [1m[94m|[0m     let _v: Vec<u8> = Vec::new();
+  [1m[94m|[0m                       [1m[91m^^^[0m
+  [1m[94m|[0m
+  [1m[94m= [0m[1mnote[0m: Tier-F zero-allocation ban
+  [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#disallowed_types
+[1m[92mnote[0m: the lint level is defined here
+ [1m[94m--> [0msrc/lib.rs:3:9
+  [1m[94m|[0m
+[1m[94m3[0m [1m[94m|[0m #![deny(clippy::disallowed_types)]
+  [1m[94m|[0m         [1m[92m^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: use of a disallowed type `alloc::vec::Vec`[0m
+ [1m[94m--> [0msrc/lib.rs:7:13
+  [1m[94m|[0m
+[1m[94m7[0m [1m[94m|[0m     let _v: Vec<u8> = Vec::new();
+  [1m[94m|[0m             [1m[91m^^^^^^^[0m
+  [1m[94m|[0m
+  [1m[94m= [0m[1mnote[0m: Tier-F zero-allocation ban
+  [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#disallowed_types
+
+[1m[91merror[0m[1m: use of a disallowed type `alloc::string::String`[0m
+ [1m[94m--> [0msrc/lib.rs:8:22
+  [1m[94m|[0m
+[1m[94m8[0m [1m[94m|[0m     let _s: String = String::new();
+  [1m[94m|[0m                      [1m[91m^^^^^^[0m
+  [1m[94m|[0m
+  [1m[94m= [0m[1mnote[0m: Tier-F zero-allocation ban
+  [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#disallowed_types
+
+[1m[91merror[0m[1m: use of a disallowed type `alloc::string::String`[0m
+ [1m[94m--> [0msrc/lib.rs:8:13
+  [1m[94m|[0m
+[1m[94m8[0m [1m[94m|[0m     let _s: String = String::new();
+  [1m[94m|[0m             [1m[91m^^^^^^[0m
+  [1m[94m|[0m
+  [1m[94m= [0m[1mnote[0m: Tier-F zero-allocation ban
+  [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#disallowed_types
+
+[1m[91merror[0m[1m: use of a disallowed type `std::collections::HashMap`[0m
+ [1m[94m--> [0msrc/lib.rs:9:53
+  [1m[94m|[0m
+[1m[94m9[0m [1m[94m|[0m     let _map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+  [1m[94m|[0m                                                     [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [1m[94m|[0m
+  [1m[94m= [0m[1mnote[0m: Tier-F zero-allocation ban
+  [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#disallowed_types
+
+[1m[91merror[0m[1m: use of a disallowed type `std::collections::HashMap`[0m
+ [1m[94m--> [0msrc/lib.rs:9:15
+  [1m[94m|[0m
+[1m[94m9[0m [1m[94m|[0m     let _map: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+  [1m[94m|[0m               [1m[91m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  [1m[94m|[0m
+  [1m[94m= [0m[1mnote[0m: Tier-F zero-allocation ban
+  [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#disallowed_types
+
+[1m[91merror[0m[1m: use of a disallowed type `alloc::rc::Rc`[0m
+  [1m[94m--> [0msrc/lib.rs:10:15
+   [1m[94m|[0m
+[1m[94m10[0m [1m[94m|[0m     let _rc = std::rc::Rc::new(42);
+   [1m[94m|[0m               [1m[91m^^^^^^^^^^^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mnote[0m: Tier-F zero-allocation ban
+   [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#disallowed_types
+
+[1m[91merror[0m[1m: use of a disallowed type `alloc::sync::Arc`[0m
+  [1m[94m--> [0msrc/lib.rs:11:16
+   [1m[94m|[0m
+[1m[94m11[0m [1m[94m|[0m     let _arc = std::sync::Arc::new(42);
+   [1m[94m|[0m                [1m[91m^^^^^^^^^^^^^^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mnote[0m: Tier-F zero-allocation ban
+   [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#disallowed_types
+
+[1m[91merror[0m[1m: use of a disallowed method `alloc::string::ToString::to_string`[0m
+  [1m[94m--> [0msrc/lib.rs:15:17
+   [1m[94m|[0m
+[1m[94m15[0m [1m[94m|[0m     let _s = 42.to_string();
+   [1m[94m|[0m                 [1m[91m^^^^^^^^^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mnote[0m: Tier-M zero-allocation hot-loop ban
+   [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#disallowed_methods
+[1m[92mnote[0m: the lint level is defined here
+  [1m[94m--> [0msrc/lib.rs:4:9
+   [1m[94m|[0m
+[1m[94m 4[0m [1m[94m|[0m #![deny(clippy::disallowed_methods)]
+   [1m[94m|[0m         [1m[92m^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+
+[1m[91merror[0m[1m: use of a disallowed method `alloc::borrow::ToOwned::to_owned`[0m
+  [1m[94m--> [0msrc/lib.rs:17:24
+   [1m[94m|[0m
+[1m[94m17[0m [1m[94m|[0m     let _owned = slice.to_owned();
+   [1m[94m|[0m                        [1m[91m^^^^^^^^[0m
+   [1m[94m|[0m
+   [1m[94m= [0m[1mnote[0m: Tier-M zero-allocation hot-loop ban
+   [1m[94m= [0m[1mhelp[0m: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.99.0/index.html#disallowed_methods
+
+[1m[91merror[0m: could not compile `lint-fixture` (lib) due to 10 previous errors
+=== 5. Unit & Conformance Tests ===
+[1m[92m   Compiling[0m nf-protocol v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-protocol)
+[1m[92m   Compiling[0m nf-transport v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-transport)
+[1m[92m   Compiling[0m nf-arbitrator v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-arbitrator)
+[1m[92m   Compiling[0m nf-recovery v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-recovery)
+[1m[92m   Compiling[0m nf-testkit v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-testkit)
+[1m[92m   Compiling[0m nf-engine v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-engine)
+[1m[92m    Finished[0m `test` profile [optimized + debuginfo] target(s) in 12.60s
+[1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/nf_arbitrator-6363e96099bf9242)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests/compilefail.rs (target/debug/deps/compilefail-478af2cb6c91a996)
+
+running 1 test
+[1m[92m    Checking[0m nf-protocol v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-protocol)
+[1m[92m    Checking[0m nf-arbitrator v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-arbitrator)
+[1m[92m    Checking[0m nf-transport v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-transport)
+[1m[92m    Checking[0m nf-recovery v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-recovery)
+[1m[92m    Checking[0m nf-testkit v0.1.0 (/home/runner/work/HFT-Proj/HFT-Proj/crates/nf-testkit)
+[1m[92m    Checking[0m nf-arbitrator-tests v0.0.0 (/home/runner/work/HFT-Proj/HFT-Proj/target/tests/trybuild/nf-arbitrator)
+[1m[92m    Finished[0m `dev` profile [unoptimized + debuginfo] target(s) in 0.46s
+
+
+test tests/ui/cf1_private_field_construction.rs ... ok
+test tests/ui/cf2_private_field_read.rs ... ok
+test tests/ui/cf3_destructure.rs ... ok
+test tests/ui/cf4_lookalike_type.rs ... ok
+test tests/ui/cf5_hold_across_calls.rs ... ok
+test tests/ui/cf6_orphan_clone.rs ... ok
+
+
+test test_compile_fail_suite ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.73s
+
+[1m[92m     Running[0m tests/sequencer_tests.rs (target/debug/deps/sequencer_tests-c037a0fdfcc57b5c)
+
+running 19 tests
+test test_r3_no_optin_unchanged ... ok
+test test_r3_span_equivalence_contiguous_flow ... ok
+test test_r3_span_fallback_on_invalid ... ok
+test test_r3_span_gap_staging_drain ... ok
+test test_u11_seal ... ok
+test test_r3_span_hb_eos ... ok
+test test_u10_gen_law ... ok
+test test_u12_recovery_intent ... ok
+test test_u2_partial_overlap ... ok
+test test_u13_totality ... ok
+test test_u14_byte_identity ... ok
+test test_u1_dup_fast_path ... ok
+test test_u7_heartbeat_gap ... ok
+test test_u3_reorder_disorder ... ok
+test test_u4_window_clamp ... ok
+test test_u6_session_change ... ok
+test test_u8_eos_handling ... ok
+test test_u9_eos_then_data ... ok
+test test_u_zombie_hazard ... ok
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests/split_watermark.rs (target/debug/deps/split_watermark-6b556bc238fd948b)
+
+running 1 test
+test test_a1_split_watermark_discriminator ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
+
+[1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/nf_engine-2835e0eb584a1f80)
+
+running 4 tests
+test histogram::tests::test_static_histogram_percentiles ... ok
+test tail_study::tests::test_p2_l1_unit_law_per_message_stamps ... ok
+test tests::test_audit_in_memory_stream ... ok
+test tests::test_audit_truncated_tail ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/audit.rs (target/debug/deps/audit-0ffa5e810830aa34)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/bench.rs (target/debug/deps/bench-8d7d78bca1894c8b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/hft_bench.rs (target/debug/deps/hft_bench-77e0d5531fa87c9d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/kbench.rs (target/debug/deps/kbench-4bb94fa949f08972)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/replay.rs (target/debug/deps/replay-0ff2083d86b40b63)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests/xdp_tests.rs (target/debug/deps/xdp_tests-51cc3573b9588ba6)
+
+running 6 tests
+test test_x1_xdp_smoke ... ok
+test test_x4_fill_ring_discipline ... ok
+test test_x6_malicious_frames ... ok
+test test_x5_alloc_window_xdp ... ok
+test test_x3_scripted_dual_drop ... ok
+test test_x2_conformance_mini ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+[1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/nf_protocol-885ff5d190450fa5)
+
+running 21 tests
+test gates::tests::test_gates_tripwires_fail_on_bad_inputs ... ok
+test itch5::tests::t2_tv_it2_stock_directory ... ok
+test itch5::tests::t3_case_trap ... ok
+test itch5::tests::t1_tv_it1_system_event ... ok
+test itch5::tests::t4_synthetic_add_order ... ok
+test itch5::tests::t5_table_totality ... ok
+test itch5::tests::t6_error_paths ... ok
+test itch5::tests::t7_extended_overlays ... ok
+test moldudp64::tests::t11_span_calculation ... ok
+test moldudp64::tests::t13_spec_slice_edges ... ok
+test moldudp64::tests::t1_tv1_golden ... ok
+test moldudp64::tests::t2_t3_heartbeat_and_eos ... ok
+test moldudp64::tests::t5_truncated_frame ... ok
+test moldudp64::tests::t6_block_overrun ... ok
+test moldudp64::tests::t7_trailing_bytes ... ok
+test moldudp64::tests::t8_zero_length_message ... ok
+test moldudp64::tests::t9_seq_overflow ... ok
+test packet::tests::test_validate_frame_synthetic ... ok
+test moldudp64::tests::t4_encode_request ... ok
+test moldudp64::tests::t10_round_trip_property ... ok
+test moldudp64::tests::t12_spec_slice_matches_blocks ... ok
+
+test result: ok. 21 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+
+[1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/nf_recovery-a4273f375a48027e)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m tests/recovery_tests.rs (target/debug/deps/recovery_tests-6c123f8406540150)
+
+running 17 tests
+test test_r10_session_boundary_during_recovery ... ok
+test test_r11_socket_disconnect ... ok
+test test_r12_vt_grace_stepping ... ok
+test test_r13_retry_counting_determinism ... ok
+test test_r14_state_transition_matrix ... ok
+test test_e2e_2b_split_dual_drop ... ok
+test test_e2e_2a_canonical_dual_drop ... ok
+test test_e2e_2c_double_run_confluence ... ok
+test test_r4_request_encode_from_intent ... ok
+test test_r1_fakeserver_drop_request_fault ... ok
+test test_r6_drop_request_dead ... ok
+test test_r7_silence_dead ... ok
+test test_r5_partial_fill_truncate_after ... ok
+test test_r3_inv_r5_wrong_session ... ok
+test test_r2_fakeserver_drop_response_fault ... ok
+test test_r9_dual_drop_repair ... ok
+test test_r8_duplicate_first ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.14s
+
+[1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/nf_testkit-c60ad869f026b239)
+
+running 76 tests
+test affinity::fabric_placement_tests::t_fabric_placement_distinct_workers_on_distinct_cores ... ok
+test affinity::fabric_placement_tests::t_fabric_placement_no_worker_on_main_sibling_when_possible ... ok
+test affinity::l3_tests::t_l3_groups_partition ... ok
+test affinity::l3_tests::t_pipeline_placement_distinct ... ok
+test affinity::tests::t_affinity_order_nonempty_and_bounded ... ok
+test affinity::l3_tests::t_topology_verification_placement_consistent ... ok
+test affinity::l3_tests::t_topology_verification_same_cpu_violates ... ok
+test affinity::tests::t_affinity_pin_roundtrip ... ok
+test batch_parity::t_r12_soa_parity_default_schedule ... ok
+test batch_parity::t_r12_soa_parity_lossy_schedule ... ok
+test batch_parity::t_r12_soa_parity_multi_pass_resets ... ok
+test batch_parity::t_r12_soa_parity_reorder_schedule ... ok
+test batch_parity::t_r12_soa_parity_session_split ... ok
+test batch_parity::t_r12_soa_parity_single_feed_seeded ... ok
+test batch_parity::t_r8_batch_parity_default_schedule ... ok
+test batch_parity::t_r8_batch_parity_fast_sink ... ok
+test batch_parity::t_r8_batch_parity_lossy_schedule ... ok
+test batch_parity::t_r8_batch_parity_multi_pass_reset ... ok
+test batch_parity::t_r8_batch_parity_per_message_sink ... ok
+test batch_parity::t_r8_batch_parity_reorder_schedule ... ok
+test batch_parity::t_r8_batch_parity_session_split ... ok
+test batch_parity::t_r8_batch_parity_single_feed_seeded ... ok
+test batch_parity::t_r8_coalesced_pacing_parity ... ok
+test batch_parity::t_r8_pipeline_parity_canonical ... ok
+test crcfold::tests::t_affine_kernel_8lane_differential ... ok
+test crcfold::tests::t_affine_kernel_models ... ok
+test crcfold::tests::t_affine_kernel_scalar_differential ... ok
+test crcfold::tests::t_affine_span_derivation_oracle ... ok
+test crcfold::tests::t_dfold_constants_derivation ... ok
+test crcfold::tests::t_fold_differential_exhaustive ... ok
+test crcfold::tests::t_gfni_bitrev_matrix ... ok
+test crcfold::tests::t_golden_vectors ... ok
+test crcfold::tests::t_ofold_constants_derivation ... ok
+test crcfold::tests::t_r23c_tag_core ... ok
+test crcfold::tests::t_reference_matches_standard_vector ... ok
+test crcfold::tests::t_reflect_constants_derivation ... ok
+test crcfold::tests::t_spec_slice_vec_differential ... ok
+test crcfold::tests::t_transpose_arena_public_api ... ok
+test crcfold::tests::t_tri_constants_derivation ... ok
+test crcfold::tests::t_vend_constants_derivation ... ok
+test crcfold::tests::t_vtail_constants_derivation ... ok
+test hydra::tests::t_hydra_bitparity_chaos_schedule ... ok
+test hydra::tests::t_hydra_bitparity_default_schedule ... ok
+test batch_parity::t_f2_rxbuild_chaos_sustained_soak ... ok
+test batch_parity::t_f1_rxwarm_chaos_sustained_soak ... ok
+test hydra::tests::t_hydra_bitparity_seeded_range ... ok
+test hydra::tests::t_hydra_bitparity_ring_wraparound ... ok
+test hydra::tests::t_hydra_bitparity_worker_counts ... ok
+test hydra::tests::t_hydra_crosspass_overlap_bitparity ... ok
+test hydra::tests::t_r23c_affine_ledger_pipeline_parity ... ok
+test hydra::tests::t_r23c_affine_tag_parity ... ok
+test batch_parity::t_i7_prepatch_chaos_sustained_soak ... ok
+test hydra::tests::t_hydra_bitparity_fixed1 ... ok
+test soa::tests::t_ladder_alternating_group_passes ... ok
+test soa::tests::t_ladder_avx512_matches_scalar_when_present ... ok
+test soa::tests::t_ladder_gap_fails ... ok
+test soa::tests::t_ladder_pair_mismatch_fails ... ok
+test soa::tests::t_ladder_partial_dup_fails_or_passes_correctly ... ok
+test soa::tests::t_ladder_two_emits_fails ... ok
+test soa::tests::t_ladder_wrapping_group_rejected ... ok
+test tests::t10_max_rate_mode ... ok
+test tests::t1_golden_walker_mini ... ok
+test tests::t2_schedule_determinism ... ok
+test tests::t3_packetization_modes ... ok
+test tests::t4_render_round_trip ... ok
+test tests::t5_accounting_identity_guarantee_coverage ... ok
+test tests::t6_th1_structure ... ok
+test tests::t7_session_split_invariance ... ok
+test tests::t8_delay_distribution_sanity ... ok
+test tests::t9_full_mini_chaos_run ... ok
+test tests::test_e2e_1_mini_chaos_conformance ... ok
+test tests::test_e2e_1b_mini_chaos_determinism_double_run ... ok
+test hydra::tests::t_hydra_pipeline_soa_chaos_bitparity ... ok
+test hydra::tests::t_rxdesc_sustained_multipass_parity ... ok
+test tests::test_u5_w1_property_1m_ops ... ok
+test hydra::tests::t_rxdesc_parity_matrix ... ok
+
+test result: ok. 76 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.22s
+
+[1m[92m     Running[0m unittests src/bin/diff_oracle.rs (target/debug/deps/diff_oracle-fa81e8970129c313)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/fakeserver.rs (target/debug/deps/fakeserver-cafe9c737f62a6cf)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/fbench.rs (target/debug/deps/fbench-125af8e1b5e4ff98)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/fuzz_campaign.rs (target/debug/deps/fuzz_campaign-5df8befc36b68eb5)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/matrix_sweep.rs (target/debug/deps/matrix_sweep-7c6987c33b3656ab)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/spec_server.rs (target/debug/deps/spec_server-cb8f9ed5a20ba269)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/venue.rs (target/debug/deps/venue-785153f8a034a3bf)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/bin/window_sweep.rs (target/debug/deps/window_sweep-6d125350cd8689be)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m     Running[0m unittests src/lib.rs (target/debug/deps/nf_transport-1bacef6ed3ea05d1)
+
+running 24 tests
+test pipeline::tests::t_pipeline_armed_rejects_plain_reset ... ok
+test pipeline::tests::t_pipeline_auto_advance_multi_pass ... ok
+test pipeline::tests::t_pipeline_auto_advance_session_divergence_failstops ... ok
+test pipeline::tests::t_pipeline_coalesce128 ... ok
+test pipeline::tests::t_pipeline_multi_reset ... ok
+test pipeline::tests::t_pipeline_single_pass_coalesce1 ... ok
+test pipeline::tests::t_pipeline_single_pass_coalesce8 ... ok
+test pipeline::tests::t_nbuf32_parity_vs_depth16 ... ok
+test pipeline::tests::t_rxbuild_constant_session ... ok
+test pipeline::tests::t_rxbuild_mid_pass_abandon ... ok
+test pipeline::tests::t_rxwarm_mid_pass_abandon ... ok
+test pipeline::tests::t_rxbuild_parity_vs_classic ... ok
+test render::tests::t_r2_memo_all_valid ... ok
+test render::tests::t_r2_memo_default_trait_none ... ok
+test render::tests::t_r2_memo_exact_prefix ... ok
+test pipeline::tests::t_rxwarm_parity_vs_classic ... ok
+test render::tests::t_r2_memo_none_for_hb ... ok
+test render::tests::t_r2_memo_none_oob ... ok
+test render::tests::t_r2_memo_stable_across_reset ... ok
+test render::tests::t_r8_batch_entries_match_side_tables ... ok
+test render::tests::t_r9_aliasing_dual_feed_identical_bytes_and_smaller_blob ... ok
+test render::tests::t_r9_aliasing_not_for_distinct_ranges ... ok
+test pipeline::tests::t_rxwarm_unarmed_constant_session ... ok
+test pipeline::tests::t_prepatch_marker_sentinel_head_invariant ... ok
+
+test result: ok. 24 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+
+[1m[92m   Doc-tests[0m nf_arbitrator
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m   Doc-tests[0m nf_engine
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m   Doc-tests[0m nf_protocol
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m   Doc-tests[0m nf_recovery
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m   Doc-tests[0m nf_testkit
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+[1m[92m   Doc-tests[0m nf_transport
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+=== 6. Full Day Audit & Histogram Diff ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/audit data/tests/sample-mini.itch`
+AUDIT file=data/tests/sample-mini.itch bytes=14999991 blocks=505849 violations=0 truncated_tail=true
+HIST 0x41 A len=36 count=180684 pct=35.72
+HIST 0x43 C len=36 count=20 pct=0.00
+HIST 0x44 D len=19 count=164385 pct=32.50
+HIST 0x45 E len=31 count=1507 pct=0.30
+HIST 0x46 F len=40 count=27934 pct=5.52
+HIST 0x48 H len=25 count=8900 pct=1.76
+HIST 0x4C L len=26 count=6171 pct=1.22
+HIST 0x4E N len=20 count=76670 pct=15.16
+HIST 0x50 P len=44 count=1544 pct=0.31
+HIST 0x52 R len=39 count=8906 pct=1.76
+HIST 0x53 S len=12 count=3 pct=0.00
+HIST 0x55 U len=35 count=18395 pct=3.64
+HIST 0x56 V len=35 count=1 pct=0.00
+HIST 0x58 X len=23 count=1821 pct=0.36
+HIST 0x59 Y len=20 count=8908 pct=1.76
+=== 7. Replay Conformance & Golden Hash Check ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.00s
+[1m[92m     Running[0m `target/release/replay --config ci-mode1.toml`
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+VERDICT hash=0xF6EF154EFDE905D8 count=505849 watermark=255850 violations=0
+=== 8. Zero-Allocation Window (ALLOC_DELTA=0) ===
+BLOB_BACKING mode=mmap anon_huge_kb=14336 map_mb=16.5 verdict=thp-granted
+WINDOW_BEGIN
+WINDOW_END
+ALLOC_DELTA=0
+VERDICT hash=0xF6EF154EFDE905D8 count=505849 watermark=255850 violations=0
+=== 9. Kernel Syscall Strace Diff Probe ===
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+BLOB_BACKING mode=mmap anon_huge_kb=14336 map_mb=16.5 verdict=thp-granted
+VERDICT hash=0xF6EF154EFDE905D8 count=505849 watermark=255850 violations=0
+=== 10. Venue Sender & XDP Transport Smoke Check ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/venue --sample data/tests/sample-mini.itch`
+VENUE_SENDER starting: sending 101202 events
+VENUE_SENDER finished: 101202 packets transmitted
+=== 11. Benchmark & G12-T1 Tail Attribution Study ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --sample data/tests/sample-mini.itch --runs 5 --study`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== 1. PR-1 UN-INSTRUMENTED BURST THROUGHPUT EVALUATION ===
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+BENCH mode=replay-burst-uninstrumented msgs=505849 rate=739653458 allocs=0 freq=2596.12MHz run=1
+BENCH mode=replay-burst-uninstrumented msgs=505849 rate=701150174 allocs=0 freq=2596.12MHz run=2
+BENCH mode=replay-burst-uninstrumented msgs=505849 rate=738831334 allocs=0 freq=2596.12MHz run=3
+BENCH mode=replay-burst-uninstrumented msgs=505849 rate=764483811 allocs=0 freq=2596.12MHz run=4
+BENCH mode=replay-burst-uninstrumented msgs=505849 rate=874364988 allocs=0 freq=2596.12MHz run=5
+BENCH_MEDIAN mode=replay-burst-uninstrumented rate=739653458
+PR1_TITAN_VERDICT rate=739653458 target=100000000 -> PASS (span conformance: every emitted byte CRC32C-checked in-window, 8 lanes)
+=== 2. PR-1 SUSTAINED LOOP MODE (>= 5 SECONDS) ===
+BENCH mode=replay-sustained-5s total_msgs=4574898356 duration=5.00s sustained_rate=914964397 msg/s allocs=0
+PR1_TITAN_SUSTAINED_VERDICT rate=914964397 target=100000000 -> PASS
+=== 3. SAMPLED MARKS EVALUATION (1-in-256) & PR-2 VERDICT ===
+BENCH mode=replay-core-sampled-256-fast msgs=505849 rate=66321838 p50=52 p99=78 mean=60.57 allocs=0 freq=2596.12MHz run=1
+BENCH mode=replay-core-sampled-256-fast msgs=505849 rate=66277894 p50=52 p99=104 mean=60.74 allocs=0 freq=2596.12MHz run=2
+BENCH mode=replay-core-sampled-256-fast msgs=505849 rate=65847004 p50=52 p99=78 mean=60.86 allocs=0 freq=2596.12MHz run=3
+BENCH mode=replay-core-sampled-256-fast msgs=505849 rate=65644776 p50=52 p99=78 mean=60.98 allocs=0 freq=2596.12MHz run=4
+BENCH mode=replay-core-sampled-256-fast msgs=505849 rate=65385841 p50=52 p99=78 mean=61.02 allocs=0 freq=2596.12MHz run=5
+PR2_SAMPLED_VERDICT rate=65847004 p50=52 p99=78 (tax=91.10%) -> p50 < 60: PASS, p99 < 150: PASS
+=== 4. H5 PACKET-SIZE SWEEP ===
+H5_SWEEP packetize=Fixed(1) packets=1011710 rep=1 p50=104 p99=156 p99.9=182
+H5_SWEEP packetize=Fixed(1) packets=1011710 rep=2 p50=104 p99=156 p99.9=182
+H5_SWEEP packetize=Fixed(16) packets=63258 rep=1 p50=104 p99=130 p99.9=156
+H5_SWEEP packetize=Fixed(16) packets=63258 rep=2 p50=104 p99=130 p99.9=156
+H5_SWEEP packetize=MtuBound(1400) packets=21996 rep=1 p50=104 p99=130 p99.9=156
+H5_SWEEP packetize=MtuBound(1400) packets=21996 rep=2 p50=104 p99=130 p99.9=156
+=== 5. G12-T1 TAIL ATTRIBUTION STUDY PHASE 2 (PER-MESSAGE MEASUREMENT) ===
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14684017 raw[p50=78 p90=130 p99=130 p99.99=442 max=41756] adj[p50=26 p90=78 p99=78 p99.99=390 max=41704] allocs=0 freq=2596.12MHz run=1
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14727548 raw[p50=78 p90=130 p99=130 p99.99=390 max=36816] adj[p50=26 p90=78 p99=78 p99.99=338 max=36764] allocs=0 freq=2596.12MHz run=2
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14646275 raw[p50=78 p90=130 p99=130 p99.99=468 max=37336] adj[p50=26 p90=78 p99=78 p99.99=416 max=37284] allocs=0 freq=2596.12MHz run=3
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14563651 raw[p50=78 p90=130 p99=130 p99.99=416 max=62270] adj[p50=26 p90=78 p99=78 p99.99=364 max=62218] allocs=0 freq=2596.12MHz run=4
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14625122 raw[p50=78 p90=130 p99=130 p99.99=416 max=67470] adj[p50=26 p90=78 p99=78 p99.99=364 max=67418] allocs=0 freq=2596.12MHz run=5
+T1_PHASE2 arm=cold rate=14646275 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=416 max=41756] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=364 max=41704] unknown_pct=0.00% (samples_above_p99=126250)
+BENCH mode=replay-core-msg arm=prefault msgs=505849 rate=14864206 raw[p50=78 p90=130 p99=130 p99.99=390 max=43238] adj[p50=26 p90=78 p99=78 p99.99=338 max=43186] allocs=0 freq=2596.12MHz run=1
+BENCH mode=replay-core-msg arm=prefault msgs=505849 rate=14617905 raw[p50=78 p90=130 p99=130 p99.99=390 max=57174] adj[p50=26 p90=78 p99=78 p99.99=338 max=57122] allocs=0 freq=2596.12MHz run=2
+BENCH mode=replay-core-msg arm=prefault msgs=505849 rate=14858850 raw[p50=78 p90=130 p99=130 p99.99=364 max=46852] adj[p50=26 p90=78 p99=78 p99.99=312 max=46800] allocs=0 freq=2596.12MHz run=3
+BENCH mode=replay-core-msg arm=prefault msgs=505849 rate=14844212 raw[p50=78 p90=130 p99=130 p99.99=364 max=39260] adj[p50=26 p90=78 p99=78 p99.99=312 max=39208] allocs=0 freq=2596.12MHz run=4
+BENCH mode=replay-core-msg arm=prefault msgs=505849 rate=14832003 raw[p50=78 p90=130 p99=130 p99.99=468 max=41756] adj[p50=26 p90=78 p99=78 p99.99=416 max=41704] allocs=0 freq=2596.12MHz run=5
+T1_PHASE2 arm=prefault rate=14844212 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=390 max=43238] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=338 max=43186] unknown_pct=0.00% (samples_above_p99=119805)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22730156 raw[p50=52 p90=52 p99=52 p99.99=78 max=122512] adj[p50=0 p90=0 p99=0 p99.99=26 max=122460] allocs=0 freq=2596.12MHz run=1
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22720356 raw[p50=52 p90=52 p99=52 p99.99=78 max=54522] adj[p50=0 p90=0 p99=0 p99.99=26 max=54470] allocs=0 freq=2596.12MHz run=2
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22518337 raw[p50=52 p90=52 p99=52 p99.99=78 max=31824] adj[p50=0 p90=0 p99=0 p99.99=26 max=31772] allocs=0 freq=2596.12MHz run=3
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22701255 raw[p50=52 p90=52 p99=52 p99.99=78 max=40846] adj[p50=0 p90=0 p99=0 p99.99=26 max=40794] allocs=0 freq=2596.12MHz run=4
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22775073 raw[p50=52 p90=52 p99=52 p99.99=78 max=63674] adj[p50=0 p90=0 p99=0 p99.99=26 max=63622] allocs=0 freq=2596.12MHz run=5
+T1_PHASE2 arm=empty rate=22720356 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=54522] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=54470] unknown_pct=0.00% (samples_above_p99=377588)
+STUDY_REPORT written to docs/artifacts/tail-study/study-report.md
+=== 6. TARGET-1 PHASE A: 3-ARM SKELETON BASELINE SWEEP (20 RUNS) ===
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22553061 raw[p50=52 p90=52 p99=52 p99.99=78 max=42874] adj[p50=0 p90=0 p99=0 p99.99=26 max=42822] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22553061 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=42874] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=42822] unknown_pct=0.00% (samples_above_p99=386386)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22299821 raw[p50=52 p90=52 p99=52 p99.99=78 max=37050] adj[p50=0 p90=0 p99=0 p99.99=26 max=36998] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22299821 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=37050] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=36998] unknown_pct=0.00% (samples_above_p99=400226)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14890043 raw[p50=78 p90=130 p99=130 p99.99=182 max=29484] adj[p50=26 p90=78 p99=78 p99.99=130 max=29432] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14890043 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=182 max=29484] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=130 max=29432] unknown_pct=0.00% (samples_above_p99=116173)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22576367 raw[p50=52 p90=52 p99=52 p99.99=78 max=41626] adj[p50=0 p90=0 p99=0 p99.99=26 max=41574] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22576367 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=41626] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=41574] unknown_pct=0.00% (samples_above_p99=385179)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22674641 raw[p50=52 p90=52 p99=52 p99.99=78 max=32630] adj[p50=0 p90=0 p99=0 p99.99=26 max=32578] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22674641 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=32630] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=32578] unknown_pct=0.00% (samples_above_p99=387102)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14741677 raw[p50=78 p90=130 p99=130 p99.99=182 max=120172] adj[p50=26 p90=78 p99=78 p99.99=130 max=120120] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14741677 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=182 max=120172] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=130 max=120120] unknown_pct=0.00% (samples_above_p99=123795)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22790570 raw[p50=52 p90=52 p99=52 p99.99=78 max=41028] adj[p50=0 p90=0 p99=0 p99.99=26 max=40976] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22790570 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=41028] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=40976] unknown_pct=0.00% (samples_above_p99=375245)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22920507 raw[p50=52 p90=52 p99=52 p99.99=78 max=54184] adj[p50=0 p90=0 p99=0 p99.99=26 max=54132] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22920507 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=54184] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=54132] unknown_pct=0.00% (samples_above_p99=375786)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14842895 raw[p50=78 p90=130 p99=130 p99.99=208 max=41964] adj[p50=26 p90=78 p99=78 p99.99=156 max=41912] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14842895 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=208 max=41964] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=156 max=41912] unknown_pct=0.00% (samples_above_p99=117248)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22732836 raw[p50=52 p90=52 p99=52 p99.99=78 max=40248] adj[p50=0 p90=0 p99=0 p99.99=26 max=40196] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22732836 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=40248] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=40196] unknown_pct=0.00% (samples_above_p99=378181)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22824040 raw[p50=52 p90=52 p99=52 p99.99=78 max=51402] adj[p50=0 p90=0 p99=0 p99.99=26 max=51350] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22824040 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=51402] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=51350] unknown_pct=0.00% (samples_above_p99=380899)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14651726 raw[p50=78 p90=130 p99=130 p99.99=338 max=71916] adj[p50=26 p90=78 p99=78 p99.99=286 max=71864] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14651726 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=338 max=71916] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=286 max=71864] unknown_pct=0.00% (samples_above_p99=127817)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22694059 raw[p50=52 p90=52 p99=52 p99.99=78 max=43836] adj[p50=0 p90=0 p99=0 p99.99=26 max=43784] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22694059 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=43836] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=43784] unknown_pct=0.00% (samples_above_p99=381020)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22950309 raw[p50=52 p90=52 p99=52 p99.99=78 max=40768] adj[p50=0 p90=0 p99=0 p99.99=26 max=40716] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22950309 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=40768] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=40716] unknown_pct=0.00% (samples_above_p99=376795)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14651131 raw[p50=78 p90=130 p99=130 p99.99=234 max=56368] adj[p50=26 p90=78 p99=78 p99.99=182 max=56316] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14651131 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=234 max=56368] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=182 max=56316] unknown_pct=0.00% (samples_above_p99=121757)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22720831 raw[p50=52 p90=52 p99=52 p99.99=78 max=33462] adj[p50=0 p90=0 p99=0 p99.99=26 max=33410] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22720831 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=33462] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=33410] unknown_pct=0.00% (samples_above_p99=380224)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22808492 raw[p50=52 p90=52 p99=52 p99.99=78 max=55328] adj[p50=0 p90=0 p99=0 p99.99=26 max=55276] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22808492 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=55328] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=55276] unknown_pct=0.00% (samples_above_p99=380487)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14716722 raw[p50=78 p90=130 p99=130 p99.99=338 max=36686] adj[p50=26 p90=78 p99=78 p99.99=286 max=36634] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14716722 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=338 max=36686] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=286 max=36634] unknown_pct=0.00% (samples_above_p99=128391)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22462207 raw[p50=52 p90=52 p99=52 p99.99=78 max=43888] adj[p50=0 p90=0 p99=0 p99.99=26 max=43836] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22462207 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=43888] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=43836] unknown_pct=0.00% (samples_above_p99=396698)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22836232 raw[p50=52 p90=52 p99=52 p99.99=78 max=25974] adj[p50=0 p90=0 p99=0 p99.99=26 max=25922] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22836232 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=25974] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=25922] unknown_pct=0.00% (samples_above_p99=382058)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14757764 raw[p50=78 p90=130 p99=130 p99.99=208 max=53638] adj[p50=26 p90=78 p99=78 p99.99=156 max=53586] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14757764 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=208 max=53638] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=156 max=53586] unknown_pct=0.00% (samples_above_p99=121188)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22654662 raw[p50=52 p90=52 p99=52 p99.99=78 max=50388] adj[p50=0 p90=0 p99=0 p99.99=26 max=50336] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22654662 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=50388] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=50336] unknown_pct=0.00% (samples_above_p99=385908)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22811269 raw[p50=52 p90=52 p99=52 p99.99=78 max=35984] adj[p50=0 p90=0 p99=0 p99.99=26 max=35932] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22811269 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=35984] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=35932] unknown_pct=0.00% (samples_above_p99=383135)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14590449 raw[p50=78 p90=130 p99=130 p99.99=364 max=119678] adj[p50=26 p90=78 p99=78 p99.99=312 max=119626] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14590449 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=364 max=119678] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=312 max=119626] unknown_pct=0.00% (samples_above_p99=128006)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22573417 raw[p50=52 p90=52 p99=52 p99.99=78 max=35490] adj[p50=0 p90=0 p99=0 p99.99=26 max=35438] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22573417 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=35490] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=35438] unknown_pct=0.00% (samples_above_p99=387339)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22873648 raw[p50=52 p90=52 p99=52 p99.99=78 max=37570] adj[p50=0 p90=0 p99=0 p99.99=26 max=37518] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22873648 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=37570] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=37518] unknown_pct=0.00% (samples_above_p99=382974)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14822445 raw[p50=78 p90=130 p99=130 p99.99=312 max=40950] adj[p50=26 p90=78 p99=78 p99.99=260 max=40898] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14822445 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=312 max=40950] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=260 max=40898] unknown_pct=0.00% (samples_above_p99=117969)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22750960 raw[p50=52 p90=52 p99=52 p99.99=78 max=36920] adj[p50=0 p90=0 p99=0 p99.99=26 max=36868] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22750960 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=36920] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=36868] unknown_pct=0.00% (samples_above_p99=380232)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22937770 raw[p50=52 p90=52 p99=52 p99.99=78 max=49556] adj[p50=0 p90=0 p99=0 p99.99=26 max=49504] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22937770 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=49556] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=49504] unknown_pct=0.00% (samples_above_p99=379085)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14792851 raw[p50=78 p90=130 p99=130 p99.99=364 max=37024] adj[p50=26 p90=78 p99=78 p99.99=312 max=36972] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14792851 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=364 max=37024] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=312 max=36972] unknown_pct=0.00% (samples_above_p99=122985)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22506387 raw[p50=52 p90=52 p99=52 p99.99=78 max=120224] adj[p50=0 p90=0 p99=0 p99.99=26 max=120172] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22506387 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=120224] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=120172] unknown_pct=0.00% (samples_above_p99=388062)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22711355 raw[p50=52 p90=52 p99=52 p99.99=78 max=41262] adj[p50=0 p90=0 p99=0 p99.99=26 max=41210] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22711355 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=41262] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=41210] unknown_pct=0.00% (samples_above_p99=389925)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14682891 raw[p50=78 p90=130 p99=130 p99.99=208 max=34840] adj[p50=26 p90=78 p99=78 p99.99=156 max=34788] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14682891 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=208 max=34840] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=156 max=34788] unknown_pct=0.00% (samples_above_p99=129532)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22540430 raw[p50=52 p90=52 p99=52 p99.99=78 max=36504] adj[p50=0 p90=0 p99=0 p99.99=26 max=36452] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22540430 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=36504] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=36452] unknown_pct=0.00% (samples_above_p99=390033)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22466504 raw[p50=52 p90=52 p99=52 p99.99=78 max=33046] adj[p50=0 p90=0 p99=0 p99.99=26 max=32994] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22466504 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=33046] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=32994] unknown_pct=0.00% (samples_above_p99=389777)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=13839673 raw[p50=104 p90=130 p99=156 p99.99=208 max=119054] adj[p50=52 p90=78 p99=104 p99.99=156 max=119002] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=13839673 raw[p50=104 p90=130 p99=156 p99.9=156 p99.99=208 max=119054] adj[p50=52 p90=78 p99=104 p99.9=104 p99.99=156 max=119002] unknown_pct=0.00% (samples_above_p99=8437)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22023163 raw[p50=52 p90=52 p99=52 p99.99=78 max=158548] adj[p50=0 p90=0 p99=0 p99.99=26 max=158496] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22023163 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=158548] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=158496] unknown_pct=0.00% (samples_above_p99=417754)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22774657 raw[p50=52 p90=52 p99=52 p99.99=78 max=52702] adj[p50=0 p90=0 p99=0 p99.99=26 max=52650] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22774657 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=52702] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=52650] unknown_pct=0.00% (samples_above_p99=387150)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14737066 raw[p50=78 p90=130 p99=130 p99.99=182 max=75322] adj[p50=26 p90=78 p99=78 p99.99=130 max=75270] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14737066 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=182 max=75322] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=130 max=75270] unknown_pct=0.00% (samples_above_p99=126175)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22530928 raw[p50=52 p90=52 p99=52 p99.99=78 max=37544] adj[p50=0 p90=0 p99=0 p99.99=26 max=37492] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22530928 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=37544] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=37492] unknown_pct=0.00% (samples_above_p99=388774)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22657711 raw[p50=52 p90=52 p99=52 p99.99=78 max=68744] adj[p50=0 p90=0 p99=0 p99.99=26 max=68692] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22657711 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=68744] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=68692] unknown_pct=0.00% (samples_above_p99=386766)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14720697 raw[p50=78 p90=130 p99=130 p99.99=338 max=65884] adj[p50=26 p90=78 p99=78 p99.99=286 max=65832] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14720697 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=338 max=65884] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=286 max=65832] unknown_pct=0.00% (samples_above_p99=126352)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22684875 raw[p50=52 p90=52 p99=52 p99.99=78 max=53950] adj[p50=0 p90=0 p99=0 p99.99=26 max=53898] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22684875 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=53950] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=53898] unknown_pct=0.00% (samples_above_p99=381102)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22593869 raw[p50=52 p90=52 p99=52 p99.99=78 max=61568] adj[p50=0 p90=0 p99=0 p99.99=26 max=61516] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22593869 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=61568] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=61516] unknown_pct=0.00% (samples_above_p99=393076)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14570310 raw[p50=78 p90=130 p99=130 p99.99=208 max=47528] adj[p50=26 p90=78 p99=78 p99.99=156 max=47476] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14570310 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=208 max=47528] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=156 max=47476] unknown_pct=0.00% (samples_above_p99=136611)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22415525 raw[p50=52 p90=52 p99=52 p99.99=78 max=40846] adj[p50=0 p90=0 p99=0 p99.99=26 max=40794] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22415525 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=40846] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=40794] unknown_pct=0.00% (samples_above_p99=392832)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22518236 raw[p50=52 p90=52 p99=52 p99.99=78 max=59462] adj[p50=0 p90=0 p99=0 p99.99=26 max=59410] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22518236 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=59462] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=59410] unknown_pct=0.00% (samples_above_p99=404116)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14754187 raw[p50=78 p90=130 p99=130 p99.99=208 max=71942] adj[p50=26 p90=78 p99=78 p99.99=156 max=71890] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14754187 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=208 max=71942] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=156 max=71890] unknown_pct=0.00% (samples_above_p99=124138)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22543131 raw[p50=52 p90=52 p99=52 p99.99=78 max=33384] adj[p50=0 p90=0 p99=0 p99.99=26 max=33332] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22543131 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=33384] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=33332] unknown_pct=0.00% (samples_above_p99=387836)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22131753 raw[p50=52 p90=52 p99=52 p99.99=78 max=46696] adj[p50=0 p90=0 p99=0 p99.99=26 max=46644] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22131753 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=46696] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=46644] unknown_pct=0.00% (samples_above_p99=388027)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14750093 raw[p50=78 p90=130 p99=130 p99.99=182 max=22750] adj[p50=26 p90=78 p99=78 p99.99=130 max=22698] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14750093 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=182 max=22750] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=130 max=22698] unknown_pct=0.00% (samples_above_p99=125330)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22541567 raw[p50=52 p90=52 p99=52 p99.99=78 max=60450] adj[p50=0 p90=0 p99=0 p99.99=26 max=60398] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22541567 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=60450] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=60398] unknown_pct=0.00% (samples_above_p99=387030)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22749023 raw[p50=52 p90=52 p99=52 p99.99=78 max=43056] adj[p50=0 p90=0 p99=0 p99.99=26 max=43004] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22749023 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=43056] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=43004] unknown_pct=0.00% (samples_above_p99=387040)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14570281 raw[p50=78 p90=130 p99=130 p99.99=338 max=56810] adj[p50=26 p90=78 p99=78 p99.99=286 max=56758] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14570281 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=338 max=56810] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=286 max=56758] unknown_pct=0.00% (samples_above_p99=129459)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22307627 raw[p50=52 p90=52 p99=52 p99.99=78 max=118352] adj[p50=0 p90=0 p99=0 p99.99=26 max=118300] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22307627 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=118352] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=118300] unknown_pct=0.00% (samples_above_p99=400488)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22661878 raw[p50=52 p90=52 p99=52 p99.99=78 max=39182] adj[p50=0 p90=0 p99=0 p99.99=26 max=39130] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22661878 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=39182] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=39130] unknown_pct=0.00% (samples_above_p99=389678)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14705898 raw[p50=78 p90=130 p99=130 p99.99=312 max=54418] adj[p50=26 p90=78 p99=78 p99.99=260 max=54366] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14705898 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=312 max=54418] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=260 max=54366] unknown_pct=0.00% (samples_above_p99=127394)
+BENCH mode=replay-core-msg arm=empty msgs=1011698 rate=22590827 raw[p50=52 p90=52 p99=52 p99.99=78 max=20540] adj[p50=0 p90=0 p99=0 p99.99=26 max=20488] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=empty rate=22590827 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=20540] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=20488] unknown_pct=0.00% (samples_above_p99=388444)
+BENCH mode=replay-core-msg arm=loop msgs=1011698 rate=22433017 raw[p50=52 p90=52 p99=52 p99.99=78 max=60554] adj[p50=0 p90=0 p99=0 p99.99=26 max=60502] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=loop rate=22433017 raw[p50=52 p90=52 p99=52 p99.9=52 p99.99=78 max=60554] adj[p50=0 p90=0 p99=0 p99.9=0 p99.99=26 max=60502] unknown_pct=0.00% (samples_above_p99=405068)
+BENCH mode=replay-core-msg arm=cold msgs=505849 rate=14728991 raw[p50=78 p90=130 p99=130 p99.99=208 max=83434] adj[p50=26 p90=78 p99=78 p99.99=156 max=83382] allocs=0 freq=2596.12MHz run=1
+T1_PHASE2 arm=cold rate=14728991 raw[p50=78 p90=130 p99=130 p99.9=156 p99.99=208 max=83434] adj[p50=26 p90=78 p99=78 p99.9=104 p99.99=156 max=83382] unknown_pct=0.00% (samples_above_p99=125394)
+TARGET1_PHASE_A empty_p50=52 cyc (spread=0 cyc) loop_p50=52 cyc (spread=0 cyc) full_p50=78 cyc (spread=26 cyc) loop_cost=0 cyc work_residual=26 cyc VERDICT=PASS
+=== 7. DOSE-RESPONSE VALIDATION SWEEP (Law A-1d) ===
+DOSE_RESPONSE_POINT K=0 p50=52 cyc
+DOSE_RESPONSE_POINT K=10 p50=52 cyc
+DOSE_RESPONSE_POINT K=20 p50=52 cyc
+DOSE_RESPONSE_POINT K=50 p50=52 cyc
+DOSE_RESPONSE_POINT K=100 p50=52 cyc
+DOSE_RESPONSE_VERDICT K0=52 K10=52 K20=52 K50=52 K100=52 slope=0.000 cyc/unit VERDICT=PASS
+=== 7b. LAW B-3b (i) SAMPLING BIAS PROBE (1-IN-4 DENSE vs 1-IN-256 SPARSE) ===
+BIAS_PROBE dense_mean=60.28 cyc sparse_mean=60.41 cyc bias=0.22% VERDICT=PASS
+=== 7c. LAW B-3b (ii) INTER-BRACKET GAP PROBE ===
+GAP_PROBE sampled_intervals=1974 total_period_cyc=16556644 sparse_period_est=32.76 cyc
+=== 8. PHASE B-REDO: STRICT 8-ARM STAGE-ECTOMY DECOMPOSITION (20 RUNS EACH) ===
+RUNNER_IDENTITY cpu="AMD EPYC 9V45 96-Core Processor" freq_mhz=2596.12
+STAGE_ECTOMY_RATES CONFIG_TAG="clean_replay" sampling="none" r0_hash=35.17M r0_fast=81.66M r0_disp=764.43M r1_count=793.92M r2_noproof=888.73M r3_noseq=1467.76M r4_noitch=1007.75M r5_noblock=5414.84M r6_poll=5862.94M
+STAGE_ECTOMY_CYCLES CONFIG_TAG="clean_replay" c0=73.82 c0_fast=31.79 c0_disp=3.40 c1=3.27 c2=2.92 c3=1.77 c4=2.58 c5=0.48 c6=0.44
+PR2_PROD_VERDICT rate=81661661 c0_fast=31.79 cyc fast_hash=28.40 cyc -> p50 < 60: PASS
+H10_SINK_SPLIT total_sink=70.55 cyc fnv_math=70.43 cyc (99.8%) sink_dispatch=0.13 cyc (0.2%) H10_VERDICT=CONFIRMED (Invocation dispatch non-zero)
+STAGE_ECTOMY_DECOMPOSITION delta_hash_total=70.55 (fnv=70.43, disp=0.13) delta_proof=0.35 (< 1.00 cyc bounded) delta_seq=1.15 delta_itch=0.00 (< 1.00 cyc bounded) delta_block=2.10 delta_header=0.04 poll_base=0.44
+RECONCILIATION_COMPOSITE rate_total_c0=73.82 cyc bracket_mean=60.86 cyc sparse_period_est=32.76 cyc diff_rate_bracket=17.56% diff_bracket_gap=46.17% composite_residual=46.17% VERDICT=FAIL
+=== 9. H9 REPETITION OVERHEAD SWEEP ===
+H9_POINT limit=10000 msgs rate=28.00M msg/s cyc_msg=92.73
+H9_POINT limit=50000 msgs rate=35.16M msg/s cyc_msg=73.84
+H9_POINT limit=250000 msgs rate=35.63M msg/s cyc_msg=72.87
+H9_POINT limit=505849 msgs rate=34.77M msg/s cyc_msg=74.68
+=== 11b. R6: PR-1 HYDRA Bit-Exact Multi-Core Span Conformance (UNPINNED) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --sample data/tests/sample-mini.itch --hydra-only --runs 7`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1450043141 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1483436853 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1583960896 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1622845318 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1678553889 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH mode=replay-hydra-burst msgs=505849 rate=1690242451 allocs=0 freq=2596.12MHz workers=2 run=6
+BENCH mode=replay-hydra-burst msgs=505849 rate=1676773402 allocs=0 freq=2596.12MHz workers=2 run=7
+BENCH_MEDIAN mode=replay-hydra-burst rate=1622845318
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1622845318 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1622845318 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=17408 reset_ms=458.2 scan_ms=4538.1 end_ms=0.9 pending_max=6600 batches=382976 wait_ms=36.3 work_ms=4134.6 fold_ms=290.3 assist_chunks=389052 bytes_per_msg=27.65 crc_demand_gb_s=48.70
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=593159 spans=75901740 eval_ms=4958.1 idle_iters=42111 res_waits=0 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=728505 spans=93226420 eval_ms=4945.2 idle_iters=38655 res_waits=0 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=383036 polls=1514734 prod_ms=1514.8 bufwait_laps=139200 resets=17410 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=17410 advance_ms=118.3 us_per_advance=6.8 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=382929580 last_pass_patches=22060 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=20 park_ms=1.7 slow_waits=20 slow_ms=2.0
+BENCH mode=replay-hydra-sustained-5s total_msgs=8805819392 duration=5.00s sustained_rate=1761136430 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1761136430 (duration=5.00s, total_msgs=8805819392, workers=2)
+PR1_GIGAHFT_VERDICT rate=1761136430 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1761136430 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1761136430 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=389052 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1761136430 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+=== 11c. R8: Kernel-Ceiling Microbenchmark (fabric physics telemetry) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/kbench`
+KBENCH topo cpus=[0, 2, 1, 3] phys=2 smt=true fold512=true
+KBENCH spec_slice_vec=true
+KBENCH mode=scalar8lane threads=1 cpu=0 pinned=true gb_s=74.13 bytes=22244721408 iters=2652 sink=0xbedb8ba779de450f
+KBENCH mode=pclmul128_raw threads=1 cpu=0 pinned=true gb_s=16.16 bytes=4848615424 iters=578 sink=0x942dad7c7a327323
+KBENCH mode=crc32_pclmul_mix threads=1 cpu=0 pinned=true gb_s=33.59 bytes=10083106816 iters=1202 sink=0x5c504f01bdfb43ce
+KBENCH mode=fold512 threads=1 cpu=0 pinned=true gb_s=62.21 bytes=18663086400 iters=2225 sink=0xbedb8ba779de450f
+KBENCH mode=fold512_r threads=1 cpu=0 pinned=true gb_s=57.80 bytes=17346185472 iters=2068 sink=0xbedb8ba779de450f
+KBENCH mode=fold512_rv threads=1 cpu=0 pinned=true gb_s=56.64 bytes=16993893504 iters=2026 sink=0xbedb8ba779de450f
+KBENCH mode=fold512_rc threads=1 cpu=0 pinned=true gb_s=62.12 bytes=18637922688 iters=2222 sink=0xbedb8ba779de450f
+KBENCH mode=fold512_rd threads=1 cpu=0 pinned=true gb_s=49.68 bytes=14905305408 iters=1777 sink=0xbedb8ba779de450f
+KBENCH mode=fold512_ro threads=1 cpu=0 pinned=true gb_s=38.25 bytes=11483040576 iters=1369 sink=0xbedb8ba779de450f
+KBENCH mode=fold512_r_pair threads=1 cpu=0 pinned=true gb_s=57.88 bytes=17368565760 iters=2071 sink=0x719eebd64a14675a
+KBENCH mode=fold512_eval2 threads=1 cpu=0 pinned=true gb_s=57.24 bytes=17175674880 iters=2048 sink=0x719eebd64a14675a
+KBENCH mode=fold512_pair threads=1 cpu=0 pinned=true gb_s=52.32 bytes=15699640320 iters=1872 sink=0x719eebd64a14675a
+KBENCH mode=fold512_tri threads=1 cpu=0 pinned=true gb_s=59.93 bytes=17983666176 iters=2144 sink=0xbedb8ba779de450f
+KBENCH mode=fold512_tri_r threads=1 cpu=0 pinned=true gb_s=42.48 bytes=12749614080 iters=1520 sink=0xbedb8ba779de450f
+KBENCH mode=fold512_pclmul_mix threads=1 cpu=0 pinned=true gb_s=34.51 bytes=10359061440 iters=1235 sink=0x3e36c56e483ee8a7
+KBENCH mode=fold512_noend threads=1 cpu=0 pinned=true gb_s=57.38 bytes=17220366912 iters=2053 sink=0x4bb11da019b76839
+KBENCH mode=fold512_pre threads=1 cpu=0 pinned=true gb_s=51.80 bytes=15542786112 iters=1853 sink=0xbedb8ba779de450f
+KBENCH mode=fold512_t threads=1 cpu=0 pinned=true gb_s=56.69 bytes=17010669312 iters=2028 sink=0xbedb8ba779de450f
+KBENCH mode=fold512_supply threads=1 cpu=0 pinned=true gb_s=57.99 bytes=17409204288 iters=1161 sink=0x633508877c074750
+KBENCH mode=affine_sub_1t threads=1 cpu=0 pinned=true gb_s=145.65 ns_per_span=9.23 msgs_s=4551561351 bytes=43700979840 iters=5210 sink=0xb6d735b8
+KBENCH mode=affine_sub_8lane threads=1 cpu=0 pinned=true gb_s=111.54 ns_per_span=12.05 msgs_s=3485630322 bytes=33467736960 iters=3990 sink=0xbedb8ba779de450f
+KBENCH mode=spec_slice_512 threads=1 cpu=0 pinned=true gb_s=3.60 msgs_s=165452646 ns_per_msg=6.044 msgs=49725888 iters=129 sink=0x0
+KBENCH mode=spec_slice_512_vec threads=1 cpu=0 pinned=true gb_s=3.70 msgs_s=170064896 ns_per_msg=5.880 msgs=51267776 iters=133 sink=0x0
+KBENCH mode=scalar8lane threads=2 placement=2cpu_distinct cpus=0,2 pinned=true gb_s=142.02 bytes=70458393600 sink=0xd48a9dbb3705b94e
+KBENCH mode=fold512 threads=2 placement=2cpu_distinct cpus=0,2 pinned=true gb_s=124.19 bytes=61693033920 sink=0xd48a9dbb3705b94e
+KBENCH mode=fold512_r threads=2 placement=2cpu_distinct cpus=0,2 pinned=true gb_s=114.84 bytes=57096462528 sink=0xd48a9dbb3705b94e
+KBENCH mode=fold512_rv threads=2 placement=2cpu_distinct cpus=0,2 pinned=true gb_s=114.57 bytes=56979031872 sink=0xd48a9dbb3705b94e
+KBENCH mode=fold512_rc threads=2 placement=2cpu_distinct cpus=0,2 pinned=true gb_s=123.69 bytes=61533663744 sink=0xd48a9dbb3705b94e
+KBENCH mode=fold512_rd threads=2 placement=2cpu_distinct cpus=0,2 pinned=true gb_s=98.93 bytes=49144729536 sink=0xd48a9dbb3705b94e
+KBENCH mode=fold512_ro threads=2 placement=2cpu_distinct cpus=0,2 pinned=true gb_s=76.13 bytes=37846222848 sink=0xd48a9dbb3705b94e
+KBENCH mode=fold512_tri threads=2 placement=2cpu_distinct cpus=0,2 pinned=true gb_s=123.92 bytes=61550439552 sink=0xd48a9dbb3705b94e
+KBENCH mode=fold512_tri_r threads=2 placement=2cpu_distinct cpus=0,2 pinned=true gb_s=85.36 bytes=42434406336 sink=0xd48a9dbb3705b94e
+KBENCH mode=scalar8lane threads=2 placement=2cpu_smt cpus=0,1 pinned=true gb_s=73.64 bytes=36571261440 sink=0xf0ad3334c151ef0a
+KBENCH mode=fold512 threads=2 placement=2cpu_smt cpus=0,1 pinned=true gb_s=63.39 bytes=31479803712 sink=0xf0ad3334c151ef0a
+KBENCH mode=fold512_r threads=2 placement=2cpu_smt cpus=0,1 pinned=true gb_s=55.07 bytes=27361342848 sink=0xf0ad3334c151ef0a
+KBENCH mode=fold512_rv threads=2 placement=2cpu_smt cpus=0,1 pinned=true gb_s=55.44 bytes=27571040448 sink=0xf0ad3334c151ef0a
+KBENCH mode=fold512_rc threads=2 placement=2cpu_smt cpus=0,1 pinned=true gb_s=63.34 bytes=31513355328 sink=0xf0ad3334c151ef0a
+KBENCH mode=fold512_rd threads=2 placement=2cpu_smt cpus=0,1 pinned=true gb_s=47.87 bytes=23779707840 sink=0xf0ad3334c151ef0a
+KBENCH mode=fold512_ro threads=2 placement=2cpu_smt cpus=0,1 pinned=true gb_s=34.87 bytes=17337797568 sink=0xf0ad3334c151ef0a
+KBENCH mode=fold512_tri threads=2 placement=2cpu_smt cpus=0,1 pinned=true gb_s=60.80 bytes=30196454400 sink=0xf0ad3334c151ef0a
+KBENCH mode=fold512_tri_r threads=2 placement=2cpu_smt cpus=0,1 pinned=true gb_s=42.31 bytes=21011699520 sink=0xf0ad3334c151ef0a
+KBENCH done
+=== 11d. R9: Fabric-Shape Kernel Ablation (layout attribution telemetry) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/fbench --stage all --workers 2 --ms 1000`
+BLOB_BACKING mode=mmap anon_huge_kb=14336 map_mb=16.5 verdict=thp-granted
+FBENCH lens total=10992 lt64=0 lt192=0 lt512=0 ge512=10992 bytes_lt192=0 pct_bytes_lt192=0.00
+FBENCH topo cpus=[0, 2, 1, 3] kernel=reflect workers=2 place=smt bodies=10992 msgs=505849 avg_bytes=1362.6 total_mb=15.0 freq_mhz=4120
+FBENCH stage=P spans=35158784 gb_s=47.91 cyc_span=234.3 sink=0xfcecba2cd1fa29cc
+FBENCH stage=K spans=35621040 gb_s=48.55 cyc_span=231.2 sink=0x8229bbb806e0fc91
+FBENCH stage=D spans=34570049 gb_s=47.55 cyc_span=236.2 sink=0x20f7f41
+FBENCH stage=R spans=33831008 gb_s=46.58 cyc_span=241.0 sink=0x2043860
+FBENCH stage=F spans=33449967 gb_s=46.17 cyc_span=243.2 sink=0x1fe67ef
+FBENCH done
+=== 11e. R11: Unarmed Prepatch Soak (rollback evidence) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1482697673 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1576644360 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1637152446 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1727290110 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1649398246 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1637152446
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1637152446 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1637152446 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=17181 reset_ms=893.4 scan_ms=4102.8 end_ms=1.0 pending_max=9965 batches=377982 wait_ms=32.3 work_ms=3696.2 fold_ms=288.0 assist_chunks=286947 bytes_per_msg=27.65 crc_demand_gb_s=48.07
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=610540 spans=78131863 eval_ms=4965.3 idle_iters=25417 res_waits=364 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=743447 spans=95101150 eval_ms=4948.3 idle_iters=40010 res_waits=1070 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=378042 polls=1494985 prod_ms=1432.1 bufwait_laps=137737 resets=17183 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=17183 advance_ms=501.6 us_per_advance=29.2 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=377935272 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=18 park_ms=1.0 slow_waits=18 slow_ms=1.3
+BENCH mode=replay-hydra-sustained-5s total_msgs=8690991669 duration=5.00s sustained_rate=1738157119 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1738157119 (duration=5.00s, total_msgs=8690991669, workers=2)
+PR1_GIGAHFT_VERDICT rate=1738157119 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1738157119 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1738157119 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=286947 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1738157119 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+=== 11k. R16d/R17: Siblings Placement Soak (ring+siblings — the A1 anomaly pricing) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1220062757 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1466377748 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1525088562 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1486313605 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1544487495 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1486313605
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1486313605 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1486313605 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=17088 reset_ms=519.2 scan_ms=4468.5 end_ms=2.7 pending_max=11841 batches=375936 wait_ms=41.4 work_ms=4069.5 fold_ms=287.0 assist_chunks=593758 bytes_per_msg=27.65 crc_demand_gb_s=47.80
+DIAG worker[0] sustained: cpu2(pinned) placement=[2, 3] batches=596174 spans=76274160 eval_ms=4799.2 idle_iters=282058 res_waits=14037 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu3(pinned) placement=[2, 3] batches=594178 spans=76020906 eval_ms=4798.0 idle_iters=281185 res_waits=10662 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=375996 polls=1486894 prod_ms=1526.3 bufwait_laps=138613 resets=17090 eos_parks=0 nbuf=16 rx_actual_cpu=1
+ADVANCE_DIAGNOSTIC sustained: advances=17090 advance_ms=75.8 us_per_advance=4.4 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=375890860 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=21 park_ms=19.2 slow_waits=21 slow_ms=19.5
+BENCH mode=replay-hydra-sustained-5s total_msgs=8643947712 duration=5.00s sustained_rate=1728687372 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1728687372 (duration=5.00s, total_msgs=8643947712, workers=2)
+PR1_GIGAHFT_VERDICT rate=1728687372 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1728687372 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1728687372 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=593758 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1728687372 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+=== 11l. R22.1: Tri-Stream Fold ARMED Soak (the value-exact mirror tri) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1267903199 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1330138470 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1353449383 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1386024375 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1346704115 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1346704115
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1346704115 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1346704115 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=16422 reset_ms=455.4 scan_ms=4541.3 end_ms=0.9 pending_max=11195 batches=361284 wait_ms=34.5 work_ms=4152.0 fold_ms=280.7 assist_chunks=395099 bytes_per_msg=27.65 crc_demand_gb_s=45.94
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=550390 spans=70442044 eval_ms=4968.4 idle_iters=29799 res_waits=0 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=682013 spans=87288464 eval_ms=4957.3 idle_iters=30342 res_waits=1839 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=361344 polls=1428952 prod_ms=1459.1 bufwait_laps=131549 resets=16424 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=16424 advance_ms=140.7 us_per_advance=8.6 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=361241524 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=13 park_ms=0.8 slow_waits=13 slow_ms=1.0
+BENCH mode=replay-hydra-sustained-5s total_msgs=8307052278 duration=5.00s sustained_rate=1661315418 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1661315418 (duration=5.00s, total_msgs=8307052278, workers=2)
+PR1_GIGAHFT_VERDICT rate=1661315418 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1661315418 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1661315418 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=395099 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1661315418 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+=== 11m. R12: Vectorized Watermark Ladder ARMED Soak (the refuted experiment) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=14336 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1386822351 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1279593746 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1520819804 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1546617217 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1623835128 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1520819804
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1520819804 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1520819804 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=17026 reset_ms=471.4 scan_ms=4525.2 end_ms=0.9 pending_max=11561 batches=374572 wait_ms=34.4 work_ms=4141.3 fold_ms=278.9 assist_chunks=324028 bytes_per_msg=27.65 crc_demand_gb_s=47.63
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=597688 spans=76489044 eval_ms=4949.6 idle_iters=57355 res_waits=749 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=723511 spans=92592904 eval_ms=4937.9 idle_iters=53135 res_waits=775 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=374632 polls=1481500 prod_ms=1468.1 bufwait_laps=136155 resets=17028 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=17028 advance_ms=139.5 us_per_advance=8.2 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=374527044 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=21 park_ms=1.2 slow_waits=21 slow_ms=1.5
+BENCH mode=replay-hydra-sustained-5s total_msgs=8612585074 duration=5.00s sustained_rate=1722419490 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1722419490 (duration=5.00s, total_msgs=8612585074, workers=2)
+PR1_GIGAHFT_VERDICT rate=1722419490 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1722419490 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1722419490 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=324028 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1722419490 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+=== 11n. R12: Compact 8-Byte Span Descriptors OFF (rollback attribution) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1272854687 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1454805598 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1386518252 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1552179222 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1519536072 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1454805598
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1454805598 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1454805598 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=17372 reset_ms=472.4 scan_ms=4524.0 end_ms=0.9 pending_max=6672 batches=382184 wait_ms=36.0 work_ms=4133.9 fold_ms=276.3 assist_chunks=395700 bytes_per_msg=27.65 crc_demand_gb_s=48.60
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=585421 spans=74913296 eval_ms=4965.7 idle_iters=31424 res_waits=0 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=709332 spans=90776544 eval_ms=4955.6 idle_iters=26668 res_waits=0 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=382244 polls=1511602 prod_ms=1451.9 bufwait_laps=138802 resets=17374 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=17374 advance_ms=108.2 us_per_advance=6.2 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=382137660 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=32 park_ms=2.9 slow_waits=32 slow_ms=3.3
+BENCH mode=replay-hydra-sustained-5s total_msgs=8787608828 duration=5.00s sustained_rate=1757429228 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1757429228 (duration=5.00s, total_msgs=8787608828, workers=2)
+PR1_GIGAHFT_VERDICT rate=1757429228 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1757429228 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1757429228 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=395700 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1757429228 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+=== 11r. R13: Mirror-Domain Fold Kernel Soak (rollback attribution) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=14336 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1216217060 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1480826934 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1545341512 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1651660152 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1691655575 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1545341512
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1545341512 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1545341512 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=17437 reset_ms=470.2 scan_ms=4526.3 end_ms=0.9 pending_max=6766 batches=383614 wait_ms=42.3 work_ms=4117.0 fold_ms=288.3 assist_chunks=383256 bytes_per_msg=27.65 crc_demand_gb_s=48.78
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=595306 spans=76179937 eval_ms=4941.0 idle_iters=69619 res_waits=0 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=731777 spans=93646559 eval_ms=4930.4 idle_iters=68273 res_waits=0 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=383674 polls=1517257 prod_ms=1521.5 bufwait_laps=139561 resets=17439 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=17439 advance_ms=110.7 us_per_advance=6.3 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=383567400 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=33 park_ms=6.4 slow_waits=33 slow_ms=7.0
+BENCH mode=replay-hydra-sustained-5s total_msgs=8820489013 duration=5.00s sustained_rate=1764001548 msg/s allocs=0 workers=2 crc_kernel=fold512
+PR1_HYDRA_SUSTAINED_VERDICT rate=1764001548 (duration=5.00s, total_msgs=8820489013, workers=2)
+PR1_GIGAHFT_VERDICT rate=1764001548 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1764001548 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1764001548 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=383256 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1764001548 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+=== 11s. R14: Vector Barrett Ending OFF (rollback attribution) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1431066236 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1572033687 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1627340402 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1660726538 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1730250106 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1627340402
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1627340402 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1627340402 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=17674 reset_ms=452.4 scan_ms=4544.0 end_ms=0.9 pending_max=7179 batches=388828 wait_ms=36.0 work_ms=4136.2 fold_ms=290.0 assist_chunks=394768 bytes_per_msg=27.65 crc_demand_gb_s=49.44
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=600911 spans=76908409 eval_ms=4966.7 idle_iters=31269 res_waits=0 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=740842 spans=94820128 eval_ms=4955.1 idle_iters=28604 res_waits=0 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=388888 polls=1537876 prod_ms=1518.5 bufwait_laps=141385 resets=17676 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=17676 advance_ms=112.4 us_per_advance=6.4 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=388780516 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=17 park_ms=1.0 slow_waits=17 slow_ms=1.3
+BENCH mode=replay-hydra-sustained-5s total_msgs=8940375226 duration=5.00s sustained_rate=1787990679 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1787990679 (duration=5.00s, total_msgs=8940375226, workers=2)
+PR1_GIGAHFT_VERDICT rate=1787990679 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1787990679 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1787990679 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=394768 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1787990679 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+=== 11t. R15: Vectorized Tail (vtail) OFF (rollback attribution) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=14336 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1460231455 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1518395783 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1620817379 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1653122916 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1732858082 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1620817379
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1620817379 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1620817379 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=17540 reset_ms=439.3 scan_ms=4557.0 end_ms=0.9 pending_max=6330 batches=385880 wait_ms=37.0 work_ms=4157.9 fold_ms=288.1 assist_chunks=391553 bytes_per_msg=27.65 crc_demand_gb_s=49.07
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=595737 spans=76246906 eval_ms=4967.6 idle_iters=25035 res_waits=0 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=735956 spans=94192148 eval_ms=4955.6 idle_iters=25196 res_waits=0 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=385940 polls=1526218 prod_ms=1525.8 bufwait_laps=140316 resets=17542 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=17542 advance_ms=112.4 us_per_advance=6.4 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=385833052 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=15 park_ms=0.8 slow_waits=15 slow_ms=1.0
+BENCH mode=replay-hydra-sustained-5s total_msgs=8872591460 duration=5.00s sustained_rate=1774486910 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1774486910 (duration=5.00s, total_msgs=8872591460, workers=2)
+PR1_GIGAHFT_VERDICT rate=1774486910 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1774486910 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1774486910 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=391553 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1774486910 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+=== 11u. R15: Worker Drain Granularity Sweep (the supply-side rebalance) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1439627178 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1504871467 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1666372383 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1639864492 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1688888072 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1639864492
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1639864492 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1639864492 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=17291 reset_ms=448.1 scan_ms=4548.4 end_ms=0.9 pending_max=11597 batches=380402 wait_ms=35.8 work_ms=4149.0 fold_ms=287.0 assist_chunks=392736 bytes_per_msg=27.65 crc_demand_gb_s=48.37
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=1168173 spans=74760616 eval_ms=4934.2 idle_iters=37311 res_waits=0 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=1450478 spans=92828302 eval_ms=4914.1 idle_iters=33967 res_waits=263 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=380462 polls=1504555 prod_ms=1495.1 bufwait_laps=138340 resets=17293 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=17293 advance_ms=119.4 us_per_advance=6.9 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=380356048 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=11 park_ms=1.6 slow_waits=11 slow_ms=1.8
+BENCH mode=replay-hydra-sustained-5s total_msgs=8746635059 duration=5.00s sustained_rate=1749245531 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1749245531 (duration=5.00s, total_msgs=8746635059, workers=2)
+PR1_GIGAHFT_VERDICT rate=1749245531 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1749245531 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1749245531 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=392736 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1749245531 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1419759635 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1538049195 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1540958786 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1668026327 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1504200231 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1538049195
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1538049195 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1538049195 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=17469 reset_ms=441.1 scan_ms=4555.2 end_ms=0.9 pending_max=7201 batches=384318 wait_ms=38.1 work_ms=4156.3 fold_ms=285.7 assist_chunks=389458 bytes_per_msg=27.65 crc_demand_gb_s=48.87
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=297059 spans=76010772 eval_ms=4980.8 idle_iters=28528 res_waits=0 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=366571 spans=93794463 eval_ms=4974.3 idle_iters=27419 res_waits=13 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=384378 polls=1520041 prod_ms=1536.6 bufwait_laps=139715 resets=17471 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=17471 advance_ms=110.7 us_per_advance=6.3 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=384271336 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=18 park_ms=2.5 slow_waits=18 slow_ms=2.8
+BENCH mode=replay-hydra-sustained-5s total_msgs=8836676181 duration=5.00s sustained_rate=1767313320 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1767313320 (duration=5.00s, total_msgs=8836676181, workers=2)
+PR1_GIGAHFT_VERDICT rate=1767313320 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1767313320 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1767313320 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=389458 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1767313320 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+=== 11wm. R17: Assist-Watermark Deep-Soak, SIBLINGS (the A3-b pricing where the assist lives) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1230767172 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1356287168 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1379248385 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1470692216 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1574387097 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1379248385
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1379248385 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1379248385 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=17635 reset_ms=399.6 scan_ms=4585.8 end_ms=3.2 pending_max=11544 batches=387970 wait_ms=24.6 work_ms=4193.4 fold_ms=291.8 assist_chunks=623804 bytes_per_msg=27.65 crc_demand_gb_s=49.33
+DIAG worker[0] sustained: cpu2(pinned) placement=[2, 3] batches=612296 spans=78369934 eval_ms=4958.1 idle_iters=27739 res_waits=5981 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu3(pinned) placement=[2, 3] batches=610222 spans=78104470 eval_ms=4958.9 idle_iters=21092 res_waits=0 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=388030 polls=1534483 prod_ms=1517.1 bufwait_laps=141185 resets=17637 eos_parks=0 nbuf=16 rx_actual_cpu=1
+ADVANCE_DIAGNOSTIC sustained: advances=17637 advance_ms=76.2 us_per_advance=4.3 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=387922672 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=18 park_ms=0.6 slow_waits=18 slow_ms=0.8
+BENCH mode=replay-hydra-sustained-5s total_msgs=8920647115 duration=5.00s sustained_rate=1784024968 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1784024968 (duration=5.00s, total_msgs=8920647115, workers=2)
+PR1_GIGAHFT_VERDICT rate=1784024968 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1784024968 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1784024968 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=623804 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1784024968 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+=== 11v. R16: Dual-Stream Fold (dfold) ARMED Soak (attribution) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1422162557 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1504244961 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1578321861 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1627816947 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1616043218 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1578321861
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1578321861 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1578321861 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=17370 reset_ms=460.6 scan_ms=4535.9 end_ms=0.9 pending_max=10711 batches=382140 wait_ms=35.7 work_ms=4139.3 fold_ms=286.9 assist_chunks=387935 bytes_per_msg=27.65 crc_demand_gb_s=48.59
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=588552 spans=75321000 eval_ms=4948.6 idle_iters=55420 res_waits=940 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=730270 spans=93452475 eval_ms=4936.2 idle_iters=62601 res_waits=88 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=382200 polls=1511428 prod_ms=1509.2 bufwait_laps=139262 resets=17372 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=17372 advance_ms=118.6 us_per_advance=6.8 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=382093732 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=11 park_ms=0.7 slow_waits=11 slow_ms=0.9
+BENCH mode=replay-hydra-sustained-5s total_msgs=8786597130 duration=5.00s sustained_rate=1757279134 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1757279134 (duration=5.00s, total_msgs=8786597130, workers=2)
+PR1_GIGAHFT_VERDICT rate=1757279134 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1757279134 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1757279134 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=387935 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1757279134 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+=== 11oa. R21: Octo-Stream Fold (ofold) ARMED Soak (attribution) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1379963280 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1482128573 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1524307302 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1503927433 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1641993702 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1503927433
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1503927433 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1503927433 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=17153 reset_ms=477.2 scan_ms=4519.1 end_ms=0.9 pending_max=11372 batches=377366 wait_ms=45.4 work_ms=4115.3 fold_ms=282.7 assist_chunks=383625 bytes_per_msg=27.65 crc_demand_gb_s=47.99
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=585096 spans=74874496 eval_ms=4925.2 idle_iters=80470 res_waits=0 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=717326 spans=91763025 eval_ms=4917.5 idle_iters=92475 res_waits=23794 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=377426 polls=1492549 prod_ms=1491.9 bufwait_laps=137988 resets=17155 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=17155 advance_ms=124.2 us_per_advance=7.2 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=377320536 last_pass_patches=22124 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=22 park_ms=11.3 slow_waits=22 slow_ms=11.6
+BENCH mode=replay-hydra-sustained-5s total_msgs=8676827897 duration=5.00s sustained_rate=1735286772 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1735286772 (duration=5.00s, total_msgs=8676827897, workers=2)
+PR1_GIGAHFT_VERDICT rate=1735286772 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1735286772 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1735286772 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=383625 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1735286772 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+=== 11fb. R21: Fused In-Register Verification ARMED (the Task 2 shape) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.00s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+HYDRA_FUSED_DIAGNOSTIC force_inline=true kernel=reflect assist_slots=64 (R21 Task 2: submit-side fused verification — every span CRC evaluates on the submitting core at the framing point; the workers never re-read the payload, the 2nd memory pass is eliminated)
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=630887022 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=639408686 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=666220192 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=690850464 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=691607044 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=666220192
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=666220192 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=666220192 target=1000000000 -> FAIL (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=6759 reset_ms=143.9 scan_ms=4854.3 end_ms=0.4 pending_max=48 batches=148698 wait_ms=11.9 work_ms=4717.9 fold_ms=95.9 assist_chunks=1165928 bytes_per_msg=27.65 crc_demand_gb_s=18.91
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=0 spans=0 eval_ms=0.0 idle_iters=7896565 res_waits=0 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=0 spans=0 eval_ms=0.0 idle_iters=9010963 res_waits=0 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=148758 polls=588271 prod_ms=531.3 bufwait_laps=162863 resets=6761 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=6761 advance_ms=23.5 us_per_advance=3.5 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=148693792 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=3 park_ms=0.3 slow_waits=3 slow_ms=0.3
+BENCH mode=replay-hydra-sustained-5s total_msgs=3419033391 duration=5.00s sustained_rate=683780900 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=683780900 (duration=5.00s, total_msgs=3419033391, workers=2)
+PR1_GIGAHFT_VERDICT rate=683780900 target=1000000000 -> FAIL (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=683780900 target=1000000000 -> FAIL (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=683780900 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=1165928 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=683780900 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+=== 11w. R16b/R17: Array-Driven Submission (rxdesc) ARMED (attribution) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1063291006 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1109026133 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1199208665 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1222693290 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1172809136 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1172809136
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1172809136 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1172809136 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=12486 reset_ms=336.5 scan_ms=4660.7 end_ms=0.6 pending_max=2112 batches=274692 wait_ms=24.7 work_ms=4380.2 fold_ms=203.2 assist_chunks=404879 bytes_per_msg=27.65 crc_demand_gb_s=34.93
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=452532 spans=57921312 eval_ms=4937.2 idle_iters=47974 res_waits=0 fw=13639 fw_ms=25.2
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=417801 spans=53473456 eval_ms=3582.2 idle_iters=137982 res_waits=0 fw=331811 fw_ms=1295.0
+DIAG rx sustained: publications=274752 polls=1086520 prod_ms=1059.6 bufwait_laps=132176 resets=12488 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=12488 advance_ms=57.1 us_per_advance=4.6 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=274665076 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=12 park_ms=1.6 slow_waits=12 slow_ms=1.8
+BENCH mode=replay-hydra-sustained-5s total_msgs=6316030614 duration=5.00s sustained_rate=1263194273 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1263194273 (duration=5.00s, total_msgs=6316030614, workers=2)
+PR1_GIGAHFT_VERDICT rate=1263194273 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1263194273 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1263194273 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=1920 assist_chunks=404879 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1263194273 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+=== 11ab. R23c: Affine-Tag Zero-Re-Read Verification ARMED (the affine ship) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=14336 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1200834187 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1179990622 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1269720427 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1227717317 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1267712549 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1227717317
+R23B_AFFINE_VERDICT arm=burst armed=true tag_hits=65952 payload_fallbacks=0 ledger_rows=21984 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1227717317 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1227717317 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=18739 reset_ms=621.5 scan_ms=4374.8 end_ms=0.9 pending_max=2176 batches=412258 wait_ms=34.6 work_ms=3958.3 fold_ms=296.0 assist_chunks=267 bytes_per_msg=27.65 crc_demand_gb_s=52.43
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=804884 spans=102986944 eval_ms=1654.8 idle_iters=4147584 res_waits=0 fw=2262990 fw_ms=2062.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=804821 spans=102986112 eval_ms=1418.6 idle_iters=4210165 res_waits=0 fw=2336882 fw_ms=2259.0
+DIAG rx sustained: publications=412318 polls=1630531 prod_ms=1447.3 bufwait_laps=132779 resets=18741 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=18741 advance_ms=66.4 us_per_advance=3.5 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=412206000 last_pass_patches=22060 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=31 park_ms=5.0 slow_waits=31 slow_ms=5.4
+BENCH mode=replay-hydra-sustained-5s total_msgs=9479104411 duration=5.00s sustained_rate=1895832626 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1895832626 (duration=5.00s, total_msgs=9479104411, workers=2)
+PR1_GIGAHFT_VERDICT rate=1895832626 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1895832626 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1895832626 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=267 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=true tag_hits=205973056 payload_fallbacks=0 ledger_rows=21984 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1895832626 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+R23B_AFFINE_VERDICT arm=sustained armed=true tag_hits=205973056 payload_fallbacks=0 ledger_rows=21984 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1895832626 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+=== 11z. R17: Null-Mode Instrument (the non-CRC fabric ceiling) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.00s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=14336 map_mb=16.5 verdict=thp-granted
+HYDRA_NULL_MODE_DIAGNOSTIC workers skip the CRC kernel — parity asserts DISABLED, rate is the pipeline-overhead ceiling only
+BENCH mode=replay-hydra-burst msgs=505849 rate=3521301182 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=3618169203 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=3631442170 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=3460026812 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=3679838504 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=3618169203
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=3618169203 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=3618169203 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=29284 reset_ms=873.4 scan_ms=4121.9 end_ms=1.4 pending_max=5312 batches=644248 wait_ms=61.2 work_ms=3505.4 fold_ms=446.0 assist_chunks=92 bytes_per_msg=27.65 crc_demand_gb_s=81.93
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=2525514 spans=163475498 eval_ms=534.1 idle_iters=15763040 res_waits=234 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=2523966 spans=163470952 eval_ms=597.1 idle_iters=15625774 res_waits=0 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=644308 polls=2547946 prod_ms=2163.6 bufwait_laps=204440 resets=29286 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=29286 advance_ms=295.3 us_per_advance=10.1 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=644154076 last_pass_patches=22060 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=99 park_ms=6.3 slow_waits=99 slow_ms=7.7
+BENCH mode=replay-hydra-sustained-5s total_msgs=14813282116 duration=5.00s sustained_rate=2962666112 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=2962666112 (duration=5.00s, total_msgs=14813282116, workers=2)
+PR1_GIGAHFT_VERDICT rate=2962666112 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=2962666112 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=2962666112 target=2000000000 -> PASS (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=92 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=2962666112 target=2500000000 -> PASS (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+=== 11wn. R17/F-1: RX Frame-Entry Warm Start ARMED (the refuted lever's pricing instrument) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1326124855 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1356069013 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1438607717 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1515802311 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1537717236 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1438607717
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1438607717 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1438607717 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=15833 reset_ms=627.2 scan_ms=4369.5 end_ms=0.8 pending_max=6580 batches=348326 wait_ms=381.1 work_ms=3654.6 fold_ms=261.3 assist_chunks=324395 bytes_per_msg=27.65 crc_demand_gb_s=44.29
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=611775 spans=78264139 eval_ms=4943.4 idle_iters=65097 res_waits=0 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=605571 spans=77477279 eval_ms=4938.1 idle_iters=65424 res_waits=0 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=348386 polls=1377709 prod_ms=3342.7 bufwait_laps=110718 resets=15835 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=15835 advance_ms=270.2 us_per_advance=17.1 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=true fixes=21996 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=false patches=0 last_pass_patches=0 frames=0 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=224 park_ms=12.5 slow_waits=224 slow_ms=15.9
+BENCH mode=replay-hydra-sustained-5s total_msgs=8009107217 duration=5.00s sustained_rate=1601756474 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1601756474 (duration=5.00s, total_msgs=8009107217, workers=2)
+PR1_GIGAHFT_VERDICT rate=1601756474 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1601756474 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1601756474 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=324395 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1601756474 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.00s
+[1m[92m     Running[0m `target/release/hft_bench --sample data/tests/sample-mini.itch --runs 5 --warmup 2 --output-format json`
+HFT_BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52 target_env=gnu
+TOPOLOGY_VERIFICATION main=Some(0) rx=Some(2) -> VERIFIED (distinct physical cores, same L3 domain — the deterministic 0.21 cyc/msg mode)
+BLOB_BACKING mode=mmap anon_huge_kb=14336 map_mb=16.5 verdict=thp-granted
+HFT_BENCH_WARMUP 1/2 arm=classic rate=859063103
+HFT_BENCH_WARMUP 2/2 arm=classic rate=977274483
+HFT_BENCH_RUN 1/5 arm=classic rate=1012173721 cyc=2.56
+HFT_BENCH_RUN 2/5 arm=classic rate=1122507444 cyc=2.31
+HFT_BENCH_RUN 3/5 arm=classic rate=1112763645 cyc=2.33
+HFT_BENCH_RUN 4/5 arm=classic rate=1150977826 cyc=2.26
+HFT_BENCH_RUN 5/5 arm=classic rate=1135450780 cyc=2.29
+HFT_BENCH_WARMUP 1/2 arm=span rate=1750518218
+HFT_BENCH_WARMUP 2/2 arm=span rate=3008659913
+HFT_BENCH_RUN 1/5 arm=span rate=2744332022 cyc=0.95
+HFT_BENCH_RUN 2/5 arm=span rate=3050443833 cyc=0.85
+HFT_BENCH_RUN 3/5 arm=span rate=3151707165 cyc=0.82
+HFT_BENCH_RUN 4/5 arm=span rate=3143285900 cyc=0.83
+HFT_BENCH_RUN 5/5 arm=span rate=3074583956 cyc=0.84
+DIAG rx span: publications=170 polls=673 prod_ms=1.3 bufwait_laps=36 resets=7 eos_parks=7 nbuf=16 rx_actual_cpu=2
+ADVANCE_DIAGNOSTIC span: advances=0 advance_ms=0.0 us_per_advance=0.0 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC span: enabled=true fixes=21996 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC span: enabled=false patches=0 last_pass_patches=0 frames=0 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons span: parks=1 park_ms=0.1 slow_waits=1 slow_ms=0.1
+LADDER_DIAGNOSTIC span: vectorized=false (F-3 entry walk; HFT_VEC_LADDER=1 arms the 8-entry group path — the Front A consumer IS the post-F-2 wall)
+HFT_BENCH_WARMUP 1/2 arm=spec rate=496671016
+HFT_BENCH_WARMUP 2/2 arm=spec rate=498420540
+HFT_BENCH_RUN 1/5 arm=spec rate=498828979
+HFT_BENCH_RUN 2/5 arm=spec rate=496666139
+HFT_BENCH_RUN 3/5 arm=spec rate=496231536
+HFT_BENCH_RUN 4/5 arm=spec rate=499712530
+HFT_BENCH_RUN 5/5 arm=spec rate=499514654
+PR1_R23_PURE_INGEST_VERDICT rate=498828979 target=15000000000 -> FAIL (R23: 15B msg/s pure ingest with the speculative 512-bit slicer — the 20B mode's pricing row; the R8/R16 span-arm gates above stay the asserting floor)
+DIAG rx spec: publications=91 polls=609 prod_ms=0.7 bufwait_laps=0 resets=7 eos_parks=7 nbuf=16 rx_actual_cpu=2
+ADVANCE_DIAGNOSTIC spec: advances=0 advance_ms=0.0 us_per_advance=0.0 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC spec: enabled=true fixes=10998 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC spec: enabled=false patches=0 last_pass_patches=0 frames=0 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons spec: parks=0 park_ms=0.0 slow_waits=0 slow_ms=0.0
+PR1_R8_PURE_INGEST_VERDICT rate=3074583956 target=2000000000 -> PASS (R8: 2B msg/s pure ingest — full pipeline live, span emission, zero verification skipped)
+PR1_R16_PURE_INGEST_VERDICT rate=3074583956 target=5000000000 -> FAIL (R16: 5B msg/s pure ingest — the Double Helix program, docs/29)
+{
+  "median_cycles": 2.3128,
+  "p95_cycles": 2.5649,
+  "p99_cycles": 2.5649,
+  "stddev": 0.1103,
+  "cv_percent": 4.7683,
+  "runs": 5,
+  "warmup": 2,
+  "cpu_model": "AMD EPYC 9V45 96-Core Processor",
+  "freq_mhz": 2596.12,
+  "target": "x86_64-unknown-linux-gnu",
+  "sink": "count+span",
+  "sample": "data/tests/sample-mini.itch",
+  "span_median_cycles": 0.8444,
+  "span_p95_cycles": 0.9460,
+  "span_p99_cycles": 0.9460,
+  "span_stddev": 0.0451,
+  "span_cv_percent": 5.3439,
+  "span_rate_msg_per_sec": 3074583956,
+  "r8_pure_ingest_target": 2000000000,
+  "r8_pure_ingest_verdict": "PASS",
+  "r16_pure_ingest_target": 5000000000,
+  "r16_pure_ingest_verdict": "FAIL",
+  "spec_rate_msg_per_sec": 498828979,
+  "r23_pure_ingest_target": 15000000000,
+  "r23_pure_ingest_verdict": "FAIL"
+}
+=== 11rb. R17/F-2: Publish-by-Reference ROLLBACK (the classic-path pricing arm — the default IS rxbuild since the F-2 verdict) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.00s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=14336 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1346668263 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1364529973 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1458126871 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1587799174 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1643439387 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1458126871
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1458126871 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1458126871 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=16792 reset_ms=385.4 scan_ms=4611.1 end_ms=0.9 pending_max=11562 batches=369424 wait_ms=132.8 work_ms=4130.1 fold_ms=275.6 assist_chunks=404742 bytes_per_msg=27.65 crc_demand_gb_s=46.98
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=593723 spans=75983034 eval_ms=4963.1 idle_iters=35372 res_waits=799 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=666108 spans=85249161 eval_ms=4954.3 idle_iters=32127 res_waits=974 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=369484 polls=1461142 prod_ms=3117.5 bufwait_laps=117526 resets=16794 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=16794 advance_ms=50.5 us_per_advance=3.0 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=false patches=0 last_pass_patches=0 frames=0 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=93 park_ms=5.8 slow_waits=93 slow_ms=7.4
+BENCH mode=replay-hydra-sustained-5s total_msgs=8494216408 duration=5.00s sustained_rate=1698805742 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1698805742 (duration=5.00s, total_msgs=8494216408, workers=2)
+PR1_GIGAHFT_VERDICT rate=1698805742 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1698805742 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1698805742 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=404742 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1698805742 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/hft_bench --sample data/tests/sample-mini.itch --runs 5 --warmup 2 --output-format json`
+HFT_BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52 target_env=gnu
+TOPOLOGY_VERIFICATION main=Some(0) rx=Some(2) -> VERIFIED (distinct physical cores, same L3 domain — the deterministic 0.21 cyc/msg mode)
+BLOB_BACKING mode=mmap anon_huge_kb=14336 map_mb=16.5 verdict=thp-granted
+HFT_BENCH_WARMUP 1/2 arm=classic rate=798366490
+HFT_BENCH_WARMUP 2/2 arm=classic rate=1006386293
+HFT_BENCH_RUN 1/5 arm=classic rate=1016042598 cyc=2.56
+HFT_BENCH_RUN 2/5 arm=classic rate=1060789202 cyc=2.45
+HFT_BENCH_RUN 3/5 arm=classic rate=1118234430 cyc=2.32
+HFT_BENCH_RUN 4/5 arm=classic rate=1110781973 cyc=2.34
+HFT_BENCH_RUN 5/5 arm=classic rate=1099848671 cyc=2.36
+HFT_BENCH_WARMUP 1/2 arm=span rate=2009929472
+HFT_BENCH_WARMUP 2/2 arm=span rate=2970619670
+HFT_BENCH_RUN 1/5 arm=span rate=2847046573 cyc=0.91
+HFT_BENCH_RUN 2/5 arm=span rate=2973588299 cyc=0.87
+HFT_BENCH_RUN 3/5 arm=span rate=3366177781 cyc=0.77
+HFT_BENCH_RUN 4/5 arm=span rate=9201939169 cyc=0.28
+HFT_BENCH_RUN 5/5 arm=span rate=4153384458 cyc=0.63
+DIAG rx span: publications=170 polls=673 prod_ms=1.1 bufwait_laps=42 resets=7 eos_parks=7 nbuf=16 rx_actual_cpu=2
+ADVANCE_DIAGNOSTIC span: advances=0 advance_ms=0.0 us_per_advance=0.0 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC span: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC span: enabled=false patches=0 last_pass_patches=0 frames=0 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons span: parks=1 park_ms=0.1 slow_waits=1 slow_ms=0.1
+LADDER_DIAGNOSTIC span: vectorized=false (F-3 entry walk; HFT_VEC_LADDER=1 arms the 8-entry group path — the Front A consumer IS the post-F-2 wall)
+HFT_BENCH_WARMUP 1/2 arm=spec rate=477152567
+HFT_BENCH_WARMUP 2/2 arm=spec rate=480722134
+HFT_BENCH_RUN 1/5 arm=spec rate=486448930
+HFT_BENCH_RUN 2/5 arm=spec rate=484694043
+HFT_BENCH_RUN 3/5 arm=spec rate=484814824
+HFT_BENCH_RUN 4/5 arm=spec rate=484071587
+HFT_BENCH_RUN 5/5 arm=spec rate=486088529
+PR1_R23_PURE_INGEST_VERDICT rate=484814824 target=15000000000 -> FAIL (R23: 15B msg/s pure ingest with the speculative 512-bit slicer — the 20B mode's pricing row; the R8/R16 span-arm gates above stay the asserting floor)
+DIAG rx spec: publications=91 polls=609 prod_ms=0.6 bufwait_laps=0 resets=7 eos_parks=7 nbuf=16 rx_actual_cpu=2
+ADVANCE_DIAGNOSTIC spec: advances=0 advance_ms=0.0 us_per_advance=0.0 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC spec: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC spec: enabled=false patches=0 last_pass_patches=0 frames=0 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons spec: parks=0 park_ms=0.0 slow_waits=0 slow_ms=0.0
+PR1_R8_PURE_INGEST_VERDICT rate=3366177781 target=2000000000 -> PASS (R8: 2B msg/s pure ingest — full pipeline live, span emission, zero verification skipped)
+PR1_R16_PURE_INGEST_VERDICT rate=3366177781 target=5000000000 -> FAIL (R16: 5B msg/s pure ingest — the Double Helix program, docs/29)
+{
+  "median_cycles": 2.3604,
+  "p95_cycles": 2.5551,
+  "p99_cycles": 2.5551,
+  "stddev": 0.0870,
+  "cv_percent": 3.6867,
+  "runs": 5,
+  "warmup": 2,
+  "cpu_model": "AMD EPYC 9V45 96-Core Processor",
+  "freq_mhz": 2596.12,
+  "target": "x86_64-unknown-linux-gnu",
+  "sink": "count+span",
+  "sample": "data/tests/sample-mini.itch",
+  "span_median_cycles": 0.7712,
+  "span_p95_cycles": 0.9119,
+  "span_p99_cycles": 0.9119,
+  "span_stddev": 0.2280,
+  "span_cv_percent": 29.5604,
+  "span_rate_msg_per_sec": 3366177781,
+  "r8_pure_ingest_target": 2000000000,
+  "r8_pure_ingest_verdict": "PASS",
+  "r16_pure_ingest_target": 5000000000,
+  "r16_pure_ingest_verdict": "FAIL",
+  "spec_rate_msg_per_sec": 484814824,
+  "r23_pure_ingest_target": 15000000000,
+  "r23_pure_ingest_verdict": "FAIL"
+}
+=== 11sl. R17/F-3: Front A Vectorized Entry-Walk Ladder ARMED (the residual 7.7% lever, round 1) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/hft_bench --sample data/tests/sample-mini.itch --runs 5 --warmup 2 --output-format json`
+HFT_BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52 target_env=gnu
+TOPOLOGY_VERIFICATION main=Some(0) rx=Some(2) -> VERIFIED (distinct physical cores, same L3 domain — the deterministic 0.21 cyc/msg mode)
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+HFT_BENCH_WARMUP 1/2 arm=classic rate=1031437653
+HFT_BENCH_WARMUP 2/2 arm=classic rate=845190416
+HFT_BENCH_RUN 1/5 arm=classic rate=1059409569 cyc=2.45
+HFT_BENCH_RUN 2/5 arm=classic rate=1057478352 cyc=2.46
+HFT_BENCH_RUN 3/5 arm=classic rate=1111563047 cyc=2.34
+HFT_BENCH_RUN 4/5 arm=classic rate=1108100529 cyc=2.34
+HFT_BENCH_RUN 5/5 arm=classic rate=1128880289 cyc=2.30
+HFT_BENCH_WARMUP 1/2 arm=span rate=3024164668
+HFT_BENCH_WARMUP 2/2 arm=span rate=8641378250
+HFT_BENCH_RUN 1/5 arm=span rate=7818739663 cyc=0.33
+HFT_BENCH_RUN 2/5 arm=span rate=8144011720 cyc=0.32
+HFT_BENCH_RUN 3/5 arm=span rate=7877304721 cyc=0.33
+HFT_BENCH_RUN 4/5 arm=span rate=7818860516 cyc=0.33
+HFT_BENCH_RUN 5/5 arm=span rate=7827208442 cyc=0.33
+DIAG rx span: publications=170 polls=673 prod_ms=0.4 bufwait_laps=36 resets=7 eos_parks=7 nbuf=16 rx_actual_cpu=2
+ADVANCE_DIAGNOSTIC span: advances=0 advance_ms=0.0 us_per_advance=0.0 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC span: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC span: enabled=true patches=153972 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons span: parks=1 park_ms=0.1 slow_waits=1 slow_ms=0.1
+LADDER_DIAGNOSTIC span: vectorized=false (F-3 entry walk; HFT_VEC_LADDER=1 arms the 8-entry group path — the Front A consumer IS the post-F-2 wall)
+HFT_BENCH_WARMUP 1/2 arm=spec rate=479845227
+HFT_BENCH_WARMUP 2/2 arm=spec rate=473631185
+HFT_BENCH_RUN 1/5 arm=spec rate=484740026
+HFT_BENCH_RUN 2/5 arm=spec rate=485906428
+HFT_BENCH_RUN 3/5 arm=spec rate=486430219
+HFT_BENCH_RUN 4/5 arm=spec rate=486271233
+HFT_BENCH_RUN 5/5 arm=spec rate=486720869
+PR1_R23_PURE_INGEST_VERDICT rate=486271233 target=15000000000 -> FAIL (R23: 15B msg/s pure ingest with the speculative 512-bit slicer — the 20B mode's pricing row; the R8/R16 span-arm gates above stay the asserting floor)
+DIAG rx spec: publications=91 polls=609 prod_ms=0.3 bufwait_laps=0 resets=7 eos_parks=7 nbuf=16 rx_actual_cpu=2
+ADVANCE_DIAGNOSTIC spec: advances=0 advance_ms=0.0 us_per_advance=0.0 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC spec: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC spec: enabled=true patches=76986 last_pass_patches=10998 frames=10998 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons spec: parks=0 park_ms=0.0 slow_waits=0 slow_ms=0.0
+PR1_R8_PURE_INGEST_VERDICT rate=7827208442 target=2000000000 -> PASS (R8: 2B msg/s pure ingest — full pipeline live, span emission, zero verification skipped)
+PR1_R16_PURE_INGEST_VERDICT rate=7827208442 target=5000000000 -> PASS (R16: 5B msg/s pure ingest — the Double Helix program, docs/29)
+{
+  "median_cycles": 2.3429,
+  "p95_cycles": 2.4550,
+  "p99_cycles": 2.4550,
+  "stddev": 0.0638,
+  "cv_percent": 2.7228,
+  "runs": 5,
+  "warmup": 2,
+  "cpu_model": "AMD EPYC 9V45 96-Core Processor",
+  "freq_mhz": 2596.12,
+  "target": "x86_64-unknown-linux-gnu",
+  "sink": "count+span",
+  "sample": "data/tests/sample-mini.itch",
+  "span_median_cycles": 0.3317,
+  "span_p95_cycles": 0.3320,
+  "span_p99_cycles": 0.3320,
+  "span_stddev": 0.0051,
+  "span_cv_percent": 1.5390,
+  "span_rate_msg_per_sec": 7827208442,
+  "r8_pure_ingest_target": 2000000000,
+  "r8_pure_ingest_verdict": "PASS",
+  "r16_pure_ingest_target": 5000000000,
+  "r16_pure_ingest_verdict": "PASS",
+  "spec_rate_msg_per_sec": 486271233,
+  "r23_pure_ingest_target": 15000000000,
+  "r23_pure_ingest_verdict": "FAIL"
+}
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/hft_bench --sample data/tests/sample-mini.itch --runs 5 --warmup 2 --output-format json`
+HFT_BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52 target_env=gnu
+TOPOLOGY_VERIFICATION main=Some(0) rx=Some(2) -> VERIFIED (distinct physical cores, same L3 domain — the deterministic 0.21 cyc/msg mode)
+BLOB_BACKING mode=mmap anon_huge_kb=14336 map_mb=16.5 verdict=thp-granted
+HFT_BENCH_WARMUP 1/2 arm=classic rate=791597485
+HFT_BENCH_WARMUP 2/2 arm=classic rate=1030508909
+HFT_BENCH_RUN 1/5 arm=classic rate=963646719 cyc=2.69
+HFT_BENCH_RUN 2/5 arm=classic rate=1074806328 cyc=2.42
+HFT_BENCH_RUN 3/5 arm=classic rate=1098222562 cyc=2.36
+HFT_BENCH_RUN 4/5 arm=classic rate=1122430232 cyc=2.31
+HFT_BENCH_RUN 5/5 arm=classic rate=1100327151 cyc=2.36
+HFT_BENCH_WARMUP 1/2 arm=span rate=2793048423
+HFT_BENCH_WARMUP 2/2 arm=span rate=5867705227
+HFT_BENCH_RUN 1/5 arm=span rate=6183821911 cyc=0.42
+HFT_BENCH_RUN 2/5 arm=span rate=5899251294 cyc=0.44
+HFT_BENCH_RUN 3/5 arm=span rate=6504757863 cyc=0.40
+HFT_BENCH_RUN 4/5 arm=span rate=6528347422 cyc=0.40
+HFT_BENCH_RUN 5/5 arm=span rate=6512294659 cyc=0.40
+DIAG rx span: publications=170 polls=673 prod_ms=0.5 bufwait_laps=43 resets=7 eos_parks=7 nbuf=16 rx_actual_cpu=2
+ADVANCE_DIAGNOSTIC span: advances=0 advance_ms=0.0 us_per_advance=0.0 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC span: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC span: enabled=true patches=153972 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons span: parks=1 park_ms=0.1 slow_waits=1 slow_ms=0.1
+LADDER_DIAGNOSTIC span: vectorized=true (F-3 entry walk; HFT_VEC_LADDER=1 arms the 8-entry group path — the Front A consumer IS the post-F-2 wall)
+HFT_BENCH_WARMUP 1/2 arm=spec rate=485336728
+HFT_BENCH_WARMUP 2/2 arm=spec rate=489318831
+HFT_BENCH_RUN 1/5 arm=spec rate=493261460
+HFT_BENCH_RUN 2/5 arm=spec rate=493791596
+HFT_BENCH_RUN 3/5 arm=spec rate=488429173
+HFT_BENCH_RUN 4/5 arm=spec rate=496236891
+HFT_BENCH_RUN 5/5 arm=spec rate=496831996
+PR1_R23_PURE_INGEST_VERDICT rate=493791596 target=15000000000 -> FAIL (R23: 15B msg/s pure ingest with the speculative 512-bit slicer — the 20B mode's pricing row; the R8/R16 span-arm gates above stay the asserting floor)
+DIAG rx spec: publications=91 polls=609 prod_ms=0.3 bufwait_laps=21 resets=7 eos_parks=7 nbuf=16 rx_actual_cpu=2
+ADVANCE_DIAGNOSTIC spec: advances=0 advance_ms=0.0 us_per_advance=0.0 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC spec: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC spec: enabled=true patches=76986 last_pass_patches=10998 frames=10998 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons spec: parks=0 park_ms=0.0 slow_waits=0 slow_ms=0.0
+PR1_R8_PURE_INGEST_VERDICT rate=6504757863 target=2000000000 -> PASS (R8: 2B msg/s pure ingest — full pipeline live, span emission, zero verification skipped)
+PR1_R16_PURE_INGEST_VERDICT rate=6504757863 target=5000000000 -> PASS (R16: 5B msg/s pure ingest — the Double Helix program, docs/29)
+{
+  "median_cycles": 2.3639,
+  "p95_cycles": 2.6941,
+  "p99_cycles": 2.6941,
+  "stddev": 0.1364,
+  "cv_percent": 5.7688,
+  "runs": 5,
+  "warmup": 2,
+  "cpu_model": "AMD EPYC 9V45 96-Core Processor",
+  "freq_mhz": 2596.12,
+  "target": "x86_64-unknown-linux-gnu",
+  "sink": "count+span",
+  "sample": "data/tests/sample-mini.itch",
+  "span_median_cycles": 0.3991,
+  "span_p95_cycles": 0.4401,
+  "span_p99_cycles": 0.4401,
+  "span_stddev": 0.0167,
+  "span_cv_percent": 4.1850,
+  "span_rate_msg_per_sec": 6504757863,
+  "r8_pure_ingest_target": 2000000000,
+  "r8_pure_ingest_verdict": "PASS",
+  "r16_pure_ingest_target": 5000000000,
+  "r16_pure_ingest_verdict": "PASS",
+  "spec_rate_msg_per_sec": 493791596,
+  "r23_pure_ingest_target": 15000000000,
+  "r23_pure_ingest_verdict": "FAIL"
+}
+=== 11nb. R17/F-4: Mailbox Depth NBUF=32 ARMED (the buffer-reuse-stall pricing) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/hft_bench --sample data/tests/sample-mini.itch --runs 5 --warmup 2 --output-format json`
+HFT_BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52 target_env=gnu
+TOPOLOGY_VERIFICATION main=Some(0) rx=Some(2) -> VERIFIED (distinct physical cores, same L3 domain — the deterministic 0.21 cyc/msg mode)
+BLOB_BACKING mode=mmap anon_huge_kb=14336 map_mb=16.5 verdict=thp-granted
+HFT_BENCH_WARMUP 1/2 arm=classic rate=956238102
+HFT_BENCH_WARMUP 2/2 arm=classic rate=1062707983
+HFT_BENCH_RUN 1/5 arm=classic rate=1055776676 cyc=2.46
+HFT_BENCH_RUN 2/5 arm=classic rate=1173900532 cyc=2.21
+HFT_BENCH_RUN 3/5 arm=classic rate=1151528051 cyc=2.25
+HFT_BENCH_RUN 4/5 arm=classic rate=1212651297 cyc=2.14
+HFT_BENCH_RUN 5/5 arm=classic rate=1174993960 cyc=2.21
+HFT_BENCH_WARMUP 1/2 arm=span rate=5206671881
+HFT_BENCH_WARMUP 2/2 arm=span rate=9633567578
+HFT_BENCH_RUN 1/5 arm=span rate=8009769769 cyc=0.32
+HFT_BENCH_RUN 2/5 arm=span rate=7994579132 cyc=0.32
+HFT_BENCH_RUN 3/5 arm=span rate=7918118494 cyc=0.33
+HFT_BENCH_RUN 4/5 arm=span rate=7904508164 cyc=0.33
+HFT_BENCH_RUN 5/5 arm=span rate=7981964212 cyc=0.33
+DIAG rx span: publications=176 polls=696 prod_ms=0.5 bufwait_laps=0 resets=7 eos_parks=8 nbuf=32 rx_actual_cpu=2
+ADVANCE_DIAGNOSTIC span: advances=0 advance_ms=0.0 us_per_advance=0.0 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC span: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC span: enabled=true patches=153972 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons span: parks=0 park_ms=0.0 slow_waits=0 slow_ms=0.0
+LADDER_DIAGNOSTIC span: vectorized=false (F-3 entry walk; HFT_VEC_LADDER=1 arms the 8-entry group path — the Front A consumer IS the post-F-2 wall)
+HFT_BENCH_WARMUP 1/2 arm=spec rate=486317983
+HFT_BENCH_WARMUP 2/2 arm=spec rate=484414621
+HFT_BENCH_RUN 1/5 arm=spec rate=485075170
+HFT_BENCH_RUN 2/5 arm=spec rate=489712958
+HFT_BENCH_RUN 3/5 arm=spec rate=489874202
+HFT_BENCH_RUN 4/5 arm=spec rate=490221237
+HFT_BENCH_RUN 5/5 arm=spec rate=491858574
+PR1_R23_PURE_INGEST_VERDICT rate=489874202 target=15000000000 -> FAIL (R23: 15B msg/s pure ingest with the speculative 512-bit slicer — the 20B mode's pricing row; the R8/R16 span-arm gates above stay the asserting floor)
+DIAG rx spec: publications=91 polls=609 prod_ms=0.3 bufwait_laps=0 resets=7 eos_parks=7 nbuf=32 rx_actual_cpu=2
+ADVANCE_DIAGNOSTIC spec: advances=0 advance_ms=0.0 us_per_advance=0.0 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC spec: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC spec: enabled=true patches=76986 last_pass_patches=10998 frames=10998 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons spec: parks=0 park_ms=0.0 slow_waits=0 slow_ms=0.0
+PR1_R8_PURE_INGEST_VERDICT rate=7981964212 target=2000000000 -> PASS (R8: 2B msg/s pure ingest — full pipeline live, span emission, zero verification skipped)
+PR1_R16_PURE_INGEST_VERDICT rate=7981964212 target=5000000000 -> PASS (R16: 5B msg/s pure ingest — the Double Helix program, docs/29)
+{
+  "median_cycles": 2.2115,
+  "p95_cycles": 2.4590,
+  "p99_cycles": 2.4590,
+  "stddev": 0.1083,
+  "cv_percent": 4.8949,
+  "runs": 5,
+  "warmup": 2,
+  "cpu_model": "AMD EPYC 9V45 96-Core Processor",
+  "freq_mhz": 2596.12,
+  "target": "x86_64-unknown-linux-gnu",
+  "sink": "count+span",
+  "sample": "data/tests/sample-mini.itch",
+  "span_median_cycles": 0.3252,
+  "span_p95_cycles": 0.3284,
+  "span_p99_cycles": 0.3284,
+  "span_stddev": 0.0017,
+  "span_cv_percent": 0.5343,
+  "span_rate_msg_per_sec": 7981964212,
+  "r8_pure_ingest_target": 2000000000,
+  "r8_pure_ingest_verdict": "PASS",
+  "r16_pure_ingest_target": 5000000000,
+  "r16_pure_ingest_verdict": "PASS",
+  "spec_rate_msg_per_sec": 489874202,
+  "r23_pure_ingest_target": 15000000000,
+  "r23_pure_ingest_verdict": "FAIL"
+}
+=== 11pb. R17/F-5: Prepatch Budget 1024 ARMED (the advance-tail drain pricing) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --hydra-only`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=14336 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1375116552 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1470606704 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1622220796 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1559654553 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1671283340 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1559654553
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1559654553 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1559654553 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=17446 reset_ms=440.0 scan_ms=4556.5 end_ms=0.9 pending_max=11528 batches=383812 wait_ms=39.4 work_ms=4156.1 fold_ms=287.0 assist_chunks=394158 bytes_per_msg=27.65 crc_demand_gb_s=48.81
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=592264 spans=75795647 eval_ms=4962.4 idle_iters=33100 res_waits=0 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=729985 spans=93423498 eval_ms=4951.0 idle_iters=35326 res_waits=1369 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=383872 polls=1518040 prod_ms=1533.0 bufwait_laps=139526 resets=17448 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=17448 advance_ms=107.5 us_per_advance=6.2 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=383773428 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=33 park_ms=3.6 slow_waits=33 slow_ms=4.1
+BENCH mode=replay-hydra-sustained-5s total_msgs=8825041654 duration=5.00s sustained_rate=1764972977 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1764972977 (duration=5.00s, total_msgs=8825041654, workers=2)
+PR1_GIGAHFT_VERDICT rate=1764972977 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1764972977 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1764972977 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=394158 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1764972977 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
+=== 12. Reference Arbitrator & Differential Oracle (G12-T3 / D1..D12) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.00s
+[1m[92m     Running[0m `target/release/diff_oracle`
+=== RUNNING G12-T3 REFERENCE ARBITRATOR & DIFFERENTIAL SUITE (D1..D11) ===
+=== D3-REDO: Oracle Validation by Sequencer-Logic Bug Injections ===
+D3_DIVERGENCE_DUMP mutation="DisableClearOnAdvance" detected=true seq_wm=1231 ref_wm=1224 seq_hash=0x473C5B1BF49F1C91 ref_hash=0xCFE76D07416B4CA5
+D3_DIVERGENCE_DUMP mutation="OffByOneClamp" detected=true seq_wm=600 ref_wm=601 seq_hash=0xB1C1F8344636F511 ref_hash=0x972FEC36E88A4C25
+D3_DIVERGENCE_DUMP mutation="DropStagedAtEos" detected=true seq_wm=10 ref_wm=13 seq_hash=0xF0B1A3FF15503051 ref_hash=0x9D6D68BF10C6C3A5
+D3 ALL_SEQUENCER_LOGIC_MUTATIONS_DETECTED: Oracle caught all 3 sequencer mutations with divergence dumps.
+=== D1: Full 17-Cell Matrix Differential Verification ===
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+D1 cell="M1 (Baseline MTU contiguous)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M2 (Fixed 1 msg)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M3 (Fixed 16 msgs)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M4 (Gaussian delay jitter)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M5 (Bernoulli loss with dual feed)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M6 (Gilbert-Elliott burst loss)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M7 (Pathological split: 1B to MTU)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M8 (Feed A only lossless)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M9 (Feed B only lossless)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M10 (Heavy reorder jitter)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M11 (Deep out-of-order window)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M12 (Max-rate unconstrained)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M13 (M-LATE: Staged arrival edge)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M14 (M-BURST: Burst packet arrival)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M15 (M-STARVE: Feed A silent for 2s)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M16 (M-DUP2: Overlapping dual feed)" seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 cell="M17 (M-DROPRESP / Session Boundary)" seq_wm=255850 ref_wm=255850 count=505849 hash=0xF6EF154EFDE905D8 VERDICT=PASS
+D1 ALL_17_CELLS_PASSED: Triple equality verified across all 17 matrix cells.
+=== D2: 100 Seeded Random Configs Differential Test ===
+D2 100_RANDOM_CONFIGS_PASSED: Triple equality verified across 100 random configs.
+=== D4: Duplicate Ordering (First-Received Wins) ===
+D4 DUPLICATE_ORDERING_PASSED: seq_wm=505850 ref_wm=505850 count=505849 hash=0xF6EF154EFDE905D8
+=== D5: Session Splits Verification ===
+D5 SESSION_SPLITS_PASSED: Watermarks and hashes match across session boundaries.
+=== D6: Unclean Death (Scripted Drops) Verification ===
+D6 UNCLEAN_DEATH_PASSED: State matches reference final state.
+=== D7/D8: Watchdog & Double-Run Determinism ===
+D7/D8 WATCHDOG_AND_DETERMINISM_PASSED: elapsed=0.34s run1=(505850, 505850, 505849, 17793464081775658456) run2=(505850, 505850, 505849, 17793464081775658456)
+=== D9: Indexed-Ingest Equivalence (classic == indexed) ===
+D9 INDEXED_EQUIVALENCE_PASSED: 12 cells (3 configs x 4 mutations) classic==indexed
+D11 CRC_KERNEL_DIFFERENTIAL_PASSED: scalar==reference, fold512==scalar on 2109 bodies (exhaustive lengths + patterns + random + eval2 + eval_pair)
+D11 REFLECT_KERNEL_DIFFERENTIAL_PASSED: reflect==scalar on 2101 bodies (exhaustive lengths + patterns + random + eval_pair)
+D12 BATCH_AND_PIPELINE_EQUIVALENCE_PASSED: classic == ingest_batch == RX-pipelined (counters/watermark/count/hash) incl. multi-pass resets
+=== ALL D1..D12 DIFFERENTIAL ORACLE CHECKS PASSED SUCCESSFULLY ===
+=== 13. T2 Window Sweep & Full 17-Cell Matrix Confluence Campaign ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.00s
+[1m[92m     Running[0m `target/release/window_sweep`
+=== RUNNING T2 WINDOW SIZE SWEEP (256..4096 x M1, M11) ===
+BLOB_BACKING mode=mmap anon_huge_kb=14336 map_mb=16.5 verdict=thp-granted
+WINDOW_SWEEP slots=256  arena= 16640 B l1_fit=Fits 32K L1D                   M1_rate=35.20M golden_M1=true M11_rate=21.70M golden_M11=true max_staged=0 beyond_drops=0
+WINDOW_SWEEP slots=512  arena= 33280 B l1_fit=Fits 64K L1D                   M1_rate=35.34M golden_M1=true M11_rate=21.65M golden_M11=true max_staged=0 beyond_drops=0
+WINDOW_SWEEP slots=1024 arena= 66560 B l1_fit=Exceeds L1D (L2 Cache resident) M1_rate=35.33M golden_M1=true M11_rate=21.36M golden_M11=true max_staged=0 beyond_drops=0
+WINDOW_SWEEP slots=2048 arena=133120 B l1_fit=Exceeds L1D (L2 Cache resident) M1_rate=35.19M golden_M1=true M11_rate=21.60M golden_M11=true max_staged=0 beyond_drops=0
+WINDOW_SWEEP slots=4096 arena=266240 B l1_fit=Exceeds L1D (L2 Cache resident) M1_rate=35.31M golden_M1=true M11_rate=21.63M golden_M11=true max_staged=0 beyond_drops=0
+
+=== T2 WINDOW SWEEP KNEE TABLE ===
+| Window Slots | Arena Footprint | Cache Residency | M1 Rate | M11 Rate | Max Staged | Beyond Drops | Confluence Verdict |
+|---|---|---|---|---|---|---|---|
+| 256  |  16640 B ( 16.2 KiB) | Fits 32K L1D                 | 35.20M msg/s | 21.70M msg/s | 0          | 0            | **PASS** |
+| 512  |  33280 B ( 32.5 KiB) | Fits 64K L1D                 | 35.34M msg/s | 21.65M msg/s | 0          | 0            | **PASS** |
+| 1024 |  66560 B ( 65.0 KiB) | Exceeds L1D (L2 Cache resident) | 35.33M msg/s | 21.36M msg/s | 0          | 0            | **PASS** |
+| 2048 | 133120 B (130.0 KiB) | Exceeds L1D (L2 Cache resident) | 35.19M msg/s | 21.60M msg/s | 0          | 0            | **PASS** |
+| 4096 | 266240 B (260.0 KiB) | Exceeds L1D (L2 Cache resident) | 35.31M msg/s | 21.63M msg/s | 0          | 0            | **PASS** |
+=== T2 WINDOW SWEEP COMPLETED SUCCESSFULLY ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/matrix_sweep`
+=== EXECUTING COMPLETE 17-CELL MATRIX CONFLUENCE CAMPAIGN (M1..M17) ===
+BLOB_BACKING mode=mmap anon_huge_kb=14336 map_mb=16.5 verdict=thp-granted
+MATRIX_CELL name="M1 (Baseline MTU contiguous)       " rate= 5.20M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M2 (Fixed 1 msg)                   " rate= 4.96M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M3 (Fixed 16 msgs)                 " rate= 6.16M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M4 (Gaussian delay jitter)         " rate= 6.09M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M5 (Bernoulli loss with dual feed) " rate= 6.41M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M6 (Gilbert-Elliott burst loss)    " rate= 6.55M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M7 (Pathological split: 1B to MTU) " rate= 6.02M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M8 (Feed A only lossless)          " rate= 7.83M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M9 (Feed B only lossless)          " rate= 7.91M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M10 (Heavy reorder jitter)         " rate= 6.28M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M11 (Deep out-of-order window)     " rate= 5.45M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M12 (Max-rate unconstrained)       " rate= 6.09M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M13 (M-LATE: Staged arrival edge)  " rate= 6.25M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M14 (M-BURST: Burst packet arrival)" rate= 6.33M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M15 (M-STARVE: Feed A silent for 2s)" rate= 6.10M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M16 (M-DUP2: Overlapping dual feed)" rate= 6.01M msg/s count=505849 wm=505850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+MATRIX_CELL name="M17 (M-DROPRESP / Session Boundary)" rate= 5.73M msg/s count=505849 wm=255850 hash=0xF6EF154EFDE905D8 verdict="PASS (Golden Bit-Identical)"
+
+=== COMPLETE 17-CELL MATRIX SUMMARY TABLE ===
+| Cell ID | Matrix Scenario | Throughput | Emitted Messages | Final Watermark | Canonical FNV Hash | Oracle Confluence Verdict |
+|---|---|---|---|---|---|---|
+| M1  | M1 (Baseline MTU contiguous)        |  5.20M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M2  | M2 (Fixed 1 msg)                    |  4.96M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M3  | M3 (Fixed 16 msgs)                  |  6.16M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M4  | M4 (Gaussian delay jitter)          |  6.09M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M5  | M5 (Bernoulli loss with dual feed)  |  6.41M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M6  | M6 (Gilbert-Elliott burst loss)     |  6.55M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M7  | M7 (Pathological split: 1B to MTU)  |  6.02M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M8  | M8 (Feed A only lossless)           |  7.83M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M9  | M9 (Feed B only lossless)           |  7.91M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M10 | M10 (Heavy reorder jitter)          |  6.28M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M11 | M11 (Deep out-of-order window)      |  5.45M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M12 | M12 (Max-rate unconstrained)        |  6.09M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M13 | M13 (M-LATE: Staged arrival edge)   |  6.25M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M14 | M14 (M-BURST: Burst packet arrival) |  6.33M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M15 | M15 (M-STARVE: Feed A silent for 2s) |  6.10M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M16 | M16 (M-DUP2: Overlapping dual feed) |  6.01M msg/s | 505849 | 505850 | 0xF6EF154EFDE905D8 | **PASS** |
+| M17 | M17 (M-DROPRESP / Session Boundary) |  5.73M msg/s | 505849 | 255850 | 0xF6EF154EFDE905D8 | **PASS** |
+=== ALL 17 MATRIX CELLS VERIFIED 100% GREEN ===
+=== 14. VR-4 Hostile Frame & Fuzz Campaign (3 Harnesses) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.00s
+[1m[92m     Running[0m `target/release/fuzz_campaign`
+=== VR-4 EXTENDED FUZZ CAMPAIGN (3 HARNESSES x 1,000,000 ITERATIONS) ===
+FUZZ_CAMPAIGN_REPORT total_execs=1000000 elapsed=0.105s data_frames=0 heartbeats=114 eos_frames=85 distinct_itch_types_validated=22/23 lsan_status=CLEAN panics=0
+VR-4 FUZZ CAMPAIGN 100% COMPLETE AND VERIFIED (1,000,000 EXECS).
+=== 15. Spec-Only Retransmission Server Clean-Room Validation (doc 14 §3.2 / F-31) ===
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.00s
+[1m[92m     Running[0m `target/release/spec_server`
+=== SPEC-ONLY SERVER CLEAN-ROOM VALIDATION (doc 14 §3.2 / F-31) ===
+Spec server spawned on UDP port 37360
+SPEC_SERVER_RESPONSE: session="SPECSESS01" start_seq=10 count=25 bytes_received=645
+=== SPEC-ONLY SERVER CLEAN-ROOM VALIDATION PASSED (F-31 CLOSED) ===
+=== 16. HFT-Verify Statistical Gate (nano/constr1.1.md §1: 30 runs + warmup 5 + JSON) ===
+info: downloading component rust-std
+Selecting previously unselected package musl:amd64.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 203191 files and directories currently installed.)
+Preparing to unpack .../musl_1.2.4-2_amd64.deb ...
+Unpacking musl:amd64 (1.2.4-2) ...
+Selecting previously unselected package musl-dev:amd64.
+Preparing to unpack .../musl-dev_1.2.4-2_amd64.deb ...
+Unpacking musl-dev:amd64 (1.2.4-2) ...
+Selecting previously unselected package musl-tools.
+Preparing to unpack .../musl-tools_1.2.4-2_amd64.deb ...
+Unpacking musl-tools (1.2.4-2) ...
+Setting up musl:amd64 (1.2.4-2) ...
+Setting up musl-dev:amd64 (1.2.4-2) ...
+Setting up musl-tools (1.2.4-2) ...
+Processing triggers for man-db (2.12.0-4build2) ...
+Not building database; man-db/auto-update is not 'true'.
+
+Running kernel seems to be up-to-date.
+
+No services need to be restarted.
+
+No containers need to be restarted.
+
+No user sessions are running outdated binaries.
+
+No VM guests are running outdated hypervisor (qemu) binaries on this host.
+MUSL_BUILD_OK static target
+HFT_BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52 target_env=musl
+TOPOLOGY_VERIFICATION main=Some(0) rx=Some(2) -> VERIFIED (distinct physical cores, same L3 domain — the deterministic 0.21 cyc/msg mode)
+BLOB_BACKING mode=mmap anon_huge_kb=14336 map_mb=16.5 verdict=thp-granted
+HFT_BENCH_WARMUP 1/5 arm=classic rate=901680371
+HFT_BENCH_WARMUP 2/5 arm=classic rate=1171831057
+HFT_BENCH_WARMUP 3/5 arm=classic rate=1227806715
+HFT_BENCH_WARMUP 4/5 arm=classic rate=1259587299
+HFT_BENCH_WARMUP 5/5 arm=classic rate=1244596935
+HFT_BENCH_RUN 1/30 arm=classic rate=1238523709 cyc=2.10
+HFT_BENCH_RUN 2/30 arm=classic rate=1232719713 cyc=2.11
+HFT_BENCH_RUN 3/30 arm=classic rate=1259681399 cyc=2.06
+HFT_BENCH_RUN 4/30 arm=classic rate=1261475119 cyc=2.06
+HFT_BENCH_RUN 5/30 arm=classic rate=1260340493 cyc=2.06
+HFT_BENCH_RUN 6/30 arm=classic rate=1259618664 cyc=2.06
+HFT_BENCH_RUN 7/30 arm=classic rate=1222545538 cyc=2.12
+HFT_BENCH_RUN 8/30 arm=classic rate=1260528932 cyc=2.06
+HFT_BENCH_RUN 9/30 arm=classic rate=1228101822 cyc=2.11
+HFT_BENCH_RUN 10/30 arm=classic rate=1263302349 cyc=2.06
+HFT_BENCH_RUN 11/30 arm=classic rate=1242423498 cyc=2.09
+HFT_BENCH_RUN 12/30 arm=classic rate=1255672692 cyc=2.07
+HFT_BENCH_RUN 13/30 arm=classic rate=1218446426 cyc=2.13
+HFT_BENCH_RUN 14/30 arm=classic rate=1263747354 cyc=2.05
+HFT_BENCH_RUN 15/30 arm=classic rate=1241170581 cyc=2.09
+HFT_BENCH_RUN 16/30 arm=classic rate=1264916593 cyc=2.05
+HFT_BENCH_RUN 17/30 arm=classic rate=1265046290 cyc=2.05
+HFT_BENCH_RUN 18/30 arm=classic rate=1267077462 cyc=2.05
+HFT_BENCH_RUN 19/30 arm=classic rate=1267391750 cyc=2.05
+HFT_BENCH_RUN 20/30 arm=classic rate=1180403650 cyc=2.20
+HFT_BENCH_RUN 21/30 arm=classic rate=1262829282 cyc=2.06
+HFT_BENCH_RUN 22/30 arm=classic rate=1217417150 cyc=2.13
+HFT_BENCH_RUN 23/30 arm=classic rate=1264948224 cyc=2.05
+HFT_BENCH_RUN 24/30 arm=classic rate=1242515050 cyc=2.09
+HFT_BENCH_RUN 25/30 arm=classic rate=1268860494 cyc=2.05
+HFT_BENCH_RUN 26/30 arm=classic rate=1229238859 cyc=2.11
+HFT_BENCH_RUN 27/30 arm=classic rate=1268062118 cyc=2.05
+HFT_BENCH_RUN 28/30 arm=classic rate=1209227775 cyc=2.15
+HFT_BENCH_RUN 29/30 arm=classic rate=1268252873 cyc=2.05
+HFT_BENCH_RUN 30/30 arm=classic rate=1232119195 cyc=2.11
+HFT_BENCH_WARMUP 1/5 arm=span rate=3286035377
+HFT_BENCH_WARMUP 2/5 arm=span rate=9853497477
+HFT_BENCH_WARMUP 3/5 arm=span rate=10243383350
+HFT_BENCH_WARMUP 4/5 arm=span rate=9257681960
+HFT_BENCH_WARMUP 5/5 arm=span rate=10397290964
+HFT_BENCH_RUN 1/30 arm=span rate=8483271562 cyc=0.31
+HFT_BENCH_RUN 2/30 arm=span rate=9351814534 cyc=0.28
+HFT_BENCH_RUN 3/30 arm=span rate=10025745714 cyc=0.26
+HFT_BENCH_RUN 4/30 arm=span rate=9501474482 cyc=0.27
+HFT_BENCH_RUN 5/30 arm=span rate=10660449727 cyc=0.24
+HFT_BENCH_RUN 6/30 arm=span rate=9381298566 cyc=0.28
+HFT_BENCH_RUN 7/30 arm=span rate=10577967838 cyc=0.25
+HFT_BENCH_RUN 8/30 arm=span rate=9143556929 cyc=0.28
+HFT_BENCH_RUN 9/30 arm=span rate=9262597963 cyc=0.28
+HFT_BENCH_RUN 10/30 arm=span rate=9533707759 cyc=0.27
+HFT_BENCH_RUN 11/30 arm=span rate=10487829656 cyc=0.25
+HFT_BENCH_RUN 12/30 arm=span rate=10560301455 cyc=0.25
+HFT_BENCH_RUN 13/30 arm=span rate=9465737275 cyc=0.27
+HFT_BENCH_RUN 14/30 arm=span rate=10455097864 cyc=0.25
+HFT_BENCH_RUN 15/30 arm=span rate=9291521251 cyc=0.28
+HFT_BENCH_RUN 16/30 arm=span rate=10538081746 cyc=0.25
+HFT_BENCH_RUN 17/30 arm=span rate=9453354513 cyc=0.27
+HFT_BENCH_RUN 18/30 arm=span rate=10606802121 cyc=0.24
+HFT_BENCH_RUN 19/30 arm=span rate=9393493157 cyc=0.28
+HFT_BENCH_RUN 20/30 arm=span rate=10669668846 cyc=0.24
+HFT_BENCH_RUN 21/30 arm=span rate=9081180546 cyc=0.29
+HFT_BENCH_RUN 22/30 arm=span rate=9343177998 cyc=0.28
+HFT_BENCH_RUN 23/30 arm=span rate=10380009439 cyc=0.25
+HFT_BENCH_RUN 24/30 arm=span rate=9488820108 cyc=0.27
+HFT_BENCH_RUN 25/30 arm=span rate=12138822230 cyc=0.21
+HFT_BENCH_RUN 26/30 arm=span rate=9284869954 cyc=0.28
+HFT_BENCH_RUN 27/30 arm=span rate=10617934132 cyc=0.24
+HFT_BENCH_RUN 28/30 arm=span rate=7889590741 cyc=0.33
+HFT_BENCH_RUN 29/30 arm=span rate=8977868095 cyc=0.29
+HFT_BENCH_RUN 30/30 arm=span rate=9155306595 cyc=0.28
+DIAG rx span: publications=786 polls=3109 prod_ms=2.4 bufwait_laps=157 resets=35 eos_parks=35 nbuf=16 rx_actual_cpu=2
+ADVANCE_DIAGNOSTIC span: advances=0 advance_ms=0.0 us_per_advance=0.0 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC span: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC span: enabled=true patches=769860 last_pass_patches=21996 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons span: parks=1 park_ms=0.1 slow_waits=1 slow_ms=0.1
+LADDER_DIAGNOSTIC span: vectorized=false (F-3 entry walk; HFT_VEC_LADDER=1 arms the 8-entry group path — the Front A consumer IS the post-F-2 wall)
+HFT_BENCH_WARMUP 1/5 arm=spec rate=495443691
+HFT_BENCH_WARMUP 2/5 arm=spec rate=498499128
+HFT_BENCH_RUN 1/30 arm=spec rate=495414092
+HFT_BENCH_RUN 2/30 arm=spec rate=496753932
+HFT_BENCH_RUN 3/30 arm=spec rate=494686401
+HFT_BENCH_RUN 4/30 arm=spec rate=480127603
+HFT_BENCH_RUN 5/30 arm=spec rate=496046622
+HFT_BENCH_RUN 6/30 arm=spec rate=495686436
+HFT_BENCH_RUN 7/30 arm=spec rate=494299204
+HFT_BENCH_RUN 8/30 arm=spec rate=493449117
+HFT_BENCH_RUN 9/30 arm=spec rate=491069764
+HFT_BENCH_RUN 10/30 arm=spec rate=496544257
+HFT_BENCH_RUN 11/30 arm=spec rate=498327248
+HFT_BENCH_RUN 12/30 arm=spec rate=496622255
+HFT_BENCH_RUN 13/30 arm=spec rate=498632294
+HFT_BENCH_RUN 14/30 arm=spec rate=498356705
+HFT_BENCH_RUN 15/30 arm=spec rate=499119865
+HFT_BENCH_RUN 16/30 arm=spec rate=497155246
+HFT_BENCH_RUN 17/30 arm=spec rate=497914728
+HFT_BENCH_RUN 18/30 arm=spec rate=496734420
+HFT_BENCH_RUN 19/30 arm=spec rate=497928942
+HFT_BENCH_RUN 20/30 arm=spec rate=497292094
+HFT_BENCH_RUN 21/30 arm=spec rate=497610559
+HFT_BENCH_RUN 22/30 arm=spec rate=497669307
+HFT_BENCH_RUN 23/30 arm=spec rate=496573016
+HFT_BENCH_RUN 24/30 arm=spec rate=491398923
+HFT_BENCH_RUN 25/30 arm=spec rate=498450008
+HFT_BENCH_RUN 26/30 arm=spec rate=497497509
+HFT_BENCH_RUN 27/30 arm=spec rate=497331208
+HFT_BENCH_RUN 28/30 arm=spec rate=497551825
+HFT_BENCH_RUN 29/30 arm=spec rate=498175110
+HFT_BENCH_RUN 30/30 arm=spec rate=498543837
+PR1_R23_PURE_INGEST_VERDICT rate=497292094 target=15000000000 -> FAIL (R23: 15B msg/s pure ingest with the speculative 512-bit slicer — the 20B mode's pricing row; the R8/R16 span-arm gates above stay the asserting floor)
+DIAG rx spec: publications=416 polls=2784 prod_ms=1.5 bufwait_laps=43 resets=32 eos_parks=32 nbuf=16 rx_actual_cpu=2
+ADVANCE_DIAGNOSTIC spec: advances=0 advance_ms=0.0 us_per_advance=0.0 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC spec: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC spec: enabled=true patches=351936 last_pass_patches=10998 frames=10998 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons spec: parks=0 park_ms=0.0 slow_waits=0 slow_ms=0.0
+PR1_R8_PURE_INGEST_VERDICT rate=9477264636 target=2000000000 -> PASS (R8: 2B msg/s pure ingest — full pipeline live, span emission, zero verification skipped)
+PR1_R16_PURE_INGEST_VERDICT rate=9477264636 target=5000000000 -> PASS (R16: 5B msg/s pure ingest — the Double Helix program, docs/29)
+{
+  "median_cycles": 2.0610,
+  "p95_cycles": 2.1469,
+  "p99_cycles": 2.1994,
+  "stddev": 0.0372,
+  "cv_percent": 1.8066,
+  "runs": 30,
+  "warmup": 5,
+  "cpu_model": "AMD EPYC 9V45 96-Core Processor",
+  "freq_mhz": 2596.12,
+  "target": "x86_64-unknown-linux-musl",
+  "sink": "count+span",
+  "sample": "data/tests/sample-mini.itch",
+  "span_median_cycles": 0.2739,
+  "span_p95_cycles": 0.3060,
+  "span_p99_cycles": 0.3291,
+  "span_stddev": 0.0225,
+  "span_cv_percent": 8.2310,
+  "span_rate_msg_per_sec": 9477264636,
+  "r8_pure_ingest_target": 2000000000,
+  "r8_pure_ingest_verdict": "PASS",
+  "r16_pure_ingest_target": 5000000000,
+  "r16_pure_ingest_verdict": "PASS",
+  "spec_rate_msg_per_sec": 497292094,
+  "r23_pure_ingest_target": 15000000000,
+  "r23_pure_ingest_verdict": "FAIL"
+}
+R23_SPEC_INGEST_ROW spec_rate=497292094 verdict=FAIL (REPORTED)
+ALL CONSTRAINTS PASSED
+=== ALL CHECKS PASSED SUCCESSFULLY ===

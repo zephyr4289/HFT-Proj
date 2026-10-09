@@ -1,0 +1,33 @@
+[1m[92m    Finished[0m `release` profile [optimized] target(s) in 0.01s
+[1m[92m     Running[0m `target/release/bench --sample data/tests/sample-mini.itch --hydra-only --runs 7`
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2596.12 mark_overhead_cycles=52
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+BLOB_BACKING mode=mmap anon_huge_kb=16384 map_mb=16.5 verdict=thp-granted
+HYDRA_BITPARITY sequential=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0x881639cead506f25 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1450043141 allocs=0 freq=2596.12MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1483436853 allocs=0 freq=2596.12MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1583960896 allocs=0 freq=2596.12MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1622845318 allocs=0 freq=2596.12MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1678553889 allocs=0 freq=2596.12MHz workers=2 run=5
+BENCH mode=replay-hydra-burst msgs=505849 rate=1690242451 allocs=0 freq=2596.12MHz workers=2 run=6
+BENCH mode=replay-hydra-burst msgs=505849 rate=1676773402 allocs=0 freq=2596.12MHz workers=2 run=7
+BENCH_MEDIAN mode=replay-hydra-burst rate=1622845318
+R23B_AFFINE_VERDICT arm=burst armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1622845318 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1622845318 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+DIAG sustained: passes=17408 reset_ms=458.2 scan_ms=4538.1 end_ms=0.9 pending_max=6600 batches=382976 wait_ms=36.3 work_ms=4134.6 fold_ms=290.3 assist_chunks=389052 bytes_per_msg=27.65 crc_demand_gb_s=48.70
+DIAG worker[0] sustained: cpu0(pinned) placement=[0, 2] batches=593159 spans=75901740 eval_ms=4958.1 idle_iters=42111 res_waits=0 fw=0 fw_ms=0.0
+DIAG worker[1] sustained: cpu2(pinned) placement=[0, 2] batches=728505 spans=93226420 eval_ms=4945.2 idle_iters=38655 res_waits=0 fw=0 fw_ms=0.0
+DIAG rx sustained: publications=383036 polls=1514734 prod_ms=1514.8 bufwait_laps=139200 resets=17410 eos_parks=0 nbuf=16 rx_actual_cpu=3
+ADVANCE_DIAGNOSTIC sustained: advances=17410 advance_ms=118.3 us_per_advance=6.8 (F-5 reset/auto-advance hygiene — the synchronous bake tail the per-publication prepatch budget drains; HFT_PREPATCH_BUDGET prices it)
+RXWARM_DIAGNOSTIC sustained: enabled=false fixes=0 uncovered=0 last_pass_fixes=0 (F-1 frame-entry warm start; the steady-state law is fixes==0 on pass>=2 — the kill rule reads persistent fixes)
+RXBUILD_DIAGNOSTIC sustained: enabled=true patches=382929580 last_pass_patches=22060 frames=21996 (F-2 publish-by-reference master; the steady-state law is every patchable entry patched exactly once per pass boundary)
+DIAG cons sustained: parks=20 park_ms=1.7 slow_waits=20 slow_ms=2.0
+BENCH mode=replay-hydra-sustained-5s total_msgs=8805819392 duration=5.00s sustained_rate=1761136430 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=1761136430 (duration=5.00s, total_msgs=8805819392, workers=2)
+PR1_GIGAHFT_VERDICT rate=1761136430 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=1761136430 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=1761136430 target=2000000000 -> FAIL (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=389052 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact)
+R23B_AFFINE_VERDICT arm=sustained armed=false tag_hits=0 payload_fallbacks=0 ledger_rows=0 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=1761136430 target=2500000000 -> FAIL (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
