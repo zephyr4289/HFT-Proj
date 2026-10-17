@@ -1882,15 +1882,24 @@ fn lane_worker_rxdesc_diet(
     let reslog_enabled = res_replay_override
         .unwrap_or_else(|| std::env::var("HFT_RES_REPLAY").as_deref() == Ok("1"))
         && composite
-        && !null
-        // R36-E (the ship's scope gate): the SINGLE-LANE shape. The
-        // two-lane replay's frontier couples to the window publication
-        // cadence (the ready gate, the SS pre-publish, the pace spin's
-        // fold dependency) — a residual interaction the fleet's timing
-        // exposes (the local slice cannot); the next session's debug
-        // lands it. The single-lane elision is proven: the local
-        // champion at 2.3–2.85x, BIT-EXACT, allocs=0, every gate.
-        && n_lanes == 1;
+        && !null;
+        // R37 (solution2.md Part II, Theorems 23–26): the SINGLE-LANE
+        // scope gate is LIFTED. The R36-E two-lane coupling was the
+        // fold-frontier dependency: the workers' res rings filled at
+        // the serial fold's drain pace (2.08 µs/pass — B1), the pace
+        // spin throttled the faster lane to the slower, and the
+        // ready-gate ordered the commutative path behind the hash
+        // frontier. With the R37 tree fold the drain runs ~13× ahead
+        // of the record stream and the frontier's fold dependency
+        // dissolves — the lanes' round-robin chunk grid IS the static
+        // epoch-block assignment of Def 3.1 (a fixed function of the
+        // tape, never of timing), the per-lane res rings are the SPSC
+        // epoch rings, and the fold's strict-order drain is the
+        // static-order merge (Theorem 23(b)). The champion arm 11r37
+        // runs the two-worker shape armed; the fleet prices the lane
+        // interference efficiency η (gate 12: 2-lane vs 1-lane on
+        // identical tapes). The one-worker shape stays available via
+        // HFT_SUSTAINED_WORKERS=1 (arm 11r36 — the attribution twin).
     let reslog_audit = std::env::var("HFT_RES_AUDIT").is_ok();
     let mut reslog = ResLog::new(reslog_enabled, reslog_audit, n_lanes);
     let pf = PfCfg::detect(kernel);
@@ -2251,6 +2260,31 @@ fn lane_worker_rxdesc_diet(
         let res_slots = lane.res_slots();
         let mut nres: u64 = 0;
         'batch: while n_total < wbatch {
+            // R37: THE STALE-READY REFRESH (the two-lane deadlock's
+            // root, docs/48 §1's scoped-out class now closed). The
+            // multi-lane gap keeps THIS lane's eval cursor BELOW the
+            // global publication frontier (the other lane's chunks
+            // fill the gap), so Strand A's refresh (`eval >= ready`)
+            // never fires on the replay path — the frontier break +
+            // the liveness publish's `continue 'batch` spin against a
+            // STALE local `ready` while the register already holds the
+            // window's SS pre-publication, and the cycle closes
+            // through the main thread's pace gate (pending > RX_PACE →
+            // the fold → this lane's records → the stale frontier).
+            // ONE Acquire per chunk-iteration, only while the replay
+            // is armed and only when Strand A itself won't refresh —
+            // the single-lane shape's eval tracks the ready and never
+            // pays the load's branch.
+            if reslog.replaying && eval < ready {
+                let (g2, r2) = rx.load_ready();
+                if g2 == gen && r2 > ready {
+                    ready = r2;
+                    // STRAND B: the ready-advance refresh (the boundary
+                    // records may have landed with the publication).
+                    next_wb = probe_wb(&rx, gen, rec_slot, rec_base);
+                    pf_wb = probe_wb(&rx, gen, pf_slot, pf_base);
+                }
+            }
             if eval >= ready {
                 // STRAND A — the frontier hit: publish the partial run
                 // FIRST (liveness), then wait at the frontier hot.
@@ -2387,7 +2421,7 @@ fn lane_worker_rxdesc_diet(
                         // The frontier: the segment's spans are not all
                         // published yet — wait at the batch top (the
                         // Strand A machinery, shared verbatim).
-                        if std::env::var("HFT_RES_DBG").is_ok() {
+                        if crate::res_dbg_gate() {
                             eprintln!(
                                 "R36EDBG lane{lane_idx} frontier: eval={eval} first={first} end={end} ready={ready} rp={}/{} rb={} phase={} rec_base={} next_wb={}",
                                 reslog.rp_next, reslog.rp_end, reslog.cur_rb, reslog.phase, rec_base, next_wb
@@ -3320,8 +3354,192 @@ fn assist_slots_from_env() -> usize {
         .clamp(4, 4096)
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// R37 (Run 900) — THE FOLD JOURNAL (docs/solution2.md §2.7–§2.8:
+// the L1 journal + the tree-fold landing, Theorems 19–22)
+// ─────────────────────────────────────────────────────────────────────
+
+/// The tree journal's leaf capacity. The champion's steady pass
+/// pushes ~194 composite records (docs/48 §8: 113,186,154 records /
+/// 583,434 passes); 512 leaves × 12 B = 6 KB — L1-resident with the
+/// SoA columns side by side (Corollary 19.1's residency law). An
+/// overflow (a boundary-less burst run, an unsegmented fallback
+/// burst) flushes early — exact at ANY point by associativity
+/// (Theorem 19's remark (ii): a partially-evaluated prefix composed
+/// with a tree over the remaining records is just another tree
+/// shape); capacity is a performance dial, never a correctness
+/// constraint.
+const FJ_CAP: usize = 512;
+
+/// THE FOLD JOURNAL: the pass's fold records, journaled as
+/// `(k, B)` S-records on the ROTATION ring (the segment monoid
+/// `sink::tree_fold_segments` composes — Theorem 28's ring
+/// polymorphism, the rotl-13 twin of the SPANHASH records) instead
+/// of applied serially into `hash`. The serial chain
+/// `S_p = S_{p−1} ⨂ R_p` — 322 dependent applies, the 2.08 µs/pass
+/// cross-pass loop-carried barrier (the 61B wall, B1) — becomes a
+/// leaf array the boundary flush evaluates as a ⌈log₂ K⌉-depth
+/// up-sweep and applies in ONE `fold_compose_apply` hop. Records
+/// never straddle a pending pass boundary (the worker's split law +
+/// the R29/Lever-4 caps), so each leaf belongs to exactly one pass
+/// and `flush_upto(boundary)` partitions exactly at the leaf edges;
+/// `end[]` tracks the fold position after each leaf — strictly
+/// monotone, the partition key.
+///
+/// Soundness is Theorem 22 verbatim (the tree is a re-bracketing of
+/// the serial chain — every coordinate bit-exact), pinned by the
+/// whole hydra matrix running the tree path by default plus the
+/// dedicated journal cells (forced overflows, mid-journal boundary
+/// splits, the serial rollback differential).
+struct FoldJournal {
+    /// The leaf records' span counts (the rotation degrees).
+    k: Box<[u32]>,
+    /// The leaf records' segment constants.
+    b: Box<[u64]>,
+    /// fold_pos AFTER each leaf (the boundary partition key).
+    end: Box<[u64]>,
+    /// Live leaf count.
+    len: usize,
+    /// `false` = the R36 serial chain verbatim (the rollback arm's
+    /// attribution shape; `HFT_TREE_FOLD=0`).
+    tree: bool,
+    /// Telemetry: boundary + overflow flushes.
+    flushes: u64,
+    /// Telemetry: capacity-driven early flushes.
+    overflows: u64,
+    /// Telemetry: total records journaled.
+    records: u64,
+    /// Telemetry: max leaves in one flush (the compose_max dial).
+    compose_max: u64,
+}
+
+impl FoldJournal {
+    /// Construction-time allocation (sinks are built outside every
+    /// measurement window — the allocs=0 gate law). `cap` exists for
+    /// the unit cells (forced-overflow shapes); production uses
+    /// [`FJ_CAP`].
+    fn with_capacity(tree: bool, cap: usize) -> Self {
+        assert!(cap >= 1 && cap <= FJ_CAP, "journal cap out of range");
+        FoldJournal {
+            k: vec![0u32; cap].into_boxed_slice(),
+            b: vec![0u64; cap].into_boxed_slice(),
+            end: vec![0u64; cap].into_boxed_slice(),
+            len: 0,
+            tree,
+            flushes: 0,
+            overflows: 0,
+            records: 0,
+            compose_max: 0,
+        }
+    }
+
+    fn tree_fold_enabled() -> bool {
+        // The rollback: `HFT_TREE_FOLD=0` restores the R36 serial
+        // per-record apply verbatim (the attribution arm 11r37r —
+        // the same-draw delta prices the tree's contribution).
+        std::env::var("HFT_TREE_FOLD").as_deref() != Ok("0")
+    }
+
+    /// Journal one record (or apply it serially under the rollback).
+    /// `end` = the fold position AFTER this record — callers know it
+    /// (the composite drain's record end; the per-span sites' +1).
+    #[inline(always)]
+    fn push(&mut self, hash: &mut u64, k: u32, b: u64, end: u64) {
+        if !self.tree {
+            // The R36 champion's law, verbatim (Theorem 22's oracle).
+            *hash = crate::sink::fold_compose_apply(*hash, k, b);
+            self.records += 1;
+            return;
+        }
+        if self.len == self.k.len() {
+            // Capacity flush: every journaled leaf has end ≤ fold_pos
+            // < every PENDING boundary (the boundary is stamped at
+            // end_pass at the submission frontier ≥ fold_pos), so
+            // flushing all is exact — the associativity license.
+            self.overflows += 1;
+            self.apply_prefix(hash, self.len);
+            self.len = 0;
+        }
+        self.k[self.len] = k;
+        self.b[self.len] = b;
+        self.end[self.len] = end;
+        self.len += 1;
+        self.records += 1;
+    }
+
+    /// Flush the prefix of leaves with `end ≤ boundary` — the
+    /// completed pass's records — into `hash` (the tree + one apply),
+    /// shifting any remainder (next-pass leaves already drained past
+    /// this boundary; structurally empty in the steady law, exact
+    /// regardless — Theorem 19's heterogeneous shapes).
+    fn flush_upto(&mut self, hash: &mut u64, boundary: u64) {
+        if self.len == 0 || !self.tree {
+            return;
+        }
+        let p = self.end[..self.len].partition_point(|&e| e <= boundary);
+        if p == 0 {
+            return;
+        }
+        self.apply_prefix(hash, p);
+        let rem = self.len - p;
+        if rem > 0 {
+            self.k.copy_within(p..self.len, 0);
+            self.b.copy_within(p..self.len, 0);
+            self.end.copy_within(p..self.len, 0);
+        }
+        self.len = rem;
+    }
+
+    /// Flush everything (the finish path: the burst shape's direct
+    /// `hash` field reads require the chain current with no
+    /// boundaries pending; the pass shape's tail past the last
+    /// boundary).
+    fn flush_all(&mut self, hash: &mut u64) {
+        if self.len == 0 || !self.tree {
+            return;
+        }
+        self.apply_prefix(hash, self.len);
+        self.len = 0;
+    }
+
+    /// THE TREE FLUSH: the up-sweep over the first `p` leaves (in
+    /// place, ⌈log₂ p⌉ levels) + the single composite application.
+    /// `rotl(h, 13K) ^ V` — one `fold_compose_apply`, exactly the
+    /// serial chain's iterated result (Theorem 22).
+    fn apply_prefix(&mut self, hash: &mut u64, p: usize) {
+        let (kk, bb) = crate::sink::tree_fold_segments(
+            &mut self.k[..p],
+            &mut self.b[..p],
+        );
+        *hash = crate::sink::fold_compose_apply(*hash, kk, bb);
+        self.flushes += 1;
+        self.compose_max = self.compose_max.max(p as u64);
+    }
+
+    /// The reset path: drop any residue (all boundaries completed ⇒
+    /// structurally empty; defensive regardless).
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    /// The telemetry contract (the FOLDTREE_DIAGNOSTIC line):
+    /// `(tree, flushes, overflows, records, compose_max, live_len)`.
+    fn stats(&self) -> (bool, u64, u64, u64, u64, u64) {
+        (
+            self.tree,
+            self.flushes,
+            self.overflows,
+            self.records,
+            self.compose_max,
+            self.len as u64,
+        )
+    }
+}
+
 pub struct HydraSpanSink<'a> {
     fabric: Option<&'a HydraFabric>,
+    // ── R37: the fold journal (the tree's leaf array — see FoldJournal) ──
+    journal: FoldJournal,
     // ── observable state: field-for-field identical to SpanConformanceSink ──
     pub hash: u64,
     pub count: u64,
@@ -3588,6 +3806,10 @@ impl<'a> HydraSpanSink<'a> {
         let rx_affine = rx.as_ref().is_some_and(|st| st.affine_armed());
         let sink = Self {
             fabric,
+            // R37: the tree journal — allocation at construction (outside
+            // every window); the serial rollback rides the same struct
+            // (`HFT_TREE_FOLD=0`).
+            journal: FoldJournal::with_capacity(FoldJournal::tree_fold_enabled(), FJ_CAP),
             hash: Self::SPAN_SEED,
             count: 0,
             last_gen: 0,
@@ -3724,6 +3946,10 @@ impl<'a> HydraSpanSink<'a> {
         // grid-aligned chunk-open writes an ANCHOR desc (first span 0),
         // re-anchoring every worker's derivation absolutely.
         self.hash = Self::SPAN_SEED;
+        // R37: the chain's journal resets with it (all boundaries
+        // completed by the drain assert above — structurally empty;
+        // defensive regardless).
+        self.journal.clear();
         self.count = 0;
         self.last_gen = 0;
         self.gap_open_gen = None;
@@ -3916,6 +4142,18 @@ impl<'a> HydraSpanSink<'a> {
     /// The chain value at the crossing IS the completed pass's hash (the
     /// fold applies values in strict global span order, and the boundary
     /// sits exactly at the pass's final span + 1).
+    ///
+    /// R37: the snapshot reads the chain THROUGH the journal — the
+    /// flush composes the pass's journaled leaves (up to exactly this
+    /// boundary; records never straddle) by the ⌈log₂ K⌉ up-sweep and
+    /// applies the composite in ONE `fold_compose_apply` hop before
+    /// the snapshot. The serial chain's 322-dependent-apply barrier
+    /// (the 2.08 µs/pass cross-pass dependency — the 61B wall) becomes
+    /// a ~194-leaf tree ≈ 8 levels + one hop; the next pass's leaves
+    /// (already drained past this boundary, if any) stay journaled —
+    /// their composite is h-independent (the V-coordinate never sees
+    /// the entry hash), so the SPAN_SEED reseed below re-bases them
+    /// exactly.
     fn complete_boundaries(&mut self) {
         while self.pass_tail != self.pass_head {
             let rec = &self.passes[self.pass_tail];
@@ -3923,6 +4161,7 @@ impl<'a> HydraSpanSink<'a> {
                 break;
             }
             if rec.end_span <= self.fold_pos {
+                self.journal.flush_upto(&mut self.hash, rec.end_span);
                 let h = self.hash;
                 let rec = &mut self.passes[self.pass_tail];
                 rec.hash = h;
@@ -3957,9 +4196,19 @@ impl<'a> HydraSpanSink<'a> {
     /// from the R23 `h ← (rotl(h,13) ^ v)·P` so that chunk segments
     /// compose — see `sink::fold_compose_b`/`fold_compose_apply`; the
     /// per-span form stays the reference and the rollback path).
+    ///
+    /// R37: under the tree the span journals as a `(k=1, B=v·P)` leaf
+    /// (the segment monoid's per-span generator); `end` is the fold
+    /// position after this span — every caller knows it (the loop
+    /// counters run ahead of the committed `fold_pos` cursor).
     #[inline(always)]
-    fn fold_value(&mut self, v: u64) {
-        self.hash = crate::sink::fold_step(self.hash, v);
+    fn fold_value(&mut self, v: u64, end: u64) {
+        if self.journal.tree {
+            self.journal
+                .push(&mut self.hash, 1, crate::sink::fold_term(v), end);
+        } else {
+            self.hash = crate::sink::fold_step(self.hash, v);
+        }
     }
 
     /// R16b: publish the span-count cursor — the ONE Release store that
@@ -5378,7 +5627,9 @@ impl<'a> HydraSpanSink<'a> {
                     // exact-match above is its guard.
                     for i in 0..n as usize {
                         let v = self.inline_ring[slot].vals[i];
-                        self.fold_value(v);
+                        // R37: fold_pos is the chunk start here (the exact
+                        // match above) — leaf end = start + i + 1.
+                        self.fold_value(v, self.fold_pos + i as u64 + 1);
                     }
                     self.inline_fold_seq += 1;
                     self.fold_pos += n;
@@ -5522,9 +5773,21 @@ impl<'a> HydraSpanSink<'a> {
                             rec.end_span
                         );
                     }
-                    // THE APPLICATION: h ← rotl(h, 13k) ^ B.
-                    self.hash =
-                        crate::sink::fold_compose_apply(self.hash, k as u32, r.value);
+                    // R37 — THE JOURNALING: the record becomes a leaf
+                    // `(k, B)` of the current pass's tree (applied at
+                    // the boundary flush by the ⌈log₂ K⌉ up-sweep + ONE
+                    // `fold_compose_apply` hop — the serial chain's
+                    // dependent-apply loop-carried dependency leaves
+                    // the drain; the load/assert/store pipeline).
+                    // Rollback (`HFT_TREE_FOLD=0`): the serial apply
+                    // verbatim. Leaf end = fold_pos + k (the record's
+                    // exact end — records never straddle boundaries).
+                    self.journal.push(
+                        &mut self.hash,
+                        k as u32,
+                        r.value,
+                        self.fold_pos + k as u64,
+                    );
                     self.fold_pos += k;
                     self.fold_rem -= k;
                     consumed += 1;
@@ -5584,7 +5847,9 @@ impl<'a> HydraSpanSink<'a> {
                     n
                 );
                 let v = r.value;
-                self.fold_value(v);
+                // R37: fold_pos advances after the batch (n-capped) — the
+                // i-th leaf's end is start + i + 1.
+                self.fold_value(v, self.fold_pos + i as u64 + 1);
             }
             lane.res_tail.store(tail + n, Ordering::Release);
             self.fold_pos += n;
@@ -5674,6 +5939,12 @@ impl<'a> HydraSpanSink<'a> {
             debug_assert_eq!(self.fold_pos, self.next_span);
             self.complete_boundaries();
         }
+        // R37: the final flush — the burst shape reads `hash` directly
+        // after finish (no pass boundaries ever fire there), and the pass
+        // shape's tail past the last completed boundary needs its leaves
+        // applied. No-op when the boundary loop already drained the
+        // journal (the steady law).
+        self.journal.flush_all(&mut self.hash);
     }
 
     /// One non-blocking fold attempt for `finish`'s spin loop (returns true
@@ -5699,6 +5970,18 @@ impl<'a> HydraSpanSink<'a> {
     #[inline]
     pub fn assist_chunks(&self) -> u64 {
         self.assist_chunks
+    }
+
+    /// R37 telemetry: the fold journal's engagement contract —
+    /// `(tree, flushes, overflows, records, compose_max, live_len)`
+    /// (the FOLDTREE_DIAGNOSTIC line's source). Engagement law: on a
+    /// pass-shaped run, `flushes` ≈ completed boundaries (+ the rare
+    /// capacity flushes), `records` = the drained composite records,
+    /// and `live_len` = 0 at rest (every leaf flushed at its
+    /// boundary / the finish).
+    #[inline]
+    pub fn fold_tree_stats(&self) -> (bool, u64, u64, u64, u64, u64) {
+        self.journal.stats()
     }
 
     /// R16b telemetry: check-and-fix corrections applied (0 on a clean
@@ -5842,7 +6125,9 @@ impl<'a> Sink for HydraSpanSink<'a> {
             None => {
                 // Inline mode: evaluate + fold NOW — sequential-equivalent.
                 let v = span_crc32c_8lane(body);
-                self.fold_value(v);
+                // R37: fold_pos is this span's start (the +1 below) — the
+                // leaf's end.
+                self.fold_value(v, self.fold_pos + 1);
                 self.next_span += 1;
                 self.fold_pos += 1;
             }
@@ -5889,7 +6174,9 @@ impl<'a> Sink for HydraSpanSink<'a> {
                 // Inline mode: evaluate + fold NOW — sequential-equivalent.
                 for r in recs {
                     let v = span_crc32c_8lane(r.body);
-                    self.fold_value(v);
+                    // R37: fold_pos is this span's start (the +1 below) —
+                    // the leaf's end.
+                    self.fold_value(v, self.fold_pos + 1);
                     self.next_span += 1;
                     self.fold_pos += 1;
                 }
@@ -5972,7 +6259,9 @@ impl<'a> Sink for HydraSpanSink<'a> {
                 for &w in words {
                     let body = self.packed_body(base_ptr, w);
                     let v = span_crc32c_8lane(body);
-                    self.fold_value(v);
+                    // R37: fold_pos is this span's start (the +1 below) —
+                    // the leaf's end.
+                    self.fold_value(v, self.fold_pos + 1);
                     self.next_span += 1;
                     self.fold_pos += 1;
                 }
@@ -6150,6 +6439,146 @@ mod tests {
         let b = fold_compose_b(&terms);
         let h0 = next();
         assert_eq!(fold_compose_apply(h0, 64, b), h0 ^ b);
+    }
+
+    /// R37 cell A (sink law): the segment-monoid tree — `seg_compose`'s
+    /// 3-factor associativity + the up-sweep vs the iterated serial
+    /// applies on random `(k, B)` leaf streams (K ∈ {2..600}, odd
+    /// tails included), the closed form == the step chain, and the
+    /// `(0, 0)` identity apply. Theorem 19/22 on the rotation ring —
+    /// the engine journal's own law.
+    #[test]
+    fn t_r37_segment_tree_law() {
+        use crate::sink::{fold_compose_apply, seg_compose, tree_fold_segments};
+        let mut rng = 0x0DDB_1A5C_0FF5_0371u64;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        // (a) the 3-factor law on random triples.
+        for _ in 0..20_000 {
+            let a = (1 + (next() % 512) as u32, next());
+            let b = (1 + (next() % 512) as u32, next());
+            let c = (1 + (next() % 512) as u32, next());
+            assert_eq!(
+                seg_compose(seg_compose(a, b), c),
+                seg_compose(a, seg_compose(b, c)),
+                "segment 3-factor law"
+            );
+        }
+        // (b) the tree vs the iterated serial applies.
+        for &k in &[
+            2usize, 3, 4, 5, 7, 8, 9, 16, 17, 63, 100, 128, 194, 200,
+            255, 321, 322, 512, 513, 600,
+        ] {
+            for _ in 0..200 {
+                let leaves: Vec<(u32, u64)> =
+                    (0..k).map(|_| (1 + (next() % 64) as u32, next())).collect();
+                let h0 = next();
+                // The serial chain (the R36 fold's bracketing).
+                let mut h_serial = h0;
+                let mut kk = 0u32;
+                for &(k_i, b_i) in &leaves {
+                    h_serial = fold_compose_apply(h_serial, k_i, b_i);
+                    kk = kk.wrapping_add(k_i);
+                }
+                // The tree (SoA columns).
+                let mut kc: Vec<u32> = leaves.iter().map(|&x| x.0).collect();
+                let mut bc: Vec<u64> = leaves.iter().map(|&x| x.1).collect();
+                let (kt, bt) = tree_fold_segments(&mut kc, &mut bc);
+                assert_eq!(kt, kk, "tree k total (K={k})");
+                let h_tree = fold_compose_apply(h0, kt, bt);
+                assert_eq!(h_tree, h_serial, "segment tree != serial (K={k})");
+            }
+        }
+        // (c) the identity: (0, 0) applies as a no-op.
+        let h = next();
+        assert_eq!(fold_compose_apply(h, 0, 0), h);
+    }
+
+    /// R37 cell B (the journal): FoldJournal's own laws — random leaf
+    /// streams with random boundary splits (flush_upto mid-journal,
+    /// including splits that leave remainders — the mixed-pass shape),
+    /// forced capacity overflows, and the tree-vs-serial differential
+    /// through the journal's full push/flush protocol. The small
+    /// capacity forces the overflow arm; boundaries at every offset
+    /// pin the partition law.
+    #[test]
+    fn t_r37_journal_flush_laws() {
+        let mut rng = 0x0DDB_1A5C_0FF5_0372u64;
+        let mut next = || {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            rng
+        };
+        // The oracle: the serial apply chain over the full stream.
+        for trial in 0..400 {
+            // Small caps force overflows: 1, 2, 3, 8, 16, 64.
+            let cap = 1 << (next() % 7);
+            let n = 1 + (next() % 400) as usize;
+            let seed = 0x5FAD_EED5_0372_0000u64.wrapping_add(next() & 0xFF);
+            let leaves: Vec<(u32, u64)> = (0..n)
+                .map(|_| (1 + (next() % 64) as u32, next() | 1))
+                .collect();
+            // ends: cumulative (the journal's monotone law).
+            let ends: Vec<u64> = {
+                let mut acc = 0u64;
+                leaves
+                    .iter()
+                    .map(|&(k, _)| {
+                        acc += k as u64;
+                        acc
+                    })
+                    .collect()
+            };
+            // The serial oracle (R36's law).
+            let mut h_serial = seed;
+            for &(k, b) in &leaves {
+                h_serial = crate::sink::fold_compose_apply(h_serial, k, b);
+            }
+            // The journal run: push all leaves; flush at random
+            // boundaries (including interior points and the final
+            // end); the hash must match the serial oracle EXACTLY.
+            let mut j = FoldJournal::with_capacity(true, cap.max(1));
+            let mut h = seed;
+            // Random flush schedule: pick ~n/8 random boundary points
+            // (subsets of the ends, in order) + the final flush_all.
+            let mut flush_pts: Vec<u64> = (0..n / 8 + 2)
+                .map(|_| ends[next() as usize % n])
+                .collect();
+            flush_pts.push(u64::MAX); // the final flush
+            let mut fi = 0usize;
+            for (i, &(k, b)) in leaves.iter().enumerate() {
+                j.push(&mut h, k, b, ends[i]);
+                while fi < flush_pts.len() && flush_pts[fi] <= ends[i] {
+                    // Flush at this boundary point.
+                    let bnd = if flush_pts[fi] == u64::MAX {
+                        u64::MAX
+                    } else {
+                        flush_pts[fi]
+                    };
+                    j.flush_upto(&mut h, bnd);
+                    fi += 1;
+                }
+            }
+            j.flush_all(&mut h);
+            assert_eq!(h, h_serial, "journal tree != serial (trial {trial}, cap {cap}, n {n})");
+            assert_eq!(j.len, 0, "journal not empty at rest");
+            assert!(j.flushes > 0);
+            assert_eq!(j.records, n as u64, "record count law");
+            // The rollback twin: push serially through the journal's
+            // serial mode — verbatim equality with the oracle.
+            let mut j2 = FoldJournal::with_capacity(false, cap.max(1));
+            let mut h2 = seed;
+            for (i, &(k, b)) in leaves.iter().enumerate() {
+                j2.push(&mut h2, k, b, ends[i]);
+            }
+            j2.flush_all(&mut h2); // no-op (serial mode)
+            assert_eq!(h2, h_serial, "journal serial rollback (trial {trial})");
+        }
     }
 
     /// R23c: the affine-tag protocol's end-to-end bit-parity — the rxdesc

@@ -920,6 +920,255 @@ pub fn fold_stream_sequential(t: &SpanTokens, h_in: u64) -> (P64, u64) {
     )
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// R37 (Run 900) — The homomorphic ring-parallel prefix fold
+// (docs/solution2.md Part I: Theorems 19–22, 25; Appendix B.1/B.2)
+// ─────────────────────────────────────────────────────────────────────
+//
+// # The physics this section exists for
+//
+// The R36 champion's pass fold `S_p = S_{p−1} ⨂ R_p` ran as a serial
+// left-associated chain: 322 fused-call records × ~16.8 cycles of
+// dependent mulmod latency ≈ 2.08 µs/pass — the only loop-carried
+// dependency crossing pass boundaries, and the absolute ceiling at
+// ~65B–70B msg/s (docs/48 §8, solution2.md §1.2). The mathematical
+// content of Part I is that **tape order constrains the LEAF sequence
+// of the evaluation, not its bracketing** (Theorem 19): any binary
+// tree whose in-order traversal is the tape-ordered record list
+// evaluates to the same composite — bit-exactly, in every coordinate
+// (Theorem 22). The serial chain was the unique worst bracketing
+// (depth K); the up-sweep below is depth ⌈log₂ K⌉.
+//
+// The tree is ring-polymorphic in exactly the sense of Theorem 28 /
+// Appendix C: the SAME up-sweep schedule evaluates the SPANHASH record
+// monoid here (GF(2)[x]/Q(x), CLMUL), the engine's segment monoid in
+// `sink::tree_fold_segments` (the rotl-13 affine law), and — Part II —
+// the epoch merge over lane composites. One schedule, several rings,
+// one associativity proof per ring.
+
+/// THE BLELLOCH–GALOIS TREE (Theorem 20(a), Lemma 6): the up-sweep
+/// reduce over a tape-ordered P64 slice. In-place: on return `r[0]`
+/// holds `r[0] ⨂ r[1] ⨂ … ⨂ r[K−1]` — K−1 composes, dependency depth
+/// ⌈log₂ K⌉ (9 levels at the champion's K = 322), the level-ℓ pairs
+/// mutually independent (Lemma 6's block invariant: after level ℓ,
+/// every `r_i` with `i ≡ 0 (mod 2^ℓ)` holds its aligned block's
+/// composite). Any bracketing of the same leaves agrees bit-exactly
+/// (Theorem 19; the cells pin tree vs serial, tree vs random shape).
+///
+/// The empty slice composes to [`P64::IDENTITY`] (the monoid unit).
+pub fn tree_fold_p64(r: &mut [P64]) -> P64 {
+    let n = r.len();
+    if n == 0 {
+        return P64::IDENTITY;
+    }
+    if n == 1 {
+        return r[0];
+    }
+    let mut stride = 1usize;
+    while stride < n {
+        let mut i = 0usize;
+        while i + stride < n {
+            // SAFETY-free scalar compose: a = r[i] (earlier block),
+            // b = r[i + stride] (later block) — tape order preserved
+            // by construction (i < i + stride on the leaf grid).
+            let a = r[i];
+            let b = r[i + stride];
+            r[i] = p64_compose(&a, &b);
+            i += stride << 1;
+        }
+        stride <<= 1;
+    }
+    r[0]
+}
+
+/// The 4-lane `mulmod4` batch: FOUR independent GF(2⁶⁴) products in
+/// one ZMM pipeline (the [S1'] §2.6 kernel, results-kept-separate
+/// form — `fold_v_avx512` XOR-accumulates 4 products into the V-fold;
+/// the tree needs each product as its own leaf value). The operand
+/// discipline is the R36 port's: dense 32-byte stack loads + one
+/// `VPERMQ` per operand (the reference's `_mm512_set_epi64` scatter
+/// costs ~16 uops — the measured dev-VM wall), products in the EVEN
+/// words, the odd words carrying reduction residue masked once at
+/// the finish.
+///
+/// SAFETY: caller proves AVX-512F + VPCLMULQDQ.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f", enable = "vpclmulqdq")]
+unsafe fn mulmod4x4(a: &[u64; 4], b: &[u64; 4]) -> [u64; 4] {
+    use std::arch::x86_64::*;
+    let q = _mm512_set1_epi64(SPAN_QLOW as i64);
+    // (a0,0,a1,0,a2,0,a3,0) — the even-word placement permute.
+    let idx = _mm512_set_epi64(11, 3, 10, 2, 9, 1, 8, 0);
+    let va = _mm512_permutexvar_epi64(
+        idx,
+        _mm512_zextsi256_si512(_mm256_loadu_si256(a.as_ptr() as *const __m256i)),
+    );
+    let vb = _mm512_permutexvar_epi64(
+        idx,
+        _mm512_zextsi256_si512(_mm256_loadu_si256(b.as_ptr() as *const __m256i)),
+    );
+    // p = 4 carry-less products (imm 0x00: low×low per 128-bit lane).
+    let p = _mm512_clmulepi64_epi128(va, vb, 0x00);
+    // t = hi⊗QLOW (imm 0x01: each lane's HIGH word of p, deg ≤ 66).
+    let t = _mm512_clmulepi64_epi128(p, q, 0x01);
+    // u = t_hi⊗QLOW (deg ≤ 6 — terminal).
+    let u = _mm512_clmulepi64_epi128(t, q, 0x01);
+    // Even words = the reduced products; odd words carry residue.
+    let acc = _mm512_xor_si512(_mm512_xor_si512(p, t), u);
+    let even = _mm512_maskz_mov_epi64(0x55, acc);
+    // The store lands all 8 words (64 B) — the buffer must be 8 words
+    // (the 4-word overflow bug the dual-path cell caught: stack
+    // smash, `c: 0` divergence). The products live in the even words.
+    let mut buf = [0u64; 8];
+    _mm512_storeu_si512(buf.as_mut_ptr() as *mut __m512i, even);
+    [buf[0], buf[2], buf[4], buf[6]]
+}
+
+/// The vector-scheduled tree (Theorem 21): every level's independent
+/// composes run 4-pair batches through [`mulmod4x4`] — 2 batched
+/// calls per 4 composes (V_a⊗C_b and C_a⊗C_b), the integer
+/// coordinates composed scalar per pair (they ride free: 1-cycle ops
+/// off the mulmod latency chain, [S1'] §6's schedule accounting).
+/// Scalar tails overlap the next level (odd-K and last-pair tails);
+/// levels with < 4 pairs run scalar outright. Bit-equal to
+/// [`tree_fold_p64`] by Theorem 22 (pinned by the dual-path cell).
+///
+/// SAFETY: caller proves AVX-512F + VPCLMULQDQ.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx512f", enable = "vpclmulqdq")]
+unsafe fn tree_fold_p64_avx512(r: &mut [P64]) -> P64 {
+    let n = r.len();
+    if n < 2 {
+        return tree_fold_p64(r);
+    }
+    let mut stride = 1usize;
+    while stride < n {
+        let mut i = 0usize;
+        // The vector batches: 4 pairs at (i, i+stride), (i+2s, i+3s),
+        // (i+4s, i+5s), (i+6s, i+7s) — the guard requires the LAST
+        // pair's later operand in range.
+        while i + 7 * stride < n {
+            let mut va = [0u64; 4];
+            let mut ca = [0u64; 4];
+            let mut vb = [0u64; 4];
+            let mut cb = [0u64; 4];
+            for m in 0..4 {
+                let ia = i + (2 * m) * stride;
+                let ib = ia + stride;
+                va[m] = r[ia].v;
+                ca[m] = r[ia].c;
+                vb[m] = r[ib].v;
+                cb[m] = r[ib].c;
+            }
+            let vres = mulmod4x4(&va, &cb);
+            let cres = mulmod4x4(&ca, &cb);
+            for m in 0..4 {
+                let ia = i + (2 * m) * stride;
+                let ib = ia + stride;
+                let a = r[ia];
+                let b = r[ib];
+                let mut t = a;
+                t.v = vres[m] ^ b.v;
+                t.c = cres[m];
+                t.db = a.db.wrapping_add(b.db);
+                t.da = a.da.wrapping_add(b.da);
+                let (px, tag) = if b.flg & FLG_SETTER != 0 {
+                    (b.px, a.deg.wrapping_add(b.tag))
+                } else {
+                    (a.px, a.tag)
+                };
+                t.px = px;
+                t.tag = tag;
+                t.deg = a.deg.wrapping_add(b.deg);
+                t.cnt = a.cnt.wrapping_add(b.cnt);
+                t.flg = a.flg | b.flg;
+                r[ia] = t;
+            }
+            i += 8 * stride;
+        }
+        // The scalar tail of the level.
+        while i + stride < n {
+            let a = r[i];
+            let b = r[i + stride];
+            r[i] = p64_compose(&a, &b);
+            i += stride << 1;
+        }
+        stride <<= 1;
+    }
+    r[0]
+}
+
+/// The dispatching tree: the AVX-512 schedule when the silicon has
+/// it and the level work amortizes the horizontal finish, the
+/// portable scalar up-sweep otherwise (the R34 dual-path law: one
+/// formula, no drift — the cell pins vector == scalar).
+pub fn tree_fold_p64_dispatch(r: &mut [P64]) -> P64 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        if r.len() >= 8
+            && std::arch::is_x86_feature_detected!("avx512f")
+            && std::arch::is_x86_feature_detected!("vpclmulqdq")
+        {
+            // SAFETY: both classes were just detected at runtime.
+            return unsafe { tree_fold_p64_avx512(r) };
+        }
+    }
+    tree_fold_p64(r)
+}
+
+/// THE TWO-LEVEL TREE (§2.7, Corollary 19.1 — the L1 journal): runs
+/// of ≤ 512 chunk records (18.4 KB, L1-resident) reduce to
+/// sub-composites, and the (far fewer) sub-composites tree into the
+/// pass composite. The maximal variant — one record per chunk, 5,122
+/// R36 records per pass — stays L1-resident at every level this way,
+/// and the u16 in-level degrees never escape (the escape to P64's
+/// u32 happens exactly at the level hop, [S1'] pitfall 7's fence).
+/// Heterogeneous by Theorem 19's remark (ii): the two-level split is
+/// just another bracketing. `run` is the level-1 run length (the
+/// blueprint's ≤ 512; any run ≥ 1 is legal).
+pub fn tree_fold_two_level(r36s: &[R36], run: usize) -> P64 {
+    assert!(run >= 1, "two-level run length must be positive");
+    if r36s.is_empty() {
+        return P64::IDENTITY;
+    }
+    // Level 1: each run folds to its sub-composite. A run of ≤ 512
+    // R36s composes exactly (degrees ≤ 512 × 22,016 < 2^24 — u32-safe
+    // at the hop, u16-EXACT only inside ≤ 3 max-width chunks, which
+    // is why the run's own tree lifts to P64 BEFORE any compose).
+    let mut subs: Vec<P64> = Vec::with_capacity(r36s.len().div_ceil(run));
+    let mut acc = P64::IDENTITY;
+    let mut run_len = 0usize;
+    for rec in r36s {
+        acc = p64_compose(&acc, &P64::from_r36(rec));
+        run_len += 1;
+        if run_len == run {
+            subs.push(acc);
+            acc = P64::IDENTITY;
+            run_len = 0;
+        }
+    }
+    if run_len > 0 {
+        subs.push(acc);
+    }
+    // Level 2: the tree over the sub-composites.
+    tree_fold_p64_dispatch(&mut subs)
+}
+
+/// THE EPOCH MERGE (Theorem 25, §B.2): `S' = S ⨂ X_first ⨂ X_second`
+/// — the epoch's lane blocks in FIXED tape order, two composes, no
+/// loads of the other lane's state, no negotiation, no waiting. The
+/// shift degrees ride inside the P64 `C` coordinates (never tables,
+/// never a materialized matrix — [S1'] §4.4). The block-split
+/// assignment (one factor per lane) costs exactly this; `m`-way
+/// interleaving chains the same law `2m − 1` times.
+///
+/// The lane-epoch composite identity (cell +34's kernel form):
+/// `S ⨂ X_first ⨂ X_second` == one lane's fold of the same tape —
+/// Proposition 2.1's homomorphism at the epoch boundary.
+pub fn epoch_merge_p64(s: &P64, x_first: &P64, x_second: &P64) -> P64 {
+    p64_compose(&p64_compose(s, x_first), x_second)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1549,5 +1798,266 @@ mod tests {
         let (rec, _) = fold_chunk(&t, 0);
         assert_eq!(rec.w as usize, MAXSPAN - 1);
         rec
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // R37 cells (solution2.md §6.2's classes +19/+20/+34, kernel form)
+    // ═══════════════════════════════════════════════════════════════
+
+    /// Helper: a random P64 stream (the tree's leaves — fused-call
+    /// records with u32-range degrees, setters, and flags).
+    fn random_p64s(rng: &mut Xs, k: usize) -> Vec<P64> {
+        (0..k).map(|_| P64::from_r36(&random_record(rng))).collect()
+    }
+
+    /// Helper: the serial left chain (the R36 fold's bracketing — the
+    /// oracle every tree shape must equal, Theorem 22).
+    fn serial_chain(recs: &[P64]) -> P64 {
+        recs.iter()
+            .fold(P64::IDENTITY, |acc, r| p64_compose(&acc, r))
+    }
+
+    /// Cell +7-extend (checklist 2): P64 associativity fuzz on random
+    /// TRIPLES — `(a⨂b)⨂c == a⨂(b⨂c)` — with the derived-field cases
+    /// of Appendix A.1 (the 8 setter patterns, tag re-basing, degree
+    /// accumulation, flag OR). The 3-factor law is the license every
+    /// bracketing (serial, tree, two-level, random shape) spends.
+    #[test]
+    fn t_r37_p64_associativity_triples() {
+        let mut rng = Xs(0x5EED_C0DE_3737_0001);
+        #[cfg(debug_assertions)]
+        let trials = 4_096;
+        #[cfg(not(debug_assertions))]
+        let trials = 65_536;
+        for _ in 0..trials {
+            let a = P64::from_r36(&random_record(&mut rng));
+            let b = P64::from_r36(&random_record(&mut rng));
+            let c = P64::from_r36(&random_record(&mut rng));
+            let ab = p64_compose(&a, &b);
+            let bc = p64_compose(&b, &c);
+            let left = p64_compose(&ab, &c);
+            let right = p64_compose(&a, &bc);
+            assert_eq!(left, right, "P64 3-factor law failed");
+            // The derived-field probes (Appendix A.1's eight rows ride
+            // the random setter patterns; the explicit degenerate
+            // setters below pin the empty/edge rows).
+            assert_eq!(left.deg, a.deg.wrapping_add(b.deg).wrapping_add(c.deg));
+        }
+        // The degenerate setter patterns (rows 000/111 and the
+        // identity factors).
+        for &sa in &[0u16, FLG_SETTER] {
+            for &sb in &[0u16, FLG_SETTER] {
+                for &sc in &[0u16, FLG_SETTER] {
+                    let mk = |flg: u16, salt: u64| P64 {
+                        v: salt.wrapping_mul(0x9E37),
+                        c: salt | 1,
+                        db: salt as i64,
+                        da: -(salt as i64),
+                        px: (salt >> 32) as u32,
+                        tag: (salt & 0xFFFF) as u32,
+                        deg: (salt % 22_016) as u32,
+                        cnt: (salt % 512) as u32,
+                        flg,
+                    };
+                    let a = mk(sa, 0x1111_2222_3333_4444);
+                    let b = mk(sb, 0x5555_6666_7777_8888);
+                    let c = mk(sc, 0x9999_AAAA_BBBB_CCCC);
+                    assert_eq!(
+                        p64_compose(&p64_compose(&a, &b), &c),
+                        p64_compose(&a, &p64_compose(&b, &c)),
+                        "setter pattern ({sa},{sb},{sc})"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Cell +19 (checklist 3): the tree-shape fuzz — tree vs serial on
+    /// random streams, K ∈ {2..1024} incl. non-powers-of-2 and odd
+    /// tails (the champion's K = 322 explicitly), PLUS random tree
+    /// SHAPES (random balanced-ish bracketings — Theorem 19's shape
+    /// freedom at kernel level) and the vector-scheduled tree
+    /// (Theorem 21's `mulmod4` form, dual-path).
+    #[test]
+    fn t_r37_tree_vs_serial_shape_fuzz() {
+        let mut rng = Xs(0x5EED_C0DE_3737_0002);
+        // The explicit K sweep (the odd/adversarial sizes).
+        for &k in &[
+            2usize, 3, 4, 5, 7, 8, 9, 15, 16, 17, 31, 63, 64, 100, 127, 128,
+            129, 161, 200, 255, 256, 257, 321, 322, 323, 511, 512, 513,
+            640, 999, 1023, 1024,
+        ] {
+            let recs = random_p64s(&mut rng, k);
+            let want = serial_chain(&recs);
+            // The scalar up-sweep.
+            let mut r1 = recs.clone();
+            let got1 = tree_fold_p64(&mut r1);
+            assert_eq!(got1, want, "scalar tree != serial (K={k})");
+            // The dispatching tree (vector on AVX-512 silicon, scalar
+            // otherwise — dual-path equality either way).
+            let mut r2 = recs.clone();
+            let got2 = tree_fold_p64_dispatch(&mut r2);
+            assert_eq!(got2, want, "dispatch tree != serial (K={k})");
+            // A random tree SHAPE (recursive random split points).
+            let got3 = fold_random_shape(&recs, &mut rng);
+            assert_eq!(got3, want, "random shape != serial (K={k})");
+        }
+        // The random-K fuzz (10⁴ streams release-scaled; the CI wall
+        // clock discipline from t_r36_mulmod_dual_path_fuzz).
+        #[cfg(debug_assertions)]
+        let trials = 256;
+        #[cfg(not(debug_assertions))]
+        let trials = 10_000;
+        for _ in 0..trials {
+            let k = 2 + (rng.next() % 1023) as usize;
+            let recs = random_p64s(&mut rng, k);
+            let want = serial_chain(&recs);
+            let mut r1 = recs.clone();
+            assert_eq!(tree_fold_p64(&mut r1), want, "scalar tree (rand K={k})");
+            let mut r2 = recs.clone();
+            assert_eq!(
+                tree_fold_p64_dispatch(&mut r2),
+                want,
+                "dispatch tree (rand K={k})"
+            );
+            assert_eq!(
+                fold_random_shape(&recs, &mut rng),
+                want,
+                "random shape (rand K={k})"
+            );
+        }
+    }
+
+    /// The random-shape reference: a recursive fold splitting at a
+    /// RANDOM midpoint — every bracketing of the tape-ordered leaves
+    /// (Theorem 19's shape freedom; the scalar chain, the up-sweep,
+    /// and this must all agree).
+    fn fold_random_shape(recs: &[P64], rng: &mut Xs) -> P64 {
+        fn go(recs: &[P64], rng: &mut Xs) -> P64 {
+            if recs.len() <= 1 {
+                return recs.first().copied().unwrap_or(P64::IDENTITY);
+            }
+            // A random split in [1, len-1] — never degenerate.
+            let mid = 1 + (rng.next() % (recs.len() as u64 - 1)) as usize;
+            let left = go(&recs[..mid], rng);
+            let right = go(&recs[mid..], rng);
+            p64_compose(&left, &right)
+        }
+        go(recs, rng)
+    }
+
+    /// Cell +21's static form (checklist 3): the vector tree's bit
+    /// equality vs the scalar tree — exercised on AVX-512 silicon
+    /// (the dev VM + the 9V45 fleet); a no-op pass on scalar runners
+    /// that still pins the dispatch law (dispatch == scalar).
+    #[test]
+    fn t_r37_tree_vector_dual_path() {
+        let mut rng = Xs(0x5EED_C0DE_3737_0003);
+        for _ in 0..64 {
+            // Stride patterns that hit the vector batch boundaries:
+            // the 4-pair batches need i + 7·s < K — sizes straddling
+            // every multiple-of-8 boundary.
+            let k = 8 + (rng.next() % 600) as usize;
+            let recs = random_p64s(&mut rng, k);
+            let want = serial_chain(&recs);
+            let mut r1 = recs.clone();
+            let scalar = tree_fold_p64(&mut r1);
+            let mut r2 = recs.clone();
+            let dispatch = tree_fold_p64_dispatch(&mut r2);
+            assert_eq!(scalar, want, "scalar (K={k})");
+            assert_eq!(dispatch, want, "dispatch (K={k})");
+            #[cfg(target_arch = "x86_64")]
+            {
+                if std::arch::is_x86_feature_detected!("avx512f")
+                    && std::arch::is_x86_feature_detected!("vpclmulqdq")
+                {
+                    let mut r3 = recs.clone();
+                    // SAFETY: both classes detected at runtime above.
+                    let vector = unsafe { tree_fold_p64_avx512(&mut r3) };
+                    assert_eq!(vector, want, "vector tree (K={k}) — the mulmod4 schedule diverged");
+                }
+            }
+        }
+    }
+
+    /// Cell +20 (checklist 4): the two-level tree — 5,122-record
+    /// passes (the maximal variant: one record per chunk): flat P64
+    /// chain vs the two-level split (512-runs → sub-composites →
+    /// tree) — bit-equal; the degree escape past 2¹⁶ rides the same
+    /// stream (u32 at every level ≥ 2 — the [S1'] pitfall 7 fence).
+    #[test]
+    fn t_r37_two_level_tree_and_degree_escape() {
+        let mut rng = Xs(0x5EED_C0DE_3737_0004);
+        // The maximal pass: 5,122 chunk records (10 × 512 + 2).
+        for &n in &[5_122usize, 513, 1_024, 97] {
+            let r36s: Vec<R36> = (0..n).map(|_| random_record(&mut rng)).collect();
+            // The flat chain (the P64 journal form).
+            let flat: Vec<P64> = r36s.iter().map(P64::from_r36).collect();
+            let want = serial_chain(&flat);
+            // The two-level split at the blueprint's run length and at
+            // adversarial run lengths (1, 3, 64, 512, 513).
+            for &run in &[1usize, 3, 64, 128, 512, 513] {
+                let got = tree_fold_two_level(&r36s, run);
+                assert_eq!(got, want, "two-level (n={n}, run={run})");
+            }
+            // Degree escape: with near-max-span records the composite
+            // degree crosses 2¹⁶ early — the P64 path's u32 domain.
+            // (n × ~500 average spans: n=97 crosses at ~record 131 for
+            // max records; the max-record stream below crosses at 3.)
+            let maxes: Vec<R36> =
+                (0..n.min(16)).map(|i| random_max_record(&mut rng, i)).collect();
+            let flat_max: Vec<P64> = maxes.iter().map(P64::from_r36).collect();
+            let want_max = serial_chain(&flat_max);
+            assert!(
+                want_max.deg > 0xFFFF || n < 3,
+                "the max-record stream should exercise the >2^16 degree domain (deg={})",
+                want_max.deg
+            );
+            for &run in &[1usize, 2, 512] {
+                let got = tree_fold_two_level(&maxes, run);
+                assert_eq!(got, want_max, "two-level max records (run={run})");
+            }
+        }
+    }
+
+    /// Cell +34 (checklist 6, kernel form): the epoch composition
+    /// identity — `S ⨂ X_first ⨂ X_second` (the epoch merge, Theorem
+    /// 25) == one lane's fold of the same epoch tape == the serial
+    /// chain, on random record streams and random splits (including
+    /// empty blocks and single-record blocks — the degenerate
+    /// assignments).
+    #[test]
+    fn t_r37_epoch_merge_identity() {
+        let mut rng = Xs(0x5EED_C0DE_3737_0005);
+        #[cfg(debug_assertions)]
+        let trials = 512;
+        #[cfg(not(debug_assertions))]
+        let trials = 4_096;
+        for trial in 0..trials {
+            let k = (rng.next() % 600) as usize;
+            let recs = random_p64s(&mut rng, k);
+            let s = P64::from_r36(&random_record(&mut rng)); // the pre-epoch state
+            let want = serial_chain(&[vec![s], recs.clone()].concat());
+            // A random lane split (block-split assignment): lane 0
+            // takes the earlier block, lane 1 the later — FIXED tape
+            // order (Theorem 23(b)).
+            let split = (rng.next() % (k as u64 + 1)) as usize;
+            let (x_first, x_second) = if split == 0 {
+                (P64::IDENTITY, serial_chain(&recs))
+            } else if split == k {
+                (serial_chain(&recs), P64::IDENTITY)
+            } else {
+                (serial_chain(&recs[..split]), serial_chain(&recs[split..]))
+            };
+            let got = epoch_merge_p64(&s, &x_first, &x_second);
+            assert_eq!(got, want, "epoch merge identity (trial {trial}, split {split})");
+            // The hash surface: h' = h ⊗ C ⊕ V on both paths.
+            let h = rng.next() >> 3;
+            assert_eq!(
+                hash_apply_p64(h, &got),
+                hash_apply_p64(h, &want),
+                "epoch hash surface (trial {trial})"
+            );
+        }
     }
 }

@@ -942,6 +942,75 @@ grep -q "PR1_R36_EVAL_ELISION_VERDICT.*elision=false" /tmp/bench_r36er.txt
 grep -q "RESREPLAY_DIAGNOSTIC sustained: .*elision=false" /tmp/bench_r36er.txt
 grep "PR1_R36_EVAL_ELISION_VERDICT" /tmp/bench_r36er.txt | head -1
 
+# ── 11r37. R37: the Blelloch–Galois tree fold + the two-lane elision ──
+# THE R37 PROGRAM (docs/solution2.md Part I + Part II's unlock, Gates
+# 6 + 10–12): (A) THE TREE FOLD — the pass fold's serial left spine
+# `S_p = S_{p-1} ⨂ R_p` (322 dependent applies, ~2.08 µs/pass, the
+# ONLY cross-pass loop-carried dependency — the 61B wall's B1) is
+# re-associated into the ⌈log₂ K⌉ up-sweep (Theorems 19–22): the
+# drain journals the composite records as (k, B) leaves (the rotation
+# ring's segment monoid — Theorem 28's ring polymorphism, the rotl-13
+# twin of the SPANHASH records), and the boundary flush evaluates the
+# 9-level tree + ONE fold_compose_apply hop. HFT_TREE_FOLD=0 restores
+# the serial chain (arm 11r37r's attribution). The SPANHASH kernel
+# twin lands in spanfold (tree_fold_p64 + the mulmod4x4 vector
+# schedule + the two-level tree + the epoch merge of Theorem 25).
+# (B) THE TWO-LANE ELISION UNLOCK — the R36-E single-lane scope gate
+# is lifted: the stale-ready refresh at the batch top (the two-lane
+# deadlock's root — the multi-lane eval gap kept Strand A's refresh
+# from firing on the replay path; the frontier break's `continue
+# 'batch` spun a stale local ready while the register held the SS
+# pre-publication; the cycle closed through main's pace gate). The
+# round-robin chunk grid IS the static epoch-block assignment (Def
+# 3.1); the per-lane res rings are the SPSC epoch rings; the fold's
+# strict-order drain is the static-order merge (Theorem 23(b)). This
+# arm runs the TWO-WORKER champion shape — same-draw ratio vs 11r36
+# (the one-worker twin) = the lane interference efficiency η (gate
+# 12's protocol). The cells: the spanfold tree differentials (the
+# associativity triples, the K-sweep tree-vs-serial incl. odd tails +
+# random SHAPES, the vector dual-path, the two-level + degree escape,
+# the epoch identity), the segment-tree law, the journal flush laws
+# (forced overflows, mid-journal boundary splits), the spanbench
+# gate-6 instrument, then the champion sustained arm with the R37
+# verdict line + the hard floor (bit-parity, allocs=0, the tree's
+# engagement laws — asserted by the bench itself, exit 0).
+cargo test --release -p nf-testkit t_r37 2>&1 | tee /tmp/test_r37.txt
+grep -q "test result: ok" /tmp/test_r37.txt
+cargo run --release -p nf-testkit --bin spanbench 2>&1 | tee /tmp/bench_r37k.txt
+grep -q "PR1_R37_TREE_FOLD_VERDICT" /tmp/bench_r37k.txt
+grep -q "PR1_R37_TREE_FOLD_VERDICT.*tree_ok=true" /tmp/bench_r37k.txt
+grep -q "PR1_R37_TREE_FOLD_VERDICT.*engine_tree_ok=true" /tmp/bench_r37k.txt
+grep -q "PR1_R37_TREE_FOLD_VERDICT.*two_level_ok=true" /tmp/bench_r37k.txt
+grep "PR1_R37_TREE_FOLD_VERDICT" /tmp/bench_r37k.txt | head -1
+HFT_RXDESC=1 HFT_RES_REPLAY=1 HFT_SUSTAINED_WORKERS=2 cargo run --release -p nf-engine --bin bench -- --hydra-only 2>&1 | tee /tmp/bench_r37.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_r37.txt
+grep -q "allocs=0" /tmp/bench_r37.txt
+grep -q "HYDRA_BITPARITY.*-> BIT-EXACT" /tmp/bench_r37.txt
+grep -q "PR1_R36_EVAL_ELISION_VERDICT.*elision=true" /tmp/bench_r37.txt
+grep -q "PR1_R37_TREE_FOLD_VERDICT rate=" /tmp/bench_r37.txt
+grep -q "PR1_R37_TREE_FOLD_VERDICT.*tree=true" /tmp/bench_r37.txt
+grep -q "PR1_R37_TREE_FOLD_VERDICT.*workers=2" /tmp/bench_r37.txt
+grep -q "FOLDTREE_DIAGNOSTIC sustained: tree=true" /tmp/bench_r37.txt
+grep -q "FOLDTREE_DIAGNOSTIC.*live_len=0" /tmp/bench_r37.txt
+grep -q "RESREPLAY_DIAGNOSTIC sustained: .*elision=true" /tmp/bench_r37.txt
+grep "PR1_R37_TREE_FOLD_VERDICT" /tmp/bench_r37.txt | head -1
+grep "PR1_R36_EVAL_ELISION_VERDICT" /tmp/bench_r37.txt | head -1
+grep "FOLDTREE_DIAGNOSTIC" /tmp/bench_r37.txt | head -1
+
+# ── 11r37r. R37: the tree-fold rollback (the attribution arm) ────────
+# HFT_TREE_FOLD=0 restores the R36 serial per-record apply verbatim
+# (the journal's serial mode): same-draw delta 11r37 - 11r37r prices
+# the tree's contribution (the fold's critical path + the drain's
+# pipelining). The two-lane elision stays armed on both arms (its own
+# rollback is HFT_RES_REPLAY=0 — arm 11r36er's law).
+HFT_RXDESC=1 HFT_RES_REPLAY=1 HFT_SUSTAINED_WORKERS=2 HFT_TREE_FOLD=0 cargo run --release -p nf-engine --bin bench -- --hydra-only 2>&1 | tee /tmp/bench_r37r.txt
+grep -q "PR1_HYDRA_SUSTAINED_VERDICT" /tmp/bench_r37r.txt
+grep -q "allocs=0" /tmp/bench_r37r.txt
+grep -q "HYDRA_BITPARITY.*-> BIT-EXACT" /tmp/bench_r37r.txt
+grep -q "PR1_R37_TREE_FOLD_VERDICT.*tree=false" /tmp/bench_r37r.txt
+grep -q "FOLDTREE_DIAGNOSTIC sustained: tree=false" /tmp/bench_r37r.txt
+grep "PR1_R37_TREE_FOLD_VERDICT" /tmp/bench_r37r.txt | head -1
+
 # ── 11r36r. R36-B: the re-anchor rollback (the attribution arm) ──────
 # HFT_REANCHOR=0 restores the full per-pass sequencer construction
 # (the 64 KiB arena zero + copy — the PR #20 boundary shape): the

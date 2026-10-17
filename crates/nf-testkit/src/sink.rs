@@ -130,6 +130,77 @@ pub fn fold_step(h: u64, v: u64) -> u64 {
     h.rotate_left(FOLD_ROT) ^ fold_term(v)
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// R37 (Run 900) — the segment-monoid tree (docs/solution2.md Part I,
+// Theorems 19–22 + Theorem 28's ring polymorphism, instantiated on
+// the ROTATION ring: the [S1'] Lemma-3 semidirect law with the
+// acting monoid (13k mod 64, rotl) instead of (x^W, CLMUL)).
+// ─────────────────────────────────────────────────────────────────────
+//
+// The engine's per-pass fold composes composite records
+// `(k, B)` — a span count and a segment constant — by
+// `h ← rotl(h, 13k) ^ B` (`fold_compose_apply`). The records form a
+// MONOID under the same affine law as the SPANHASH record monoid:
+//
+// ```text
+// (k_a, B_a) ⨂ (k_b, B_b) = (k_a + k_b, rotl(B_a, 13·k_b mod 64) ^ B_b)
+// ```
+//
+// (apply a first, b second — the row-vector convention of Lemma 3;
+// associativity is the same six-line semidirect computation, with
+// `rotl∘rotl = rotl∘+` the action law that `x^W ∘ x^V = x^{W+V}`
+// plays in the CLMUL ring). Tape order constrains the LEAF sequence,
+// not the bracketing (Theorem 19), so the serial left spine — 322
+// dependent applies per champion pass, the 2.08 µs barrier — is the
+// worst bracketing of a monoid the up-sweep below evaluates in
+// ⌈log₂ K⌉ levels. The identity is `(0, 0)`: `fold_compose_apply(h,
+// 0, 0) == h` verbatim.
+
+/// The segment monoid's compose: `a` earlier, `b` later (Lemma 3's
+/// law on the rotation ring — one rotate, one XOR, one add).
+#[inline(always)]
+pub fn seg_compose(a: (u32, u64), b: (u32, u64)) -> (u32, u64) {
+    (
+        a.0.wrapping_add(b.0),
+        a.1.rotate_left(FOLD_ROT.wrapping_mul(b.0) % 64) ^ b.1,
+    )
+}
+
+/// THE SEGMENT TREE (Theorem 20(a) on the rotation ring): the
+/// in-place up-sweep over tape-ordered `(k, B)` leaves — SoA form
+/// (`k[]` and `B[]` parallel arrays, the journal's layout). On
+/// return `(k[0], B[0])` is the composite of all `n` leaves;
+/// K−1 composes, dependency depth ⌈log₂ K⌉. Applying the composite
+/// once (`fold_compose_apply(h, K, V)`) equals the serial chain's
+/// iterated per-record applies, bit-exactly — Theorem 22's
+/// determinism class, pinned by the cells.
+///
+/// The empty input composes to the identity `(0, 0)`.
+pub fn tree_fold_segments(k: &mut [u32], b: &mut [u64]) -> (u32, u64) {
+    let n = k.len();
+    debug_assert_eq!(b.len(), n, "segment tree SoA columns must match");
+    if n == 0 {
+        return (0, 0);
+    }
+    if n == 1 {
+        return (k[0], b[0]);
+    }
+    let mut stride = 1usize;
+    while stride < n {
+        let mut i = 0usize;
+        while i + stride < n {
+            let kb = k[i + stride];
+            let ba = b[i];
+            let bb = b[i + stride];
+            k[i] = k[i].wrapping_add(kb);
+            b[i] = ba.rotate_left(FOLD_ROT.wrapping_mul(kb) % 64) ^ bb;
+            i += stride << 1;
+        }
+        stride <<= 1;
+    }
+    (k[0], b[0])
+}
+
 /// Folds all emitted messages into the canonical golden FNV-1a-64 hash (doc 04 §8).
 #[derive(Debug, Clone, Copy)]
 pub struct HashSink {

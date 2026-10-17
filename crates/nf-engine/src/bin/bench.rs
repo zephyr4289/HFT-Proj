@@ -830,6 +830,17 @@ fn run_hydra_sustained_5s(
             body_bytes_per_msg,
             sustained_rate as f64 * body_bytes_per_msg / 1e9
         );
+        // R37: the fold journal's engagement — the tree's flush count
+        // (≈ the completed boundaries + the rare capacity flushes),
+        // the journaled record count, and the max leaves per flush (the
+        // compose_max dial). live_len must be 0 at rest (the finish
+        // flushed the tail).
+        let (tree_on, flushes, overflows, records, compose_max, live_len) =
+            sink.fold_tree_stats();
+        eprintln!(
+            "FOLDTREE_DIAGNOSTIC sustained: tree={} flushes={} overflows={} records={} compose_max={} live_len={} (R37: the Blelloch-Galois tree fold — the 9-level up-sweep over the pass's journaled composite records, Theorems 19-22; HFT_TREE_FOLD=0 restores the serial chain)",
+            tree_on, flushes, overflows, records, compose_max, live_len
+        );
         // R35: the boundary attribution — the transport re-arm wait vs
         // the sink pass-open work (the reset wall's split; the probe
         // Instant pair adds ~40ns/pass, inside the diag noise floor).
@@ -1068,6 +1079,40 @@ fn run_hydra_sustained_5s(
                 fb,
                 recs,
                 fused,
+            );
+        }
+        // R37: THE TREE-FOLD VERDICT — the journal's engagement on the
+        // engine surface (the drain's per-record h-dependency is gone;
+        // the boundary flush is the ⌈log₂ K⌉ up-sweep + one apply).
+        // Engagement laws (the exit-0 discipline): the tree armed,
+        // every completed boundary flushed (flushes >= passes — the
+        // boundary flushes + the rare capacity flushes), the journal
+        // EMPTY at rest (the finish flushed the tail), and the
+        // journaled records > 0 (the drain actually drained).
+        {
+            let (tree_on, flushes, overflows, records, compose_max, live_len) =
+                sink.fold_tree_stats();
+            if tree_on {
+                assert!(
+                    live_len == 0,
+                    "R37 engagement: the journal holds {live_len} leaves at rest \
+                     (the finish must flush the tail)"
+                );
+                assert!(
+                    flushes >= d_passes,
+                    "R37 engagement: {flushes} flushes < {d_passes} passes \
+                     (every completed boundary must flush)"
+                );
+                assert!(
+                    records > 0,
+                    "R37 engagement: zero journaled records on a fabric run"
+                );
+            }
+            let fold_ms = d_fold_ns as f64 / 1e6;
+            println!(
+                "PR1_R37_TREE_FOLD_VERDICT rate={} tree={} flushes={} overflows={} records={} compose_max={} fold_ms={:.1} workers={} (R37: the Blelloch-Galois tree fold — the pass fold's serial 2.08us chain replaced by the 9-level up-sweep over the journaled composite records at the boundary, Theorems 19-22; HFT_TREE_FOLD=0 restores the serial chain — docs/solution2.md)",
+                sustained_rate, tree_on, flushes, overflows, records, compose_max, fold_ms,
+                fabric.workers
             );
         }
     }

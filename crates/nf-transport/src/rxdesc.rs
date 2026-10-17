@@ -753,6 +753,7 @@ unsafe fn nt_copy_u64(src: *const u64, dst: *mut u64, n: usize) {
     std::ptr::copy_nonoverlapping(src, dst, n);
 }
 
+
 impl RxdescState {
     /// Allocate the state (construction time — outside every window).
     pub fn new(cap: usize) -> Self {
@@ -939,6 +940,13 @@ impl RxdescState {
     #[inline]
     pub fn load_ready(&self) -> (u64, u64) {
         rx_unpack_u64(self.ready.0.load(Ordering::Acquire))
+    }
+
+    /// R37 debug: the raw publication cursor, unpacked.
+    #[inline]
+    pub fn dbg_ready(&self) -> (u64, u64) {
+        let (g, r) = self.load_ready();
+        (g, r)
     }
 
     /// Capture the write-once blob base (RX at first sliced frame, sink
