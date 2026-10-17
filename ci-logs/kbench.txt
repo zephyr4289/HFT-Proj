@@ -1,0 +1,44 @@
+KBENCH topo cpus=[0, 2, 1, 3] phys=2 smt=true fold512=true
+KBENCH spec_slice_vec=true
+KBENCH mode=scalar8lane threads=1 cpu=0 pinned=true gb_s=26.52 bytes=7960120896 iters=949 sink=0x50007b8a5d6e566a
+KBENCH mode=pclmul128_raw threads=1 cpu=0 pinned=true gb_s=20.83 bytes=6249512960 iters=745 sink=0x942dad7c7a327323
+KBENCH mode=crc32_pclmul_mix threads=1 cpu=0 pinned=true gb_s=29.77 bytes=8933867520 iters=1065 sink=0x5c504f01bdfb43ce
+KBENCH mode=fold512 threads=1 cpu=0 pinned=true gb_s=33.26 bytes=9981605760 iters=1190 sink=0x50007b8a5d6e566a
+KBENCH mode=fold512_r threads=1 cpu=0 pinned=true gb_s=34.31 bytes=10291958208 iters=1227 sink=0x50007b8a5d6e566a
+KBENCH mode=fold512_rv threads=1 cpu=0 pinned=true gb_s=34.16 bytes=10250018688 iters=1222 sink=0x50007b8a5d6e566a
+KBENCH mode=fold512_rc threads=1 cpu=0 pinned=true gb_s=33.71 bytes=10115812224 iters=1206 sink=0x50007b8a5d6e566a
+KBENCH mode=fold512_rd threads=1 cpu=0 pinned=true gb_s=34.21 bytes=10266794496 iters=1224 sink=0x50007b8a5d6e566a
+KBENCH mode=fold512_ro threads=1 cpu=0 pinned=true gb_s=32.95 bytes=9889338816 iters=1179 sink=0x50007b8a5d6e566a
+KBENCH mode=fold512_r_pair threads=1 cpu=0 pinned=true gb_s=32.75 bytes=9829048320 iters=1172 sink=0x9e5cf9b78c9e95f5
+KBENCH mode=fold512_eval2 threads=1 cpu=0 pinned=true gb_s=24.66 bytes=7405332480 iters=883 sink=0x9e5cf9b78c9e95f5
+KBENCH mode=fold512_pair threads=1 cpu=0 pinned=true gb_s=30.38 bytes=9116190720 iters=1087 sink=0x9e5cf9b78c9e95f5
+KBENCH mode=fold512_tri threads=1 cpu=0 pinned=true gb_s=33.84 bytes=10157751744 iters=1211 sink=0x50007b8a5d6e566a
+KBENCH mode=fold512_tri_r threads=1 cpu=0 pinned=true gb_s=34.19 bytes=10258406592 iters=1223 sink=0x50007b8a5d6e566a
+KBENCH mode=fold512_pclmul_mix threads=1 cpu=0 pinned=true gb_s=30.13 bytes=9042160512 iters=1078 sink=0xd0ed35436c8efbc2
+KBENCH mode=fold512_noend threads=1 cpu=0 pinned=true gb_s=33.48 bytes=10048708992 iters=1198 sink=0x4bb11da019b76839
+KBENCH mode=fold512_pre threads=1 cpu=0 pinned=true gb_s=34.07 bytes=10224854976 iters=1219 sink=0x50007b8a5d6e566a
+KBENCH mode=fold512_t threads=1 cpu=0 pinned=true gb_s=29.62 bytes=8891178240 iters=1060 sink=0x50007b8a5d6e566a
+KBENCH mode=fold512_supply threads=1 cpu=0 pinned=true gb_s=34.18 bytes=10256585472 iters=684 sink=0xc8131a22b377ccdb
+KBENCH mode=affine_sub_1t threads=1 cpu=0 pinned=true gb_s=141.81 ns_per_span=9.48 msgs_s=4431708756 bytes=42551836992 iters=5073 sink=0xb6d735b8
+KBENCH mode=affine_sub_8lane threads=1 cpu=0 pinned=true gb_s=112.75 ns_per_span=11.92 msgs_s=3523286572 bytes=33828416832 iters=4033 sink=0x50007b8a5d6e566a
+KBENCH mode=spec_slice_512 threads=1 cpu=0 pinned=true gb_s=2.52 msgs_s=115991991 ns_per_msg=8.621 msgs=35077952 iters=91 sink=0x0
+KBENCH mode=spec_slice_512_vec threads=1 cpu=0 pinned=true gb_s=2.60 msgs_s=119261473 ns_per_msg=8.385 msgs=35848896 iters=93 sink=0x0
+KBENCH mode=scalar8lane threads=2 placement=2cpu_distinct cpus=0,2 pinned=true gb_s=52.11 bytes=25650210432 sink=0xf30d7dfbc29da81e
+KBENCH mode=fold512 threads=2 placement=2cpu_distinct cpus=0,2 pinned=true gb_s=66.23 bytes=32721213504 sink=0xf30d7dfbc29da81e
+KBENCH mode=fold512_r threads=2 placement=2cpu_distinct cpus=0,2 pinned=true gb_s=67.10 bytes=33115444992 sink=0xf30d7dfbc29da81e
+KBENCH mode=fold512_rv threads=2 placement=2cpu_distinct cpus=0,2 pinned=true gb_s=67.50 bytes=33325142592 sink=0xf30d7dfbc29da81e
+KBENCH mode=fold512_rc threads=2 placement=2cpu_distinct cpus=0,2 pinned=true gb_s=66.80 bytes=32998014336 sink=0xf30d7dfbc29da81e
+KBENCH mode=fold512_rd threads=2 placement=2cpu_distinct cpus=0,2 pinned=true gb_s=67.79 bytes=33484512768 sink=0xf30d7dfbc29da81e
+KBENCH mode=fold512_ro threads=2 placement=2cpu_distinct cpus=0,2 pinned=true gb_s=65.72 bytes=32419248960 sink=0xf30d7dfbc29da81e
+KBENCH mode=fold512_tri threads=2 placement=2cpu_distinct cpus=0,2 pinned=true gb_s=66.74 bytes=32939299008 sink=0xf30d7dfbc29da81e
+KBENCH mode=fold512_tri_r threads=2 placement=2cpu_distinct cpus=0,2 pinned=true gb_s=67.62 bytes=33350306304 sink=0xf30d7dfbc29da81e
+KBENCH mode=scalar8lane threads=2 placement=2cpu_smt cpus=0,1 pinned=true gb_s=28.22 bytes=13932308544 sink=0xf90fa879423fc077
+KBENCH mode=fold512 threads=2 placement=2cpu_smt cpus=0,1 pinned=true gb_s=34.73 bytes=17153263680 sink=0xf90fa879423fc077
+KBENCH mode=fold512_r threads=2 placement=2cpu_smt cpus=0,1 pinned=true gb_s=34.07 bytes=16809359616 sink=0xf90fa879423fc077
+KBENCH mode=fold512_rv threads=2 placement=2cpu_smt cpus=0,1 pinned=true gb_s=34.05 bytes=16817747520 sink=0xf90fa879423fc077
+KBENCH mode=fold512_rc threads=2 placement=2cpu_smt cpus=0,1 pinned=true gb_s=33.99 bytes=16767420096 sink=0xf90fa879423fc077
+KBENCH mode=fold512_rd threads=2 placement=2cpu_smt cpus=0,1 pinned=true gb_s=34.10 bytes=16834523328 sink=0xf90fa879423fc077
+KBENCH mode=fold512_ro threads=2 placement=2cpu_smt cpus=0,1 pinned=true gb_s=35.08 bytes=17337797568 sink=0xf90fa879423fc077
+KBENCH mode=fold512_tri threads=2 placement=2cpu_smt cpus=0,1 pinned=true gb_s=34.39 bytes=16993893504 sink=0xf90fa879423fc077
+KBENCH mode=fold512_tri_r threads=2 placement=2cpu_smt cpus=0,1 pinned=true gb_s=34.36 bytes=16960341888 sink=0xf90fa879423fc077
+KBENCH done

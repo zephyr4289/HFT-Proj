@@ -1,0 +1,27 @@
+BENCH_CALIBRATION invariant_tsc=true freq_mhz=2300.00 mark_overhead_cycles=30
+=== R6. PR-1 HYDRA BIT-EXACT MULTI-CORE SPAN CONFORMANCE ===
+HYDRA_BITPARITY sequential=(count=505849 hash=0xb3df3a4c1ce26c85 msg_hash=0xcbf29ce484222325) hydra=(count=505849 hash=0xb3df3a4c1ce26c85 msg_hash=0xcbf29ce484222325) -> BIT-EXACT
+BENCH mode=replay-hydra-burst msgs=505849 rate=1206723887 allocs=0 freq=2300.00MHz workers=2 run=1
+BENCH mode=replay-hydra-burst msgs=505849 rate=1701367891 allocs=0 freq=2300.00MHz workers=2 run=2
+BENCH mode=replay-hydra-burst msgs=505849 rate=1638934698 allocs=0 freq=2300.00MHz workers=2 run=3
+BENCH mode=replay-hydra-burst msgs=505849 rate=1710006524 allocs=0 freq=2300.00MHz workers=2 run=4
+BENCH mode=replay-hydra-burst msgs=505849 rate=1678203056 allocs=0 freq=2300.00MHz workers=2 run=5
+BENCH_MEDIAN mode=replay-hydra-burst rate=1678203056
+R23B_AFFINE_VERDICT arm=burst armed=true tag_hits=65952 payload_fallbacks=0 ledger_rows=21984 (R23c: workers verify spans from register tags, zero payload reads; the (prefix,cum) triple checked per-span by the scalar affine law)
+PR1_HYDRA_VERDICT rate=1678203056 (bit-exact multi-core span conformance: 2 workers, every emitted byte CRC32C-checked in-window, ordered serial fold)
+PR1_GIGAHFT_BURST_VERDICT rate=1678203056 target=1000000000 -> PASS (R7 burst reference; the sustained arm below is the gate)
+BENCH mode=replay-hydra-sustained-5s total_msgs=57840798056 duration=5.00s sustained_rate=11567309198 msg/s allocs=0 workers=2 crc_kernel=reflect
+PR1_HYDRA_SUSTAINED_VERDICT rate=11567309198 (duration=5.00s, total_msgs=57840798056, workers=2)
+PR1_GIGAHFT_VERDICT rate=11567309198 target=1000000000 -> PASS (Project 1.0B: bit-exact, zero-alloc, every byte verified in-window, cross-pass double-buffered fabric)
+PR1_R8_FULL_VERIFY_VERDICT rate=11567309198 target=1000000000 -> PASS (R8: 1B msg/s sustained full verification — bit-exact, zero-alloc, every byte CRC32C-verified in-window)
+PR1_R16_FULL_VERIFY_VERDICT rate=11567309198 target=2000000000 -> PASS (R16: 2B msg/s sustained full verification — the Double Helix program, docs/29)
+R16B_RXDESC_VERDICT rx_fixes=0 assist_chunks=0 selfserve=114342 (array-driven submission telemetry; fixes=0 means every RX prefill entry was already exact; selfserve = R29 zero-thread-ingest windows)
+PR1_R29_SELF_SERVE_VERDICT rate=11567309198 target=10000000000 -> PASS (R29: 10B msg/s sustained full verification — the zero-thread ingest program, docs/42: self-serve windows + the 64-deep record ring + the vectorized header twin)
+PR1_R32_PASS_REPLAY_VERDICT rate=11567309198 replay_batches=2515546 replay_live=22 replay_passes=114343 replay_rerecords=0 armed=true (R32: the steady-pass verdict replay — the frozen-master scan elision, docs/43; live=first-record only in the steady regime, the workers still fold every message of every pass)
+PR1_R33_RX_SCHED_VERDICT rate=11567309198 sched_replays=2515606 sched_passes=114346 wakes_saved=2610727 wait_ms=613.4 prod_ms=68.9 per_pub_ns=27 polls=87 (R33: the publication-schedule replay — the producer starvation wall's collapse, docs/44; the R32 baseline: wait_ms=4325.8 prod_ms=4284.3 per_pub_ns=3283 at 6.0B)
+PR1_R35_PREARM_VERDICT rate=11567309198 armed=true prearm_passes=114346 reset_ms=35.5 reset_wait_ms=8.0 per_pass_reset_wait_ns=70 gate_ms=4.32 (R35-A: the marker-decoupled advance — the bake at the EOS-marker's landing + the bounded pre-arm gate; the R33 baseline: reset_ms=2157.9 reset_wait=11900ns/pass, docs/46)
+PR1_R36_RESFOLD_VERDICT rate=11567309198 baked=true span_records=988 span_deg=11544836 span_merge_ok=true reset_ms=35.5 per_pass_open_ns=239 prebaked=true reanchor=true (R36: the Res-fold landed — the SPANHASH folds branch-free into O(1) 36-byte records, merges by the Galois shift on the live path, and the pass boundary's 64 KiB re-anchor zero is gone; the PR #20 baseline: reset_ms=204.0 pass_open≈620ns/pass, docs/47)
+PR1_R36_EVAL_ELISION_VERDICT rate=11567309198 elision=false replayed_passes=0 live_passes=228690 fallbacks=0 res_records=0 fused_calls=322 (R36-E: the worker eval elision — the res-record replay over the phase-segment logs + the main-side call fusion; the per-pass worker cost collapses from the span walk to the record emission; the guards: the frozen-master regime, the length law, the phase alignment, the inline guard, the per-pass tuple assert — docs/48)
+PR1_R37_TREE_FOLD_VERDICT rate=11567309198 tree=true flushes=114344 overflows=0 records=23327241 compose_max=259 fold_ms=549.2 workers=2 (R37: the Blelloch-Galois tree fold — the pass fold's serial 2.08us chain replaced by the 9-level up-sweep over the journaled composite records at the boundary, Theorems 19-22; HFT_TREE_FOLD=0 restores the serial chain — docs/solution2.md)
+R23B_AFFINE_VERDICT arm=sustained armed=true tag_hits=1256880240 payload_fallbacks=0 ledger_rows=21984 (R23c: zero-re-read affine verification on the worker fabric)
+PR1_R23_AFFINE_SUSTAINED_VERDICT rate=11567309198 target=2500000000 -> PASS (R23: 2.5B+ sustained full verification from register tags — the affine-span algebra program, docs/36)
